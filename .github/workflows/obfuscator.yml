@@ -1,5 +1,8 @@
 name: 混淆当前版本源码
-on:
+on: 
+    push:
+      paths:
+        - main
     workflow_dispatch:
 
 jobs:
