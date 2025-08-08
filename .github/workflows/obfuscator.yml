@@ -1,6 +1,8 @@
 name: 混淆当前版本源码
 on:
-    workflow_dispatch:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   obfuscate:
@@ -61,3 +63,4 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
+
