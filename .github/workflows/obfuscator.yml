@@ -64,39 +64,45 @@ jobs:
 
       - name: Debug repository contents
         run: |
-          echo "Listing repository contents in $(pwd)"
-          ls -la
-          echo "Checking for _worker.js"
-          find . -name "_worker.js" || echo "_worker.js not found"
+          set -euo pipefail
+          echo "Current working directory: $(pwd)"
+          echo "Listing all files in repository:"
+          find . -type f
+          echo "Searching for _worker.js:"
+          find . -name "_worker.js" || echo "No _worker.js found in any directory"
 
       - name: 检查备份文件是否存在
         run: |
           set -euo pipefail
-          # Define file paths (update 'path/to' if _worker.js is in a subdirectory)
+          # Define file paths (update if _worker.js is in a subdirectory, e.g., src/_worker.js)
           WORKER_FILE="_worker.js"
           BACKUP_FILE="_worker.js.backup"
           TEMP_FILE="_worker_temp.js"
-          
+
           # Check if _worker.js exists
           if [ ! -f "$WORKER_FILE" ]; then
             echo "Error: $WORKER_FILE does not exist in $(pwd)"
             find . -name "_worker.js" || echo "No _worker.js found in any directory"
             exit 1
           fi
-          
+
           # Create backup if it doesn't exist
-          if [ ! -f "$BACKUP_FILE" ]; then
-            echo "Creating backup: $BACKUP_FILE"
-            cp "$WORKER_FILE" "$BACKUP_FILE"
-          fi
-          
+          echo "Creating backup: $BACKUP_FILE"
+          cp "$WORKER_FILE" "$BACKUP_FILE" || {
+            echo "Error: Failed to create $BACKUP_FILE"
+            exit 1
+          }
+
           # Create _worker_temp.js
           echo "Creating $TEMP_FILE from $BACKUP_FILE..."
-          cp "$BACKUP_FILE" "$TEMP_FILE"
-          
+          cp "$BACKUP_FILE" "$TEMP_FILE" || {
+            echo "Error: Failed to create $TEMP_FILE"
+            exit 1
+          }
+
           # Verify _worker_temp.js was created
           if [ ! -f "$TEMP_FILE" ]; then
-            echo "Error: Failed to create $TEMP_FILE in $(pwd)"
+            echo "Error: $TEMP_FILE not found in $(pwd)"
             exit 1
           fi
           echo "$TEMP_FILE created successfully at $(pwd)/$TEMP_FILE"
@@ -105,10 +111,14 @@ jobs:
       - name: 混淆代码
         run: |
           set -euo pipefail
+          echo "Current directory before build: $(pwd)"
+          echo "Files in current directory:"
+          ls -la
           npm run build
 
       - name: 提交更改
         run: |
+          set -euo pipefail
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add _worker.js _worker.js.backup
