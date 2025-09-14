@@ -3,7 +3,7 @@ name: 混淆当前版本源码
 on:
   push:
     branches: 
-         - main
+      - main
   workflow_dispatch:
 
 jobs:
@@ -64,15 +64,31 @@ jobs:
 
       - name: 检查备份文件是否存在
         run: |
+          set -euo pipefail
+          # Verify if _worker.js exists
+          if [ ! -f _worker.js ]; then
+            echo "Error: _worker.js does not exist in $(pwd)"
+            exit 1
+          fi
+          # Create backup if it doesn't exist
           if [ ! -f _worker.js.backup ]; then
             echo "备份文件 _worker.js.backup 不存在，正在创建..."
             cp _worker.js _worker.js.backup
           fi
+          # Create _worker_temp.js from backup
+          echo "Creating _worker_temp.js from _worker.js.backup..."
           cp _worker.js.backup _worker_temp.js
-          
+          # Verify _worker_temp.js was created
+          if [ ! -f _worker_temp.js ]; then
+            echo "Error: Failed to create _worker_temp.js"
+            exit 1
+          fi
+          echo "_worker_temp.js created successfully in $(pwd)"
+
       - name: 混淆代码
-        run: npm run build
-          
+        run: |
+          npm run build
+
       - name: 提交更改
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -83,11 +99,9 @@ jobs:
           else
             git commit -m "混淆 _worker.js 文件并备份原文件"
           fi
+
       - name: 推送更改
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
-
-
-
