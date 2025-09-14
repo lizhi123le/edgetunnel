@@ -62,8 +62,7 @@ jobs:
           --ignore-require-imports true \
           --domain-lock '' \
           --source-map false \
-          --source-map-mode separate \
-          --rotate-string-array true
+          --source-map-mode separate
           
       - name: 提交更改
         run: |
@@ -81,6 +80,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
+
 
 
 
