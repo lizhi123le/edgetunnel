@@ -35,16 +35,32 @@ jobs:
             cp _worker.js _worker.js.backup
           fi
           cp _worker.js.backup _worker_temp.js
-
       - name: 混淆代码
         run: |
-          RANDOM_NUMBER=$(od -An -N8 -tu8 < /dev/urandom | tr -d ' ')
-          echo "RANDOM_NUMBER=$RANDOM_NUMBER" >> "$GITHUB_ENV"
-          echo "RANDOM_NUMBER=$RANDOM_NUMBER" >> "$GITHUB_OUTPUT"
           javascript-obfuscator _worker_temp.js --output _worker.js \
-          --seed "$RANDOM_NUMBER" \
-          --config obfuscator.json
-            
+          --compact true \
+          --control-flow-flattening true \
+          --control-flow-flattening-threshold 0.75 \
+          --dead-code-injection true \
+          --dead-code-injection-threshold 0.4 \
+          --string-array true \
+          --string-array-encoding 'base64,rc4' \
+          --string-array-threshold 0.8 \
+          --transform-object-keys true \
+          --split-strings true \
+          --split-strings-chunk-length 3 \
+          --identifier-names-generator mangled \
+          --rename-globals true \
+          --unicode-escape-sequence true \
+          --self-defending true \
+          --disable-console-output true \
+          --target browser \
+          --numbers-to-expressions true \
+          --simplify true \
+          --domain-lock '' \
+          --source-map false \
+          --source-map-mode separate
+          
       - name: 提交更改
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -55,18 +71,8 @@ jobs:
           else
             git commit -m "混淆 _worker.js 文件并备份原文件"
           fi
-
       - name: 推送更改
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
-
-
-
-
-
-
-
-
-
