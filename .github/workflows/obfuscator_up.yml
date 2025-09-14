@@ -44,7 +44,6 @@ jobs:
           --string-array-encoding 'base64,rc4' \
           --string-array-threshold 0.8 \
           --transform-object-keys true \
-          --rotate-string-array true \
           --shuffle-string-array true \
           --split-strings true \
           --split-strings-chunk-length 3 \
@@ -77,4 +76,5 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
+
 
