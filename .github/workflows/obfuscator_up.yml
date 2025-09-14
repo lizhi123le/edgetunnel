@@ -34,7 +34,11 @@ jobs:
 
       - name: 混淆代码
         run: |
+          RANDOM_NUMBER=$(od -An -N8 -tu8 < /dev/urandom | tr -d ' ')
+          echo "RANDOM_NUMBER=$RANDOM_NUMBER" >> "$GITHUB_ENV"
+          echo "RANDOM_NUMBER=$RANDOM_NUMBER" >> "$GITHUB_OUTPUT"
           javascript-obfuscator _worker_temp.js --output _worker.js \
+          --seed "$RANDOM_NUMBER" \
           --config obfuscator.json
 
       - name: 提交更改
@@ -53,6 +57,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
+
 
 
 
