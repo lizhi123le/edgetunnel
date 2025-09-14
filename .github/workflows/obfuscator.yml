@@ -70,8 +70,7 @@ jobs:
           fi
 
       - name: 混淆代码
-        run: |
-          npm run build
+        run: node build.js
 
       - name: 提交更改
         run: |
@@ -89,5 +88,6 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
+
 
 
