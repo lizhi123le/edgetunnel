@@ -3,7 +3,7 @@ const path = require('path');
 const JavaScriptObfuscator = require('javascript-obfuscator');
 
 // 输入和输出文件路径
-const inputFile = path.join(__dirname, 'edgetunnel/_worker_temp.js');
+const inputFile = path.join(__dirname, '_worker_temp.js');
 const outputFile = path.join(__dirname, '_worker.js');
 
 // 确保输出目录存在
@@ -61,6 +61,7 @@ try {
   process.exit(1);
 
 }
+
 
 
 
