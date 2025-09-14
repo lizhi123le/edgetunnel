@@ -37,16 +37,29 @@ jobs:
           javascript-obfuscator 明文源码.js --output _worker.js \
           --compact true \
           --control-flow-flattening true \
-          --control-flow-flattening-threshold 1 \
+          --control-flow-flattening-threshold 0.75 \
           --dead-code-injection true \
-          --dead-code-injection-threshold 1 \
-          --identifier-names-generator hexadecimal \
-          --rename-globals true \
+          --dead-code-injection-threshold 0.4 \
           --string-array true \
-          --string-array-encoding 'rc4' \
-          --string-array-threshold 1 \
+          --string-array-encoding 'base64,rc4' \
+          --string-array-threshold 0.8 \
           --transform-object-keys true \
-          --unicode-escape-sequence true
+          --rotate-string-array true \
+          --shuffle-string-array true \
+          --split-strings true \
+          --split-strings-chunk-length 3 \
+          --identifier-names-generator mangled \
+          --rename-globals true \
+          --unicode-escape-sequence true \
+          --self-defending true \
+          --disable-console-output true \
+          --target browser \
+          --numbers-to-expressions true \
+          --simplify true \
+          --ignore-require-imports true \
+          --domain-lock '' \
+          --source-map false \
+          --source-map-mode separate
 
       - name: 提交更改
         run: |
@@ -64,3 +77,4 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
+
