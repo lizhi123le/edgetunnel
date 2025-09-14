@@ -62,31 +62,49 @@ jobs:
             echo "No package.json in repository, skipping dependency installation."
           fi
 
+      - name: Debug repository contents
+        run: |
+          echo "Listing repository contents in $(pwd)"
+          ls -la
+          echo "Checking for _worker.js"
+          find . -name "_worker.js" || echo "_worker.js not found"
+
       - name: 检查备份文件是否存在
         run: |
           set -euo pipefail
-          # Verify if _worker.js exists
-          if [ ! -f _worker.js ]; then
-            echo "Error: _worker.js does not exist in $(pwd)"
+          # Define file paths (update 'path/to' if _worker.js is in a subdirectory)
+          WORKER_FILE="_worker.js"
+          BACKUP_FILE="_worker.js.backup"
+          TEMP_FILE="_worker_temp.js"
+          
+          # Check if _worker.js exists
+          if [ ! -f "$WORKER_FILE" ]; then
+            echo "Error: $WORKER_FILE does not exist in $(pwd)"
+            find . -name "_worker.js" || echo "No _worker.js found in any directory"
             exit 1
           fi
+          
           # Create backup if it doesn't exist
-          if [ ! -f _worker.js.backup ]; then
-            echo "备份文件 _worker.js.backup 不存在，正在创建..."
-            cp _worker.js _worker.js.backup
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "Creating backup: $BACKUP_FILE"
+            cp "$WORKER_FILE" "$BACKUP_FILE"
           fi
-          # Create _worker_temp.js from backup
-          echo "Creating _worker_temp.js from _worker.js.backup..."
-          cp _worker.js.backup _worker_temp.js
+          
+          # Create _worker_temp.js
+          echo "Creating $TEMP_FILE from $BACKUP_FILE..."
+          cp "$BACKUP_FILE" "$TEMP_FILE"
+          
           # Verify _worker_temp.js was created
-          if [ ! -f _worker_temp.js ]; then
-            echo "Error: Failed to create _worker_temp.js"
+          if [ ! -f "$TEMP_FILE" ]; then
+            echo "Error: Failed to create $TEMP_FILE in $(pwd)"
             exit 1
           fi
-          echo "_worker_temp.js created successfully in $(pwd)"
+          echo "$TEMP_FILE created successfully at $(pwd)/$TEMP_FILE"
+          ls -la
 
       - name: 混淆代码
         run: |
+          set -euo pipefail
           npm run build
 
       - name: 提交更改
