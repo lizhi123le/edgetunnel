@@ -29,10 +29,10 @@ jobs:
         id: check-update
         run: |
           set -euo pipefail
-          # 定义文件路径
           WORKER_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js"
           TOML_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/wrangler.toml"
           WORKER_FILE="_worker.js"
+          BACKUP_FILE="_worker.js.backup"
           TOML_FILE="wrangler.toml"
           WORKER_HASH_FILE=".worker_hash"
           TOML_HASH_FILE=".toml_hash"
@@ -72,18 +72,22 @@ jobs:
             # 保存新哈希值
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
             echo "$NEW_TOML_HASH" > "$TOML_HASH_FILE"
-            # 覆盖本地文件
-            mv temp_worker.js "$WORKER_FILE"
+            # 同步 _worker.js 到 _worker.js.backup
+            mv temp_worker.js "$BACKUP_FILE"
+            # 同步 wrangler.toml
             mv temp_toml.toml "$TOML_FILE"
+            # 如果 _worker.js 不存在，创建初始版本
+            if [ ! -f "$WORKER_FILE" ]; then
+              echo "Creating initial $WORKER_FILE from $BACKUP_FILE"
+              cp "$BACKUP_FILE" "$WORKER_FILE"
+            fi
           else
             echo "上游仓库无更新，跳过后续步骤"
             echo "has_update=false" >> $GITHUB_OUTPUT
+            # 清理临时文件
+            rm -f temp_worker.js temp_toml.toml
           fi
-          
-          # 清理临时文件
-          rm -f temp_worker.js temp_toml.toml
 
-      # 后续步骤都添加了条件，只有在 has_update=true 或 workflow_dispatch 时执行
       - name: Set up Node.js
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/setup-node@v4
@@ -127,7 +131,7 @@ jobs:
             echo "No package.json in repository, skipping dependency installation."
           fi
 
-      - name: 检查备份文件是否存在
+      - name: 检查备份文件并创建 _worker_temp.js
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
@@ -135,17 +139,13 @@ jobs:
           BACKUP_FILE="_worker.js.backup"
           TEMP_FILE="_worker_temp.js"
           
-          if [ ! -f "$WORKER_FILE" ]; then
-            echo "Error: $WORKER_FILE does not exist in $(pwd)"
-            find . -name "_worker.js" || echo "No _worker.js found in any directory"
+          # 确保 _worker.js.backup 存在
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "Error: $BACKUP_FILE does not exist in $(pwd)"
             exit 1
           fi
           
-          cp "$WORKER_FILE" "$BACKUP_FILE" || {
-            echo "Error: Failed to create $BACKUP_FILE"
-            exit 1
-          }
-          
+          # 创建 _worker_temp.js 从 _worker.js.backup
           cp "$BACKUP_FILE" "$TEMP_FILE" || {
             echo "Error: Failed to create $TEMP_FILE from $BACKUP_FILE"
             exit 1
@@ -156,7 +156,7 @@ jobs:
             exit 1
           fi
           
-          echo "$TEMP_FILE created successfully at $(pwd)/$TEMP_FILE"
+          echo "$TEMP_FILE created successfully from $BACKUP_FILE at $(pwd)/$TEMP_FILE"
           ls -la
 
       - name: 混淆代码
