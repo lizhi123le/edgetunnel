@@ -1,242 +1,66 @@
-name: 混淆并创建 GitHub 发行版
+const fs = require('fs');
+const path = require('path');
+const JavaScriptObfuscator = require('javascript-obfuscator');
 
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-  schedule:
-    - cron: '0 */8 * * *'  # 每隔8小时运行一次
+// 输入和输出文件路径
+const inputFile = path.join(__dirname, './_worker_temp.js');
+const outputFile = path.join(__dirname, './_worker.js');
 
-jobs:
-  obfuscate-and-release:
-    if: |
-      github.event_name == 'workflow_dispatch' || 
-      github.event_name == 'schedule' ||
-      github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: write
+// 确保输出目录存在
+const outputDir = path.dirname(outputFile);
+if (!fs.existsSync(outputDir)) {
+  fs.mkdirSync(outputDir, { recursive: true });
+}
 
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true
+// 读取原始 worker 脚本
+let code;
+try {
+  code = fs.readFileSync(inputFile, 'utf8');
+} catch (err) {
+  console.error(`Error reading input file: ${err.message}`);
+  process.exit(1);
+}
 
-      - name: 同步源仓库 _worker.js 文件
-        run: |
-          set -euo pipefail
-          BACKUP_FILE="_worker.js.backup"
-          echo "Downloading _worker.js from cmliu/edgetunnel..."
-          curl -s -L -o "$BACKUP_FILE" "https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js"
-          if [ ! -f "$BACKUP_FILE" ] || [ ! -s "$BACKUP_FILE" ]; then
-            echo "Error: Failed to download or empty file for $BACKUP_FILE"
-            exit 1
-          fi
-          echo "Successfully downloaded and overwritten $BACKUP_FILE (size: $(wc -c < "$BACKUP_FILE") bytes)"
-          ls -la "$BACKUP_FILE"
+// 混淆配置（国家级安全级别）
+const obfuscationOptions = {
+  compact: true,
+  controlFlowFlattening: true,
+  controlFlowFlatteningThreshold: 0.75,
+  deadCodeInjection: true,
+  deadCodeInjectionThreshold: 0.4,
+  stringArray: true,
+  stringArrayEncoding: ['base64', 'rc4'],
+  stringArrayThreshold: 0.8,
+  transformObjectKeys: true,
+  rotateStringArray: true,
+  shuffleStringArray: true,
+  splitStrings: true,
+  splitStringsChunkLength: 3,
+  identifierNamesGenerator: 'mangled',
+  renameGlobals: true,
+  unicodeEscapeSequence: true,
+  selfDefending: true,
+  disableConsoleOutput: true,
+  target: 'browser',
+  numbersToExpressions: true,
+  simplify: true,
+  ignoreRequireImports: true,
+  domainLock: [],
+  sourceMap: false,
+  sourceMapMode: 'separate'
+};
 
-      - name: 同步源仓库 wrangler.toml 文件
-        run: |
-          set -euo pipefail
-          TOML_FILE="wrangler.toml"
-          echo "Downloading wrangler.toml from cmliu/edgetunnel..."
-          curl -s -L -o "$TOML_FILE" "https://raw.githubusercontent.com/cmliu/edgetunnel/main/wrangler.toml"
-          if [ ! -f "$TOML_FILE" ] || [ ! -s "$TOML_FILE" ]; then
-            echo "Error: Failed to download or empty file for $TOML_FILE"
-            exit 1
-          fi
-          echo "Successfully downloaded and overwritten $TOML_FILE (size: $(wc -c < "$TOML_FILE") bytes)"
-          ls -la "$TOML_FILE"
+// 执行混淆
+try {
+  const obfuscationResult = JavaScriptObfuscator.obfuscate(code, obfuscationOptions);
+  // 写入混淆后的代码
+  fs.writeFileSync(outputFile, obfuscationResult.getObfuscatedCode(), 'utf8');
+  console.log(`Obfuscated code written to ${outputFile}`);
+} catch (err) {
+  console.error(`Error during obfuscation: ${err.message}`);
+  process.exit(1);
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 'latest'
+}
 
-      - name: Install dependencies
-        run: |
-          npm install
-          sudo apt-get update
-          sudo apt-get install -y jq
 
-      - name: Install Source Dependencies
-        if: github.event_name == 'workflow_dispatch' || env.has_update == 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
-        run: |
-          set -euo pipefail
-          if [ -f package-lock.json ] || [ -f package.json ]; then
-            echo "Installing dependencies with npm ci..."
-            npm ci --prefer-offline --no-audit --progress=false || {
-              echo "npm ci failed, falling back to npm install..."
-              npm install
-            }
-          else
-            echo "No package.json in source directory, skipping dependency installation."
-          fi
 
-      - name: Install Repository Dependencies
-        if: github.event_name == 'workflow_dispatch' || env.has_update == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ -f package-lock.json ] || [ -f package.json ]; then
-            echo "Installing dependencies with npm ci..."
-            npm ci --prefer-offline --no-audit --progress=false || {
-              echo "npm ci failed, falling back to npm install..."
-              npm install
-            }
-          else
-            echo "No package.json in repository, skipping dependency installation."
-          fi
-
-      - name: Debug repository contents
-        run: |
-          set -euo pipefail
-          echo "Current working directory: $(pwd)"
-          echo "Listing all files in repository:"
-          find . -type f
-          echo "Searching for _worker.js:"
-          find . -name "_worker.js" || echo "No _worker.js found in any directory"
-
-      - name: 检查备份文件是否存在
-        run: |
-          set -euo pipefail
-          # Define file paths (update if _worker.js is in a subdirectory, e.g., src/_worker.js)
-          WORKER_FILE="_worker.js"
-          BACKUP_FILE="_worker.js.backup"
-          TEMP_FILE="_worker_temp.js"
-          # Check if _worker.js exists (for initial backup if needed)
-          if [ ! -f "$WORKER_FILE" ]; then
-            echo "Error: $WORKER_FILE does not exist in $(pwd)"
-            find . -name "_worker.js" || echo "No _worker.js found in any directory"
-            exit 1
-          fi
-          # Since sync step always overwrites backup, no need to create if not exists
-          # But for first run (if backup was missing before sync), it should now exist
-          if [ ! -f "$BACKUP_FILE" ]; then
-            echo "Warning: $BACKUP_FILE not found after sync, creating initial from $WORKER_FILE"
-            cp "$WORKER_FILE" "$BACKUP_FILE" || {
-              echo "Error: Failed to create initial $BACKUP_FILE"
-              exit 1
-            }
-          else
-            echo "Backup file $BACKUP_FILE exists (synced), proceeding."
-          fi
-          # Always create _worker_temp.js from _worker.js.backup
-          echo "Creating $TEMP_FILE from $BACKUP_FILE..."
-          cp "$BACKUP_FILE" "$TEMP_FILE" || {
-            echo "Error: Failed to create $TEMP_FILE from $BACKUP_FILE"
-            exit 1
-          }
-          # Verify _worker_temp.js was created
-          if [ ! -f "$TEMP_FILE" ]; then
-            echo "Error: $TEMP_FILE not found in $(pwd)"
-            exit 1
-          fi
-          echo "$TEMP_FILE created successfully at $(pwd)/$TEMP_FILE"
-          ls -la
-
-      - name: 混淆代码
-        run: |
-          set -euo pipefail
-          echo "Current directory before build: $(pwd)"
-          echo "Files in current directory:"
-          ls -la
-          # Assuming npm run build uses javascript-obfuscator or similar
-          # Adjust the command based on your obfuscation tool
-          npm run build -- --input _worker_temp.js --output _worker.js
-          # Verify _worker.js was created/updated
-          if [ ! -f "_worker.js" ]; then
-            echo "Error: _worker.js not created after obfuscation"
-            exit 1
-          fi
-          echo "_worker.js created successfully at $(pwd)/_worker.js"
-
-      - name: 提交更改
-        run: |
-          set -euo pipefail
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add _worker.js _worker.js.backup wrangler.toml
-          if git diff --cached --quiet; then
-            echo "没有文件更改，跳过提交"
-          else
-            git commit -m "混淆 _worker.js 文件、同步备份和 wrangler.toml（从 cmliu/edgetunnel），版本: ${{ steps.extract-version.outputs.version }}"
-          fi
-
-      - name: 推送更改
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.ref }}
-
-      - name: 提取版本号
-        id: extract-version
-        run: |
-          set -euo pipefail
-          # Extract version from wrangler.toml (now synced)
-          if [ ! -f "wrangler.toml" ]; then
-            echo "Error: wrangler.toml does not exist in $(pwd)"
-            exit 1
-          fi
-          VERSION=$(grep '^name\s*=\s*"' wrangler.toml | awk -F'"' '{print $2}')
-          if [ -z "$VERSION" ]; then
-            echo "Error: Could not extract version from wrangler.toml"
-            exit 1
-          fi
-          echo "Extracted version: $VERSION"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: 检查已发布版本
-        id: check-version
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.extract-version.outputs.version }}"
-          echo "Checking if release $VERSION exists..."
-          # Check if a release with the version tag exists
-          if curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -e '.id' >/dev/null; then
-            echo "Release $VERSION already exists, skipping release creation."
-            echo "skip_release=true" >> $GITHUB_OUTPUT
-          else
-            echo "Release $VERSION does not exist, proceeding with release creation."
-            echo "skip_release=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: 创建 GitHub 发行版
-        if: steps.check-version.outputs.skip_release != 'true'
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.extract-version.outputs.version }}"
-          echo "Creating GitHub Release for version $VERSION..."
-          # Create release
-          RELEASE_RESPONSE=$(curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/releases" \
-            -d "{\"tag_name\":\"$VERSION\",\"name\":\"$VERSION\",\"body\":\"Release for version $VERSION\",\"draft\":false,\"prerelease\":false}")
-          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
-          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
-            echo "Error: Failed to create release for $VERSION"
-            exit 1
-          fi
-          echo "Release created with ID: $RELEASE_ID"
-          # Upload _worker.js
-          curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/javascript" \
-            --data-binary "@_worker.js" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js"
-          # Upload _worker.js.backup
-          curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/javascript" \
-            --data-binary "@_worker.js.backup" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js.backup"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
