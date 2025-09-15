@@ -155,6 +155,24 @@ jobs:
           fi
           echo "_worker.js created successfully at $(pwd)/_worker.js"
 
+      - name: 提交更改
+        run: |
+          set -euo pipefail
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add _worker.js _worker.js.backup wrangler.toml
+          if git diff --cached --quiet; then
+            echo "没有文件更改，跳过提交"
+          else
+            git commit -m "混淆 _worker.js 文件、同步备份和 wrangler.toml（从 cmliu/edgetunnel），版本: ${{ steps.extract-version.outputs.version }}"
+          fi
+
+      - name: 推送更改
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+
       - name: 提取版本号
         id: extract-version
         run: |
@@ -222,21 +240,3 @@ jobs:
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js.backup"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 提交更改
-        run: |
-          set -euo pipefail
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add _worker.js _worker.js.backup wrangler.toml
-          if git diff --cached --quiet; then
-            echo "没有文件更改，跳过提交"
-          else
-            git commit -m "混淆 _worker.js 文件、同步备份和 wrangler.toml（从 cmliu/edgetunnel），版本: ${{ steps.extract-version.outputs.version }}"
-          fi
-
-      - name: 推送更改
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.ref }}
