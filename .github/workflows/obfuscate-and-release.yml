@@ -83,24 +83,22 @@ jobs:
           # 清理临时文件
           rm -f temp_worker.js temp_toml.toml
 
-      - name: 停止工作流如果没有更新
-        if: steps.check-update.outputs.has_update != 'true' && github.event_name != 'workflow_dispatch'
-        run: |
-          echo "No updates detected and not a workflow_dispatch event, exiting workflow."
-          exit 0
-
+      # 后续步骤都添加了条件，只有在 has_update=true 或 workflow_dispatch 时执行
       - name: Set up Node.js
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/setup-node@v4
         with:
           node-version: 'latest'
 
       - name: Install dependencies
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           npm install
           sudo apt-get update
           sudo apt-get install -y jq zip
 
       - name: Install Source Dependencies
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
           set -euo pipefail
@@ -115,6 +113,7 @@ jobs:
           fi
 
       - name: Install Repository Dependencies
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -129,6 +128,7 @@ jobs:
           fi
 
       - name: 检查备份文件是否存在
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           WORKER_FILE="_worker.js"
@@ -160,6 +160,7 @@ jobs:
           ls -la
 
       - name: 混淆代码
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           echo "Current directory before build: $(pwd)"
@@ -173,6 +174,7 @@ jobs:
           echo "_worker.js created successfully at $(pwd)/_worker.js"
 
       - name: 压缩 _worker.js 为 worker.zip
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           zip worker.zip _worker.js
@@ -184,6 +186,7 @@ jobs:
           ls -la
 
       - name: 提交更改
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -196,12 +199,14 @@ jobs:
           fi
 
       - name: 推送更改
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
 
       - name: 提取版本号
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         id: extract-version
         run: |
           set -euo pipefail
@@ -218,6 +223,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: 检查已发布版本
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         id: check-version
         run: |
           set -euo pipefail
@@ -233,7 +239,9 @@ jobs:
           fi
 
       - name: 创建 GitHub 发行版
-        if: steps.check-version.outputs.skip_release != 'true'
+        if: |
+          (steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch') &&
+          steps.check-version.outputs.skip_release != 'true'
         run: |
           set -euo pipefail
           VERSION="${{ steps.extract-version.outputs.version }}"
