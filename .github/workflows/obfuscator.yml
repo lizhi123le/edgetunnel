@@ -1,4 +1,4 @@
-name: 混淆当前版本源码
+name: 混淆并创建 GitHub 发行版
 
 on:
   push:
@@ -7,13 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  obfuscate:
+  obfuscate-and-release:
     if: |
       github.event_name == 'workflow_dispatch' || 
       github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
 
     steps:
       - name: Check out repository
@@ -116,6 +117,23 @@ jobs:
           ls -la
           npm run build
 
+      - name: 提取版本号
+        id: extract-version
+        run: |
+          set -euo pipefail
+          # Extract version from wrangler.toml
+          if [ ! -f "wrangler.toml" ]; then
+            echo "Error: wrangler.toml does not exist in $(pwd)"
+            exit 1
+          fi
+          VERSION=$(grep '^name\s*=\s*"' wrangler.toml | awk -F'"' '{print $2}')
+          if [ -z "$VERSION" ]; then
+            echo "Error: Could not extract version from wrangler.toml"
+            exit 1
+          fi
+          echo "Extracted version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: 提交更改
         run: |
           set -euo pipefail
@@ -129,7 +147,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "没有文件更改，跳过提交"
           else
-            git commit -m "混淆 _worker.js 文件并备份原文件（仅首次）"
+            git commit -m "混淆 _worker.js 文件并备份原文件（仅首次），版本: ${{ steps.extract-version.outputs.version }}"
           fi
 
       - name: 推送更改
@@ -137,3 +155,54 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
+          
+      - name: 检查已发布版本
+        id: check-version
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.extract-version.outputs.version }}"
+          echo "Checking if release $VERSION exists..."
+          # Check if a release with the version tag exists
+          if curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -e '.id' >/dev/null; then
+            echo "Release $VERSION already exists, skipping release creation."
+            echo "skip_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release $VERSION does not exist, proceeding with release creation."
+            echo "skip_release=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 创建 GitHub 发行版
+        if: steps.check-version.outputs.skip_release != 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.extract-version.outputs.version }}"
+          echo "Creating GitHub Release for version $VERSION..."
+          # Create release
+          RELEASE_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases" \
+            -d "{\"tag_name\":\"$VERSION\",\"name\":\"$VERSION\",\"body\":\"Release for version $VERSION\",\"draft\":false,\"prerelease\":false}")
+          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            echo "Error: Failed to create release for $VERSION"
+            exit 1
+          fi
+          echo "Release created with ID: $RELEASE_ID"
+          # Upload _worker.js
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/javascript" \
+            --data-binary "@_worker.js" \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js"
+          # Upload _worker.js.backup
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/javascript" \
+            --data-binary "@_worker.js.backup" \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js.backup"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
