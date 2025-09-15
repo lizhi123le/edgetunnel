@@ -5,11 +5,14 @@ on:
     branches:
       - main
   workflow_dispatch:
+  schedule:
+    - cron: '0 */8 * * *'  # 每隔8小时运行一次
 
 jobs:
   obfuscate-and-release:
     if: |
       github.event_name == 'workflow_dispatch' || 
+      github.event_name == 'schedule' ||
       github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -21,6 +24,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: true
+
+      - name: 同步源仓库 _worker.js 文件
+        run: |
+          set -euo pipefail
+          BACKUP_FILE="_worker.js.backup"
+          echo "Downloading _worker.js from cmliu/edgetunnel..."
+          curl -s -L -o "$BACKUP_FILE" "https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js"
+          if [ ! -f "$BACKUP_FILE" ] || [ ! -s "$BACKUP_FILE" ]; then
+            echo "Error: Failed to download or empty file for $BACKUP_FILE"
+            exit 1
+          fi
+          echo "Successfully downloaded and overwritten $BACKUP_FILE (size: $(wc -c < "$BACKUP_FILE") bytes)"
+          ls -la "$BACKUP_FILE"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -79,23 +95,24 @@ jobs:
           WORKER_FILE="_worker.js"
           BACKUP_FILE="_worker.js.backup"
           TEMP_FILE="_worker_temp.js"
-          # Check if _worker.js exists
+          # Check if _worker.js exists (for initial backup if needed)
           if [ ! -f "$WORKER_FILE" ]; then
             echo "Error: $WORKER_FILE does not exist in $(pwd)"
             find . -name "_worker.js" || echo "No _worker.js found in any directory"
             exit 1
           fi
-          # Create backup only if it doesn't exist
+          # Since sync step always overwrites backup, no need to create if not exists
+          # But for first run (if backup was missing before sync), it should now exist
           if [ ! -f "$BACKUP_FILE" ]; then
-            echo "Creating backup: $BACKUP_FILE"
+            echo "Warning: $BACKUP_FILE not found after sync, creating initial from $WORKER_FILE"
             cp "$WORKER_FILE" "$BACKUP_FILE" || {
-              echo "Error: Failed to create $BACKUP_FILE"
+              echo "Error: Failed to create initial $BACKUP_FILE"
               exit 1
             }
           else
-            echo "Backup file $BACKUP_FILE already exists, skipping backup creation."
+            echo "Backup file $BACKUP_FILE exists (synced), proceeding."
           fi
-          # Create _worker_temp.js from _worker.js.backup
+          # Always create _worker_temp.js from _worker.js.backup
           echo "Creating $TEMP_FILE from $BACKUP_FILE..."
           cp "$BACKUP_FILE" "$TEMP_FILE" || {
             echo "Error: Failed to create $TEMP_FILE from $BACKUP_FILE"
@@ -130,15 +147,11 @@ jobs:
           set -euo pipefail
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add _worker.js
-          # Only add _worker.js.backup if it was newly created
-          if [ -f "_worker.js.backup" ] && ! git ls-files --error-unmatch _worker.js.backup >/dev/null 2>&1; then
-            git add _worker.js.backup
-          fi
+          git add _worker.js _worker.js.backup
           if git diff --cached --quiet; then
             echo "没有文件更改，跳过提交"
           else
-            git commit -m "混淆 _worker.js 文件并备份原文件（仅首次），版本: ${{ steps.extract-version.outputs.version }}"
+            git commit -m "混淆 _worker.js 文件并同步备份（从 cmliu/edgetunnel），版本: ${{ steps.extract-version.outputs.version }}"
           fi
 
       - name: 推送更改
@@ -214,4 +227,3 @@ jobs:
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js.backup"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
