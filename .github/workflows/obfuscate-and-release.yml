@@ -10,10 +10,6 @@ on:
 
 jobs:
   obfuscate-and-release:
-    if: |
-      github.event_name == 'workflow_dispatch' || 
-      github.event_name == 'schedule' ||
-      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -25,7 +21,7 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: 检查上游仓库更新
+      - name: 检查上游仓库更新并同步 _worker.js.backup
         id: check-update
         run: |
           set -euo pipefail
@@ -65,44 +61,63 @@ jobs:
             OLD_TOML_HASH=$(cat "$TOML_HASH_FILE")
           fi
           
-          # 比较哈希值以确定是否有更新
-          if [ "$NEW_WORKER_HASH" != "$OLD_WORKER_HASH" ] || [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
-            echo "上游仓库有更新，执行后续步骤"
-            echo "has_update=true" >> $GITHUB_OUTPUT
-            # 保存新哈希值
-            echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
-            echo "$NEW_TOML_HASH" > "$TOML_HASH_FILE"
-            # 同步 _worker.js 到 _worker.js.backup
+          # 检查 _worker.js.backup 是否存在，若不存在则创建
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "Creating initial $BACKUP_FILE from upstream _worker.js"
             mv temp_worker.js "$BACKUP_FILE"
-            # 同步 wrangler.toml
-            mv temp_toml.toml "$TOML_FILE"
-            # 如果 _worker.js 不存在，创建初始版本
-            if [ ! -f "$WORKER_FILE" ]; then
-              echo "Creating initial $WORKER_FILE from $BACKUP_FILE"
-              cp "$BACKUP_FILE" "$WORKER_FILE"
-            fi
+            echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
+            echo "has_update=true" >> $GITHUB_OUTPUT
           else
-            echo "上游仓库无更新，跳过后续步骤"
+            # 仅在 _worker.js 有更新时覆盖 _worker.js.backup
+            if [ "$NEW_WORKER_HASH" != "$OLD_WORKER_HASH" ]; then
+              echo "Upstream _worker.js updated, overwriting $BACKUP_FILE"
+              mv temp_worker.js "$BACKUP_FILE"
+              echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
+              echo "has_update=true" >> $GITHUB_OUTPUT
+            else
+              echo "No update for _worker.js, keeping existing $BACKUP_FILE"
+              rm -f temp_worker.js
+            fi
+          fi
+          
+          # 检查是否需要更新 wrangler.toml
+          if [ ! -f "$TOML_FILE" ] || [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
+            echo "Upstream wrangler.toml updated or not present, overwriting $TOML_FILE"
+            mv temp_toml.toml "$TOML_FILE"
+            echo "$NEW_TOML_HASH" > "$TOML_HASH_FILE"
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "No update for wrangler.toml, keeping existing $TOML_FILE"
+            rm -f temp_toml.toml
+          fi
+          
+          # 如果 _worker.js 不存在，创建初始版本
+          if [ ! -f "$WORKER_FILE" ] && [ -f "$BACKUP_FILE" ]; then
+            echo "Creating initial $WORKER_FILE from $BACKUP_FILE"
+            cp "$BACKUP_FILE" "$WORKER_FILE"
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          fi
+          
+          # 如果 has_update 未设置，设为 false
+          if [ -z "${{ steps.check-update.outputs.has_update }}" ]; then
             echo "has_update=false" >> $GITHUB_OUTPUT
-            # 清理临时文件
-            rm -f temp_worker.js temp_toml.toml
           fi
 
       - name: Set up Node.js
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 'latest'
 
       - name: Install dependencies
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         run: |
           npm install
           sudo apt-get update
           sudo apt-get install -y jq zip
 
       - name: Install Source Dependencies
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
           set -euo pipefail
@@ -117,7 +132,7 @@ jobs:
           fi
 
       - name: Install Repository Dependencies
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -132,7 +147,7 @@ jobs:
           fi
 
       - name: 检查备份文件并创建 _worker_temp.js
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         run: |
           set -euo pipefail
           WORKER_FILE="_worker.js"
@@ -160,7 +175,7 @@ jobs:
           ls -la
 
       - name: 混淆代码
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         run: |
           set -euo pipefail
           echo "Current directory before build: $(pwd)"
@@ -174,7 +189,7 @@ jobs:
           echo "_worker.js created successfully at $(pwd)/_worker.js"
 
       - name: 压缩 _worker.js 为 worker.zip
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         run: |
           set -euo pipefail
           zip worker.zip _worker.js
@@ -186,7 +201,7 @@ jobs:
           ls -la
 
       - name: 提交更改
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         run: |
           set -euo pipefail
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -199,14 +214,14 @@ jobs:
           fi
 
       - name: 推送更改
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
 
       - name: 提取版本号
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         id: extract-version
         run: |
           set -euo pipefail
@@ -223,7 +238,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: 检查已发布版本
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true'
         id: check-version
         run: |
           set -euo pipefail
@@ -239,9 +254,7 @@ jobs:
           fi
 
       - name: 创建 GitHub 发行版
-        if: |
-          (steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch') &&
-          steps.check-version.outputs.skip_release != 'true'
+        if: steps.check-update.outputs.has_update == 'true' && steps.check-version.outputs.skip_release != 'true'
         run: |
           set -euo pipefail
           VERSION="${{ steps.extract-version.outputs.version }}"
