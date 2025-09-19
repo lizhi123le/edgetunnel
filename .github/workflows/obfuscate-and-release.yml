@@ -301,7 +301,7 @@ jobs:
           # 创建发行版的 JSON Payload，修复 jq 语法
           RELEASE_PAYLOAD=$(jq -n \
             --arg version "$VERSION" \
-            '{tag_name: $version, name: $version, body: ("Formal release for version " + $version), draft: false, prerelease: false}')
+            '{tag_name: $version, name: $version, body: ("Release for version " + $version), draft: false, prerelease: false}')
           echo "Release payload: $RELEASE_PAYLOAD"
 
           # 创建发行版并保存响应
@@ -363,3 +363,4 @@ jobs:
           echo "Assets uploaded successfully for formal release $VERSION"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
