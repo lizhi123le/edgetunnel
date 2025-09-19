@@ -254,7 +254,7 @@ jobs:
           fi
 
       - name: 创建 GitHub 发行版
-        if: steps.check-update.outputs.has_update == 'true' && steps.check-version.outputs.skip_release != 'true'
+        if: steps.check-update.outputs.has_update == 'true' && steps.check-version.outputs.skip_release != 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           VERSION="${{ steps.extract-version.outputs.version }}"
@@ -286,3 +286,4 @@ jobs:
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js.backup"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
