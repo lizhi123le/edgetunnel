@@ -258,6 +258,31 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.extract-version.outputs.version }}"
+          echo "Checking if release or tag $VERSION exists..."
+          
+          # 检查是否已存在同名发行版
+          RELEASE_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -r '.id // ""')
+          
+          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+            echo "Release $VERSION exists with ID $RELEASE_ID, deleting it..."
+            curl -s -X DELETE \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
+          fi
+          
+          # 检查并删除同名标签（如果存在）
+          TAG_EXISTS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" | jq -e '.ref' >/dev/null && echo "true" || echo "false")
+          if [ "$TAG_EXISTS" = "true" ]; then
+            echo "Tag $VERSION exists, deleting it..."
+            curl -s -X DELETE \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION"
+          fi
+          
           echo "Creating GitHub Release for version $VERSION..."
           RELEASE_RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -270,6 +295,7 @@ jobs:
             exit 1
           fi
           echo "Release created with ID: $RELEASE_ID"
+          
           # 上传 worker.zip
           curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -277,6 +303,7 @@ jobs:
             -H "Content-Type: application/zip" \
             --data-binary "@worker.zip" \
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=worker.zip"
+          
           # 上传 _worker.js.backup
           curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
