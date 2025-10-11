@@ -32,6 +32,8 @@ const obfuscationOptions = {
   stringArrayEncoding: ['base64', 'rc4'],
   stringArrayThreshold: 0.8,
   transformObjectKeys: true,
+  rotateStringArray: true,
+  shuffleStringArray: true,
   splitStrings: true,
   splitStringsChunkLength: 3,
   identifierNamesGenerator: 'mangled',
@@ -42,6 +44,7 @@ const obfuscationOptions = {
   target: 'browser-no-eval',
   numbersToExpressions: true,
   simplify: true,
+  ignoreRequireImports: true,
   domainLock: [],
   sourceMap: false,
   sourceMapMode: 'separate'
@@ -58,6 +61,7 @@ try {
   process.exit(1);
 
 }
+
 
 
 
