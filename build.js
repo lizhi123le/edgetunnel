@@ -23,22 +23,22 @@ try {
 
 // 混淆配置（国家级安全级别）
 const obfuscationOptions = {
-                compact: true,
-                controlFlowFlattening: true,
-                controlFlowFlatteningThreshold: 0.75,
-                deadCodeInjection: true,
-                deadCodeInjectionThreshold: 0.4,
-                stringArray: true,
-                stringArrayEncoding: ['base64'],
-                stringArrayThreshold: 0.75,
-                renameGlobals: true,
-                identifierNamesGenerator: 'mangled',
-                numbersToExpressions: true,
-                splitStrings: true,
-                splitStringsChunkLength: 10,
-                transformObjectKeys: true,
-                selfDefending: false,
-                debugProtection: false
+  compact: true,
+  controlFlowFlattening: true,
+  controlFlowFlatteningThreshold: 0.75,
+  deadCodeInjection: true,
+  deadCodeInjectionThreshold: 0.4,
+  stringArray: true,
+  stringArrayEncoding: ['base64'],
+  stringArrayThreshold: 0.75,
+  renameGlobals: true,
+  identifierNamesGenerator: 'mangled',
+  numbersToExpressions: true,
+  splitStrings: true,
+  splitStringsChunkLength: 10,
+  transformObjectKeys: true,
+  selfDefending: false,
+  debugProtection: false
 };
 
 // 执行混淆
@@ -52,6 +52,7 @@ try {
   process.exit(1);
 
 }
+
 
 
 
