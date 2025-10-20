@@ -363,4 +363,3 @@ jobs:
           echo "Assets uploaded successfully for formal release $VERSION"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
