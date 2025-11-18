@@ -107,7 +107,31 @@ jobs:
 
       - name: 检查备份文件并创建 _worker_temp.js
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        run: # ... 原脚本不变 ...
+        run: |
+          set -euo pipefail
+          WORKER_FILE="_worker.js"
+          BACKUP_FILE="_worker.js.backup"
+          TEMP_FILE="_worker_temp.js"
+          
+          # 确保 _worker.js.backup 存在
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "Error: $BACKUP_FILE does not exist in $(pwd)"
+            exit 1
+          fi
+          
+          # 创建 _worker_temp.js 从 _worker.js.backup
+          cp "$BACKUP_FILE" "$TEMP_FILE" || {
+            echo "Error: Failed to create $TEMP_FILE from $BACKUP_FILE"
+            exit 1
+          }
+          
+          if [ ! -f "$TEMP_FILE" ]; then
+            echo "Error: $TEMP_FILE not found in $(pwd)"
+            exit 1
+          fi
+          
+          echo "$TEMP_FILE created successfully from $BACKUP_FILE at $(pwd)/$TEMP_FILE"
+          ls -la
 
       - name: 混淆代码
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -187,3 +211,4 @@ jobs:
           done
 
           echo "Release $VERSION 创建并上传资产成功"
+
