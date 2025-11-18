@@ -176,7 +176,7 @@ jobs:
 
       # 创建 Release（只在有更新时自动创建，手动触发也创建）
       - name: 创建或覆盖 GitHub Release
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true' && steps.check-version.outputs.skip_release != 'true' || github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -211,4 +211,5 @@ jobs:
           done
 
           echo "Release $VERSION 创建并上传资产成功"
+
 
