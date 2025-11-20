@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - beta2.0
+      - main
   workflow_dispatch:
   schedule:
     - cron: '0 */9 * * *'  # 每9小时检查一次（避开整点高峰）
@@ -253,3 +254,4 @@ jobs:
             exit 1
           }
           echo "Assets uploaded successfully for formal release $VERSION"
+
