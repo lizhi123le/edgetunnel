@@ -19,6 +19,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: beta2.0 
           fetch-depth: 0     # 重要：完整历史，用于 tag/release
           persist-credentials: false  # 我们稍后用 PAT 手动配置
 
@@ -112,21 +113,42 @@ jobs:
           # 使用 PAT 替换默认 token（关键！）
           git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
 
-      - name: 提交并推送到 beta2.0 分支
+      - name: 强制推送到 beta2.0 分支（彻底解决 refspec 问题）
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 关键：换成 PAT 推送（绕过 GITHUB_TOKEN 保护分支限制）
+          git remote set-url origin https://x-access-token:$PAT_TOKEN@github.com/${{ github.repository }}.git
+
+          # 强制拉取最新状态（防止冲突也能处理）
+          git fetch --all --prune
+
+          # 关键一步：不管当前在哪个分支，直接切到远程的 beta2.0
+          git checkout beta2.0
+          git reset --hard origin/beta2.0 || echo "首次创建也无所谓"
+
+          # 重新添加本次变更
           git add _worker.js _worker.js.backup wrangler.toml .worker_hash .toml_hash worker.zip
 
+          # 如果没变化就直接跳过
           if git diff --cached --quiet; then
-            echo "无文件变更，跳过提交"
+            echo "没有文件变更，跳过 commit"
             exit 0
           fi
 
-          VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          git commit -m "Auto update: obfuscated + backup + wrangler.toml (v$VERSION)"
+          VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -r 's/.*"([^"]+)".*/\1/')
+          git commit -m "Auto update: obfuscated + backup + wrangler.toml (v$VERSION)" 
 
-          git push origin beta2.0
-          echo "成功推送到 beta2.0 分支"
+          # 真正万无一失的推送方式
+          git push origin beta2.0 --force-with-lease
+
+          echo "已成功强制推送到 beta2.0 分支"
 
       - name: 提取版本号
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -155,4 +177,5 @@ jobs:
             --prerelease=false
 
           echo "Release v$VERSION created successfully!"
+
 
