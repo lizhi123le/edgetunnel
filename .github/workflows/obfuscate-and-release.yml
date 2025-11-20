@@ -13,13 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write      # 允许读写仓库内容
-      releases: write      # 明确添加 release 权限（推荐）
 
     steps:
       # Step 1: 检出代码（保留凭证用于后续 push）
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: beta2.0 
           fetch-depth: 0     # 重要：完整历史，用于 tag/release
           persist-credentials: false  # 我们稍后用 PAT 手动配置
 
@@ -113,21 +113,42 @@ jobs:
           # 使用 PAT 替换默认 token（关键！）
           git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
 
-      - name: 提交并推送到 beta2.0 分支
+      - name: 强制推送到 beta2.0 分支（彻底解决 refspec 问题）
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 关键：换成 PAT 推送（绕过 GITHUB_TOKEN 保护分支限制）
+          git remote set-url origin https://x-access-token:$PAT_TOKEN@github.com/${{ github.repository }}.git
+
+          # 强制拉取最新状态（防止冲突也能处理）
+          git fetch --all --prune
+
+          # 关键一步：不管当前在哪个分支，直接切到远程的 beta2.0
+          git checkout beta2.0
+          git reset --hard origin/beta2.0 || echo "首次创建也无所谓"
+
+          # 重新添加本次变更
           git add _worker.js _worker.js.backup wrangler.toml .worker_hash .toml_hash worker.zip
 
+          # 如果没变化就直接跳过
           if git diff --cached --quiet; then
-            echo "无文件变更，跳过提交"
+            echo "没有文件变更，跳过 commit"
             exit 0
           fi
 
-          VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          git commit -m "Auto update: obfuscated + backup + wrangler.toml (v$VERSION)"
+          VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -r 's/.*"([^"]+)".*/\1/')
+          git commit -m "Auto update: obfuscated + backup + wrangler.toml (v$VERSION)" 
 
-          git push origin beta2.0
-          echo "成功推送到 beta2.0 分支"
+          # 真正万无一失的推送方式
+          git push origin beta2.0 --force-with-lease
+
+          echo "已成功强制推送到 beta2.0 分支"
 
       - name: 提取版本号
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -136,23 +157,99 @@ jobs:
           VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -E 's/.*"([^"]+)".*/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: 创建或覆盖 GitHub Release（使用 gh 命令更简洁可靠）
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+      # 创建 Release（只在有更新时自动创建，手动触发也创建）
+      - name: 创建或覆盖 GitHub Release
+        if: steps.check-update.outputs.has_update == 'true' && steps.check-version.outputs.skip_release != 'true' || github.event_name == 'workflow_dispatch'
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}   # 使用 PAT 创建 release 更保险
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           VERSION="${{ steps.extract-version.outputs.version }}"
-
-          # 删除旧 tag 和 release（如果存在）
-          gh release delete "$VERSION" --yes || true
-          git push origin ":refs/tags/$VERSION" || true
-
-          # 创建新 release 并上传资产
-          gh release create "$VERSION" \
-            worker.zip \
-            _worker.js.backup \
-            --title "v$VERSION" \
-            --notes "Auto-generated obfuscated release v$VERSION" \
-            --prerelease=false
-
-          echo "Release v$VERSION created successfully!"
+          echo "Checking for existing release or tag for version $VERSION..."
+          # 检查是否已存在同名发行版
+          RELEASE_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -r '.id // ""')
+          
+          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+            echo "Release $VERSION exists with ID $RELEASE_ID, deleting it..."
+            curl -s -X DELETE \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID" || {
+              echo "Error: Failed to delete existing release $VERSION"
+              exit 1
+            }
+          fi
+          # 检查并删除同名标签（如果存在）
+          TAG_EXISTS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" | jq -e '.ref' >/dev/null && echo "true" || echo "false")
+          if [ "$TAG_EXISTS" = "true" ]; then
+            echo "Tag $VERSION exists, deleting it..."
+            curl -s -X DELETE \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" || {
+              echo "Error: Failed to delete existing tag $VERSION"
+              exit 1
+            }
+          fi
+          echo "Creating formal GitHub Release for version $VERSION..."
+          # 创建发行版的 JSON Payload，修复 jq 语法
+          RELEASE_PAYLOAD=$(jq -n \
+            --arg version "$VERSION" \
+            '{tag_name: $version, name: $version, body: ("Release for version " + $version), draft: false, prerelease: false}')
+          echo "Release payload: $RELEASE_PAYLOAD"
+          # 创建发行版并保存响应
+          RELEASE_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data "$RELEASE_PAYLOAD" \
+            "https://api.github.com/repos/${{ github.repository }}/releases")
+          
+          # 调试：输出完整的响应
+          echo "Release API response: $RELEASE_RESPONSE"
+          # 提取发行版 ID
+          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            echo "Error: Failed to create release for $VERSION"
+            exit 1
+          fi
+          # 验证发行版是否为正式版
+          IS_DRAFT=$(echo "$RELEASE_RESPONSE" | jq -r '.draft')
+          IS_PRERELEASE=$(echo "$RELEASE_RESPONSE" | jq -r '.prerelease')
+          if [ "$IS_DRAFT" = "true" ] || [ "$IS_PRERELEASE" = "true" ]; then
+            echo "Error: Release $VERSION created as draft ($IS_DRAFT) or prerelease ($IS_PRERELEASE), expected formal release"
+            exit 1
+          fi
+          echo "Formal release created with ID: $RELEASE_ID"
+          # 检查文件是否存在
+          for file in worker.zip _worker.js.backup; do
+            if [ ! -f "$file" ]; then
+              echo "Error: $file not found for upload"
+              exit 1
+            fi
+          done
+          # 上传 worker.zip
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/zip" \
+            --data-binary "@worker.zip" \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=worker.zip" || {
+            echo "Error: Failed to upload worker.zip"
+            exit 1
+          }
+          # 上传 _worker.js.backup
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/javascript" \
+            --data-binary "@_worker.js.backup" \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js.backup" || {
+            echo "Error: Failed to upload _worker.js.backup"
+            exit 1
+          }
+          echo "Assets uploaded successfully for formal release $VERSION"
