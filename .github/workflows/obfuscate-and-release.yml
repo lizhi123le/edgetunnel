@@ -27,19 +27,25 @@ jobs:
         id: check-update
         run: |
           set -euo pipefail
+
           WORKER_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js"
           TOML_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/wrangler.toml"
           BACKUP_FILE="_worker.js.backup"
           TOML_FILE="wrangler.toml"
           WORKER_HASH_FILE=".worker_hash"
           TOML_HASH_FILE=".toml_hash"
+
           curl -fsSL -o temp_worker.js "$WORKER_URL"
           curl -fsSL -o temp_toml.toml "$TOML_URL"
+
           NEW_WORKER_HASH=$(sha256sum temp_worker.js | cut -d' ' -f1)
           NEW_TOML_HASH=$(sha256sum temp_toml.toml | cut -d' ' -f1)
+
           OLD_WORKER_HASH=$(cat "$WORKER_HASH_FILE" 2>/dev/null || echo "")
           OLD_TOML_HASH=$(cat "$TOML_HASH_FILE" 2>/dev/null || echo "")
+
           HAS_UPDATE="false"
+
           # 处理 _worker.js.backup
           if [ "$NEW_WORKER_HASH" != "$OLD_WORKER_HASH" ]; then
             echo "上游 _worker.js 已更新"
@@ -49,6 +55,7 @@ jobs:
           else
             rm -f temp_worker.js
           fi
+
           # 处理 wrangler.toml
           if [ ! -f "$TOML_FILE" ] || [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
             echo "wrangler.toml 需要更新或初次创建"
@@ -58,14 +65,17 @@ jobs:
           else
             rm -f temp_toml.toml
           fi
+
           # 首次运行也算更新（备份文件不存在时）
           if [ ! -f "$BACKUP_FILE" ]; then
             mv -f temp_worker.js "$BACKUP_FILE"
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
             HAS_UPDATE="true"
           fi
+
           echo "has_update=$HAS_UPDATE" >> $GITHUB_OUTPUT
           echo "Upstream check completed. has_update=$HAS_UPDATE"
+
       # Step 3: 只有在真正有更新 或 手动触发 时才继续
       - name: 执行后续构建（仅在必要时）
         if: |
@@ -77,6 +87,7 @@ jobs:
             (steps.check-update.outputs.has_update == 'true' && '上游文件有更新') || 
             '手动触发 (workflow_dispatch)' 
           }}"
+
       # 下面所有步骤都加上同一个 if 条件（关键！）
       - name: Set up Node.js
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -90,8 +101,6 @@ jobs:
           npm install
           sudo apt-get update -qq
           sudo apt-get install -y jq zip
-      # ... 中间所有步骤保持不变，只需要保留这个 if 条件 ...
-      # （为了篇幅这里省略，实际复制时全部加上下面这行 if）
 
       - name: 检查备份文件并创建 _worker_temp.js
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -120,27 +129,33 @@ jobs:
           
           echo "$TEMP_FILE created successfully from $BACKUP_FILE at $(pwd)/$TEMP_FILE"
           ls -la
+
       - name: 混淆代码
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           npm run build -- --input _worker_temp.js --output _worker.js
+
       - name: 压缩为 worker.zip
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           zip worker.zip _worker.js
+
       - name: 提交并推送更改
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
+
           git add _worker.js _worker.js.backup wrangler.toml .worker_hash .toml_hash worker.zip || true
           
           if git diff --cached --quiet; then
             echo "没有文件变更，跳过提交"
             exit 0
           fi
+
           VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -E 's/.*"([^"]+)".*/\1/')
           git commit -m "自动更新：混淆版 + 备份 + wrangler.toml（版本 $VERSION）"
+
       - name: Push changes
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         uses: ad-m/github-push-action@master
@@ -155,6 +170,7 @@ jobs:
         run: |
           VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -E 's/.*"([^"]+)".*/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       # 创建 Release（只在有更新时自动创建，手动触发也创建）
       - name: 创建或覆盖 GitHub Release
         if: steps.check-update.outputs.has_update == 'true' && steps.check-version.outputs.skip_release != 'true' || github.event_name == 'workflow_dispatch'
