@@ -4,25 +4,26 @@ on:
   push:
     branches:
       - beta2.0
-  workflow_dispatch:    # 手动触发时强制执行全部流程
+  workflow_dispatch:
   schedule:
-    - cron: '0 */9 * * *'  # 每8小时检查一次
+    - cron: '0 */9 * * *'  # 每9小时检查一次（避开整点高峰）
 
 jobs:
   obfuscate-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      actions: write
+      contents: write      # 允许读写仓库内容
+      releases: write      # 明确添加 release 权限（推荐）
 
     steps:
-      # Step 1: 检出代码
-      - name: Check out repository
+      # Step 1: 检出代码（保留凭证用于后续 push）
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          persist-credentials: true
+          fetch-depth: 0     # 重要：完整历史，用于 tag/release
+          persist-credentials: false  # 我们稍后用 PAT 手动配置
 
-      # Step 2: 检查上游更新（核心判断点）
+      # Step 2: 检查上游更新
       - name: 检查上游仓库更新并同步备份文件
         id: check-update
         run: |
@@ -38,100 +39,61 @@ jobs:
           curl -fsSL -o temp_worker.js "$WORKER_URL"
           curl -fsSL -o temp_toml.toml "$TOML_URL"
 
-          NEW_WORKER_HASH=$(sha256sum temp_worker.js | cut -d' ' -f1)
-          NEW_TOML_HASH=$(sha256sum temp_toml.toml | cut -d' ' -f1)
+          NEW_WORKER_HASH=$(sha256sum temp_worker.js | awk '{print $1}')
+          NEW_TOML_HASH=$(sha256sum temp_toml.toml | awk '{print $1}')
 
           OLD_WORKER_HASH=$(cat "$WORKER_HASH_FILE" 2>/dev/null || echo "")
           OLD_TOML_HASH=$(cat "$TOML_HASH_FILE" 2>/dev/null || echo "")
 
           HAS_UPDATE="false"
 
-          # 处理 _worker.js.backup
           if [ "$NEW_WORKER_HASH" != "$OLD_WORKER_HASH" ]; then
             echo "上游 _worker.js 已更新"
-            mv -f temp_worker.js "$BACKUP_FILE"
+            mv temp_worker.js "$BACKUP_FILE"
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
             HAS_UPDATE="true"
           else
             rm -f temp_worker.js
           fi
 
-          # 处理 wrangler.toml
           if [ ! -f "$TOML_FILE" ] || [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
             echo "wrangler.toml 需要更新或初次创建"
-            mv -f temp_toml.toml "$TOML_FILE"
+            mv temp_toml.toml "$TOML_FILE"
             echo "$NEW_TOML_HASH" > "$TOML_HASH_FILE"
             HAS_UPDATE="true"
           else
             rm -f temp_toml.toml
           fi
 
-          # 首次运行也算更新（备份文件不存在时）
-          if [ ! -f "$BACKUP_FILE" ]; then
-            mv -f temp_worker.js "$BACKUP_FILE"
-            echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
-            HAS_UPDATE="true"
-          fi
+          # 首次运行强制触发
+          [ ! -f "$BACKUP_FILE" ] && HAS_UPDATE="true"
 
           echo "has_update=$HAS_UPDATE" >> $GITHUB_OUTPUT
           echo "Upstream check completed. has_update=$HAS_UPDATE"
 
-      # Step 3: 只有在真正有更新 或 手动触发 时才继续
-      - name: 执行后续构建（仅在必要时）
-        if: |
-          steps.check-update.outputs.has_update == 'true' || 
-          github.event_name == 'workflow_dispatch'
-        run: |
-          echo "触发条件满足，开始执行混淆、提交、发布流程..."
-          echo "原因: ${{ 
-            (steps.check-update.outputs.has_update == 'true' && '上游文件有更新') || 
-            '手动触发 (workflow_dispatch)' 
-          }}"
+      # 只有在需要时才执行后续步骤
+      - name: 触发后续构建
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        run: echo "开始执行混淆、提交、发布流程..."
 
-      # 下面所有步骤都加上同一个 if 条件（关键！）
       - name: Set up Node.js
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/setup-node@v4
         with:
-          node-version: 'latest'
+          node-version: '20'   # 推荐指定具体版本更稳定
 
       - name: Install dependencies
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          npm install
+          npm ci
           sudo apt-get update -qq
           sudo apt-get install -y jq zip
 
-      # ... 中间所有步骤保持不变，只需要保留这个 if 条件 ...
-      # （为了篇幅这里省略，实际复制时全部加上下面这行 if）
-
-      - name: 检查备份文件并创建 _worker_temp.js
+      - name: 创建 _worker_temp.js（从备份恢复）
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          set -euo pipefail
-          WORKER_FILE="_worker.js"
-          BACKUP_FILE="_worker.js.backup"
-          TEMP_FILE="_worker_temp.js"
-          
-          # 确保 _worker.js.backup 存在
-          if [ ! -f "$BACKUP_FILE" ]; then
-            echo "Error: $BACKUP_FILE does not exist in $(pwd)"
-            exit 1
-          fi
-          
-          # 创建 _worker_temp.js 从 _worker.js.backup
-          cp "$BACKUP_FILE" "$TEMP_FILE" || {
-            echo "Error: Failed to create $TEMP_FILE from $BACKUP_FILE"
-            exit 1
-          }
-          
-          if [ ! -f "$TEMP_FILE" ]; then
-            echo "Error: $TEMP_FILE not found in $(pwd)"
-            exit 1
-          fi
-          
-          echo "$TEMP_FILE created successfully from $BACKUP_FILE at $(pwd)/$TEMP_FILE"
-          ls -la
+          cp _worker.js.backup _worker_temp.js
+          echo "_worker_temp.js created from backup"
 
       - name: 混淆代码
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -141,32 +103,32 @@ jobs:
       - name: 压缩为 worker.zip
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          zip worker.zip _worker.js
+          zip -j worker.zip _worker.js
 
-      - name: 提交并推送更改
+      - name: 配置 Git（使用 PAT 推送）
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 使用 PAT 替换默认 token（关键！）
+          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
 
-          git add _worker.js _worker.js.backup wrangler.toml .worker_hash .toml_hash worker.zip || true
-          
+      - name: 提交并推送到 beta2.0 分支
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          git add _worker.js _worker.js.backup wrangler.toml .worker_hash .toml_hash worker.zip
+
           if git diff --cached --quiet; then
-            echo "没有文件变更，跳过提交"
+            echo "无文件变更，跳过提交"
             exit 0
           fi
 
           VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          git commit -m "自动更新：混淆版 + 备份 + wrangler.toml（版本 $VERSION）"
+          git commit -m "Auto update: obfuscated + backup + wrangler.toml (v$VERSION)"
 
-      - name: Push changes
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: beta2.0
+          git push origin beta2.0
+          echo "成功推送到 beta2.0 分支"
 
-      # 提取版本号和创建 Release 也只在必要时执行
       - name: 提取版本号
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         id: extract-version
@@ -174,102 +136,23 @@ jobs:
           VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -E 's/.*"([^"]+)".*/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      # 创建 Release（只在有更新时自动创建，手动触发也创建）
-      - name: 创建或覆盖 GitHub Release
-        if: steps.check-update.outputs.has_update == 'true' && steps.check-version.outputs.skip_release != 'true' || github.event_name == 'workflow_dispatch'
+      - name: 创建或覆盖 GitHub Release（使用 gh 命令更简洁可靠）
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}   # 使用 PAT 创建 release 更保险
         run: |
-          set -euo pipefail
           VERSION="${{ steps.extract-version.outputs.version }}"
-          echo "Checking for existing release or tag for version $VERSION..."
-          # 检查是否已存在同名发行版
-          RELEASE_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -r '.id // ""')
-          
-          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-            echo "Release $VERSION exists with ID $RELEASE_ID, deleting it..."
-            curl -s -X DELETE \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID" || {
-              echo "Error: Failed to delete existing release $VERSION"
-              exit 1
-            }
-          fi
-          # 检查并删除同名标签（如果存在）
-          TAG_EXISTS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" | jq -e '.ref' >/dev/null && echo "true" || echo "false")
-          if [ "$TAG_EXISTS" = "true" ]; then
-            echo "Tag $VERSION exists, deleting it..."
-            curl -s -X DELETE \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" || {
-              echo "Error: Failed to delete existing tag $VERSION"
-              exit 1
-            }
-          fi
-          echo "Creating formal GitHub Release for version $VERSION..."
-          # 创建发行版的 JSON Payload，修复 jq 语法
-          RELEASE_PAYLOAD=$(jq -n \
-            --arg version "$VERSION" \
-            '{tag_name: $version, name: $version, body: ("Release for version " + $version), draft: false, prerelease: false}')
-          echo "Release payload: $RELEASE_PAYLOAD"
-          # 创建发行版并保存响应
-          RELEASE_RESPONSE=$(curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data "$RELEASE_PAYLOAD" \
-            "https://api.github.com/repos/${{ github.repository }}/releases")
-          
-          # 调试：输出完整的响应
-          echo "Release API response: $RELEASE_RESPONSE"
-          # 提取发行版 ID
-          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
-          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
-            echo "Error: Failed to create release for $VERSION"
-            exit 1
-          fi
-          # 验证发行版是否为正式版
-          IS_DRAFT=$(echo "$RELEASE_RESPONSE" | jq -r '.draft')
-          IS_PRERELEASE=$(echo "$RELEASE_RESPONSE" | jq -r '.prerelease')
-          if [ "$IS_DRAFT" = "true" ] || [ "$IS_PRERELEASE" = "true" ]; then
-            echo "Error: Release $VERSION created as draft ($IS_DRAFT) or prerelease ($IS_PRERELEASE), expected formal release"
-            exit 1
-          fi
-          echo "Formal release created with ID: $RELEASE_ID"
-          # 检查文件是否存在
-          for file in worker.zip _worker.js.backup; do
-            if [ ! -f "$file" ]; then
-              echo "Error: $file not found for upload"
-              exit 1
-            fi
-          done
-          # 上传 worker.zip
-          curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/zip" \
-            --data-binary "@worker.zip" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=worker.zip" || {
-            echo "Error: Failed to upload worker.zip"
-            exit 1
-          }
-          # 上传 _worker.js.backup
-          curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/javascript" \
-            --data-binary "@_worker.js.backup" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js.backup" || {
-            echo "Error: Failed to upload _worker.js.backup"
-            exit 1
-          }
-          echo "Assets uploaded successfully for formal release $VERSION"
 
+          # 删除旧 tag 和 release（如果存在）
+          gh release delete "$VERSION" --yes || true
+          git push origin ":refs/tags/$VERSION" || true
 
+          # 创建新 release 并上传资产
+          gh release create "$VERSION" \
+            worker.zip \
+            _worker.js.backup \
+            --title "v$VERSION" \
+            --notes "Auto-generated obfuscated release v$VERSION" \
+            --prerelease=false
 
+          echo "Release v$VERSION created successfully!"
