@@ -3,7 +3,7 @@ name: 混淆并创建 GitHub 发行版
 on:
   push:
     branches:
-      - main
+      - beta2.0
   workflow_dispatch:    # 手动触发时强制执行全部流程
   schedule:
     - cron: '0 */9 * * *'  # 每8小时检查一次
@@ -28,8 +28,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          WORKER_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js"
-          TOML_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/wrangler.toml"
+          WORKER_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/blob/beta2.0/_worker.js"
+          TOML_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/blob/beta2.0/wrangler.toml"
           BACKUP_FILE="_worker.js.backup"
           TOML_FILE="wrangler.toml"
           WORKER_HASH_FILE=".worker_hash"
@@ -164,7 +164,7 @@ jobs:
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main
+          branch: beta2.0
 
       # 提取版本号和创建 Release 也只在必要时执行
       - name: 提取版本号
@@ -270,4 +270,5 @@ jobs:
             exit 1
           }
           echo "Assets uploaded successfully for formal release $VERSION"
+
 
