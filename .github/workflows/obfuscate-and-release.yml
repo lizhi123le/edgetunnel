@@ -6,7 +6,7 @@ on:
       - beta2.0
   workflow_dispatch:    # 手动触发时强制执行全部流程
   schedule:
-    - cron: '0 */9 * * *'  # 每8小时检查一次
+    - cron: '0 */7 * * *'  # 每8小时检查一次
 
 jobs:
   obfuscate-and-release:
@@ -267,3 +267,4 @@ jobs:
             exit 1
           }
           echo "Assets uploaded successfully for formal release $VERSION"
+
