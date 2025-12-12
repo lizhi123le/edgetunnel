@@ -20,8 +20,8 @@ jobs:
         with:
           persist-credentials: true
 
-      # ==================== 检查上游更新并计算哈希作为版本号 ====================
-      - name: 检查上游仓库更新并生成版本号（上游 _worker.js 的 SHA256 前12位）
+      # ==================== 检查上游更新 ====================
+      - name: 检查上游仓库更新并同步备份文件
         id: check-update
         run: |
           set -euo pipefail
@@ -37,11 +37,6 @@ jobs:
 
           NEW_WORKER_HASH=$(sha256sum temp_worker.js | cut -d' ' -f1)
           NEW_TOML_HASH=$(sha256sum temp_toml.toml | cut -d' ' -f1)
-
-          # ==== 新增：计算用于 Release 的版本号（上游原始文件哈希前12位）====
-          VERSION_HASH="${NEW_WORKER_HASH:0:12}"
-          echo "version=$VERSION_HASH" >> $GITHUB_OUTPUT
-          echo "上游 _worker.js 的 SHA256 前12位将作为 Release 版本号：$VERSION_HASH"
 
           OLD_WORKER_HASH=$(cat "$WORKER_HASH_FILE" 2>/dev/null || echo "")
           OLD_TOML_HASH=$(cat "$TOML_HASH_FILE" 2>/dev/null || echo "")
@@ -66,6 +61,7 @@ jobs:
             rm -f temp_toml.toml
           fi
 
+          # 首次运行也强制视为更新
           if [ ! -f "$BACKUP_FILE" ]; then
             mv -f temp_worker.js "$BACKUP_FILE"
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
@@ -73,17 +69,28 @@ jobs:
           fi
 
           echo "has_update=$HAS_UPDATE" >> $GITHUB_OUTPUT
-          echo "Upstream check completed. has_update=$HAS_UPDATE"
 
-      # ==================== 仅在有更新或手动触发时继续 ====================
+      # ==================== 计算当前仓库中 _worker.js.backup 的哈希作为版本号 ====================
+      - name: 计算本地 _worker.js.backup 的哈希并设为 Release 版本号
+        id: generate-version
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          BACKUP_FILE="_worker.js.backup"
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "Error: $BACKUP_FILE 不存在"
+            exit 1
+          fi
+          LOCAL_HASH=$(sha256sum "$BACKUP_FILE" | cut -d' ' -f1)
+          VERSION="${LOCAL_HASH:0:12}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "当前仓库 _worker.js.backup 的 SHA256 前12位：$VERSION（将作为 Release 名称）"
+
+      # ==================== 以下步骤仅在需要时执行 ====================
       - name: 执行后续构建（仅在必要时）
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          echo "触发条件满足，开始执行混淆、提交、发布流程..."
-          echo "原因: ${{ 
-            (steps.check-update.outputs.has_update == 'true' && '上游文件有更新') || 
-            '手动触发 (workflow_dispatch)' 
-          }}"
+          echo "开始执行混淆、提交、发布流程..."
 
       - name: Set up Node.js
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -98,18 +105,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y jq zip
 
-      - name: 检查备份文件并创建 _worker_temp.js
+      - name: 创建 _worker_temp.js 用于混淆
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          set -euo pipefail
-          BACKUP_FILE="_worker.js.backup"
-          TEMP_FILE="_worker_temp.js"
-          if [ ! -f "$BACKUP_FILE" ]; then
-            echo "Error: $BACKUP_FILE does not exist"
-            exit 1
-          fi
-          cp "$BACKUP_FILE" "$TEMP_FILE"
-          echo "$TEMP_FILE created successfully"
+          cp _worker.js.backup _worker_temp.js
 
       - name: 混淆代码
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -128,10 +127,10 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git add _worker.js _worker.js.backup wrangler.toml .worker_hash .toml_hash worker.zip || true
           if git diff --cached --quiet; then
-            echo "没有文件变更，跳过提交"
+            echo "无文件变更，跳过提交"
             exit 0
           fi
-          VERSION="${{ steps.check-update.outputs.version }}"
+          VERSION="${{ steps.generate-version.outputs.version }}"
           git commit -m "自动更新：混淆版 + 备份（版本 $VERSION）"
 
       - name: Push changes
@@ -141,43 +140,41 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: main
 
-      # ==================== 创建或覆盖 GitHub Release（版本号 = 哈希前12位） ====================
-      - name: 创建或覆盖 GitHub Release（基于上游文件哈希）
+      # ==================== 创建/覆盖 Release（版本号 = 本地 _worker.js.backup 的哈希前12位） ====================
+      - name: 创建或覆盖 GitHub Release
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.check-update.outputs.version }}"   # 就是哈希前12位
-          echo "准备创建/覆盖 Release，版本号：$VERSION"
+          VERSION="${{ steps.generate-version.outputs.version }}"
 
-          # 删除已存在的同名 Release（如果有）
+          echo "正在创建/覆盖 Release，版本号：$VERSION"
+
+          # 删除可能已存在的同名 Release
           RELEASE_ID=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -r '.id // ""')
-
           if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-            echo "删除已存在的 Release ID $RELEASE_ID"
-            curl -s -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
+            echo "删除旧 Release $RELEASE_ID"
+            curl -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
               "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
           fi
 
-          # 删除同名 tag（如果有）
+          # 删除可能已存在的同名 tag
           if curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" | jq -e .ref >/dev/null 2>&1; then
-            echo "删除已存在的 tag $VERSION"
             curl -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
               "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION"
           fi
 
           # 创建新 Release
-          RELEASE_PAYLOAD=$(jq -n \
-            --arg v "$VERSION" \
-            '{tag_name: $v, name: $v, body: "自动构建版本，基于上游 _worker.js 的 SHA256 前12位", draft: false, prerelease: false}')
+          PAYLOAD=$(jq -n --arg v "$VERSION" \
+            '{tag_name: $v, name: $v, body: "自动构建版本\n基于本地 _worker.js.backup 的 SHA256 前12位", draft: false, prerelease: false}')
 
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
-            --data "$RELEASE_PAYLOAD" \
+            --data "$PAYLOAD" \
             "https://api.github.com/repos/${{ github.repository }}/releases")
 
           RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id')
@@ -187,11 +184,11 @@ jobs:
             exit 1
           fi
 
-          echo "Release 创建成功，ID: $RELEASE_ID"
+          echo "Release 创建成功：$VERSION (ID: $RELEASE_ID)"
 
           # 上传资产
           for asset in worker.zip _worker.js.backup; do
-            echo "上传 $asset ..."
+            echo "正在上传 $asset ..."
             curl -s -X POST \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Content-Type: $(file -b --mime-type $asset)" \
@@ -199,4 +196,4 @@ jobs:
               "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$asset"
           done
 
-          echo "所有资产上传完成，Release $VERSION 已就绪"
+          echo "Release $VERSION 及所有资产上传完成"
