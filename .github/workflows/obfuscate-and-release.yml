@@ -1,12 +1,11 @@
 name: 混淆并创建 GitHub 发行版
-
 on:
   push:
     branches:
       - main
-  workflow_dispatch:    # 手动触发时强制执行全部流程
+  workflow_dispatch:
   schedule:
-    - cron: '0 */9 * * *'  # 每8小时检查一次
+    - cron: '0 */9 * * *'
 
 jobs:
   obfuscate-and-release:
@@ -16,18 +15,16 @@ jobs:
       actions: write
 
     steps:
-      # Step 1: 检出代码
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
-      # Step 2: 检查上游更新（核心判断点）
-      - name: 检查上游仓库更新并同步备份文件
+      # ==================== 检查上游更新并计算哈希作为版本号 ====================
+      - name: 检查上游仓库更新并生成版本号（上游 _worker.js 的 SHA256 前12位）
         id: check-update
         run: |
           set -euo pipefail
-
           WORKER_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js"
           TOML_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/wrangler.toml"
           BACKUP_FILE="_worker.js.backup"
@@ -41,12 +38,16 @@ jobs:
           NEW_WORKER_HASH=$(sha256sum temp_worker.js | cut -d' ' -f1)
           NEW_TOML_HASH=$(sha256sum temp_toml.toml | cut -d' ' -f1)
 
+          # ==== 新增：计算用于 Release 的版本号（上游原始文件哈希前12位）====
+          VERSION_HASH="${NEW_WORKER_HASH:0:12}"
+          echo "version=$VERSION_HASH" >> $GITHUB_OUTPUT
+          echo "上游 _worker.js 的 SHA256 前12位将作为 Release 版本号：$VERSION_HASH"
+
           OLD_WORKER_HASH=$(cat "$WORKER_HASH_FILE" 2>/dev/null || echo "")
           OLD_TOML_HASH=$(cat "$TOML_HASH_FILE" 2>/dev/null || echo "")
 
           HAS_UPDATE="false"
 
-          # 处理 _worker.js.backup
           if [ "$NEW_WORKER_HASH" != "$OLD_WORKER_HASH" ]; then
             echo "上游 _worker.js 已更新"
             mv -f temp_worker.js "$BACKUP_FILE"
@@ -56,7 +57,6 @@ jobs:
             rm -f temp_worker.js
           fi
 
-          # 处理 wrangler.toml
           if [ ! -f "$TOML_FILE" ] || [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
             echo "wrangler.toml 需要更新或初次创建"
             mv -f temp_toml.toml "$TOML_FILE"
@@ -66,7 +66,6 @@ jobs:
             rm -f temp_toml.toml
           fi
 
-          # 首次运行也算更新（备份文件不存在时）
           if [ ! -f "$BACKUP_FILE" ]; then
             mv -f temp_worker.js "$BACKUP_FILE"
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
@@ -76,11 +75,9 @@ jobs:
           echo "has_update=$HAS_UPDATE" >> $GITHUB_OUTPUT
           echo "Upstream check completed. has_update=$HAS_UPDATE"
 
-      # Step 3: 只有在真正有更新 或 手动触发 时才继续
+      # ==================== 仅在有更新或手动触发时继续 ====================
       - name: 执行后续构建（仅在必要时）
-        if: |
-          steps.check-update.outputs.has_update == 'true' || 
-          github.event_name == 'workflow_dispatch'
+        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           echo "触发条件满足，开始执行混淆、提交、发布流程..."
           echo "原因: ${{ 
@@ -88,7 +85,6 @@ jobs:
             '手动触发 (workflow_dispatch)' 
           }}"
 
-      # 下面所有步骤都加上同一个 if 条件（关键！）
       - name: Set up Node.js
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/setup-node@v4
@@ -106,29 +102,14 @@ jobs:
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
-          WORKER_FILE="_worker.js"
           BACKUP_FILE="_worker.js.backup"
           TEMP_FILE="_worker_temp.js"
-          
-          # 确保 _worker.js.backup 存在
           if [ ! -f "$BACKUP_FILE" ]; then
-            echo "Error: $BACKUP_FILE does not exist in $(pwd)"
+            echo "Error: $BACKUP_FILE does not exist"
             exit 1
           fi
-          
-          # 创建 _worker_temp.js 从 _worker.js.backup
-          cp "$BACKUP_FILE" "$TEMP_FILE" || {
-            echo "Error: Failed to create $TEMP_FILE from $BACKUP_FILE"
-            exit 1
-          }
-          
-          if [ ! -f "$TEMP_FILE" ]; then
-            echo "Error: $TEMP_FILE not found in $(pwd)"
-            exit 1
-          fi
-          
-          echo "$TEMP_FILE created successfully from $BACKUP_FILE at $(pwd)/$TEMP_FILE"
-          ls -la
+          cp "$BACKUP_FILE" "$TEMP_FILE"
+          echo "$TEMP_FILE created successfully"
 
       - name: 混淆代码
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -145,16 +126,13 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-
           git add _worker.js _worker.js.backup wrangler.toml .worker_hash .toml_hash worker.zip || true
-          
           if git diff --cached --quiet; then
             echo "没有文件变更，跳过提交"
             exit 0
           fi
-
-          VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          git commit -m "自动更新：混淆版 + 备份 + wrangler.toml（版本 $VERSION）"
+          VERSION="${{ steps.check-update.outputs.version }}"
+          git commit -m "自动更新：混淆版 + 备份（版本 $VERSION）"
 
       - name: Push changes
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -163,107 +141,62 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: main
 
-      # 提取版本号和创建 Release 也只在必要时执行
-      - name: 提取版本号
+      # ==================== 创建或覆盖 GitHub Release（版本号 = 哈希前12位） ====================
+      - name: 创建或覆盖 GitHub Release（基于上游文件哈希）
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        id: extract-version
-        run: |
-          VERSION=$(grep '^name\s*=\s*"' wrangler.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      # 创建 Release（只在有更新时自动创建，手动触发也创建）
-      - name: 创建或覆盖 GitHub Release
-        if: steps.check-update.outputs.has_update == 'true' && steps.check-version.outputs.skip_release != 'true' || github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.extract-version.outputs.version }}"
-          echo "Checking for existing release or tag for version $VERSION..."
-          # 检查是否已存在同名发行版
-          RELEASE_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
+          VERSION="${{ steps.check-update.outputs.version }}"   # 就是哈希前12位
+          echo "准备创建/覆盖 Release，版本号：$VERSION"
+
+          # 删除已存在的同名 Release（如果有）
+          RELEASE_ID=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -r '.id // ""')
-          
+
           if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-            echo "Release $VERSION exists with ID $RELEASE_ID, deleting it..."
-            curl -s -X DELETE \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID" || {
-              echo "Error: Failed to delete existing release $VERSION"
-              exit 1
-            }
+            echo "删除已存在的 Release ID $RELEASE_ID"
+            curl -s -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
           fi
-          # 检查并删除同名标签（如果存在）
-          TAG_EXISTS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" | jq -e '.ref' >/dev/null && echo "true" || echo "false")
-          if [ "$TAG_EXISTS" = "true" ]; then
-            echo "Tag $VERSION exists, deleting it..."
-            curl -s -X DELETE \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" || {
-              echo "Error: Failed to delete existing tag $VERSION"
-              exit 1
-            }
+
+          # 删除同名 tag（如果有）
+          if curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" | jq -e .ref >/dev/null 2>&1; then
+            echo "删除已存在的 tag $VERSION"
+            curl -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION"
           fi
-          echo "Creating formal GitHub Release for version $VERSION..."
-          # 创建发行版的 JSON Payload，修复 jq 语法
+
+          # 创建新 Release
           RELEASE_PAYLOAD=$(jq -n \
-            --arg version "$VERSION" \
-            '{tag_name: $version, name: $version, body: ("Release for version " + $version), draft: false, prerelease: false}')
-          echo "Release payload: $RELEASE_PAYLOAD"
-          # 创建发行版并保存响应
-          RELEASE_RESPONSE=$(curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
+            --arg v "$VERSION" \
+            '{tag_name: $v, name: $v, body: "自动构建版本，基于上游 _worker.js 的 SHA256 前12位", draft: false, prerelease: false}')
+
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
             --data "$RELEASE_PAYLOAD" \
             "https://api.github.com/repos/${{ github.repository }}/releases")
-          
-          # 调试：输出完整的响应
-          echo "Release API response: $RELEASE_RESPONSE"
-          # 提取发行版 ID
-          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+
+          RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id')
           if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
-            echo "Error: Failed to create release for $VERSION"
+            echo "创建 Release 失败"
+            echo "$RESPONSE"
             exit 1
           fi
-          # 验证发行版是否为正式版
-          IS_DRAFT=$(echo "$RELEASE_RESPONSE" | jq -r '.draft')
-          IS_PRERELEASE=$(echo "$RELEASE_RESPONSE" | jq -r '.prerelease')
-          if [ "$IS_DRAFT" = "true" ] || [ "$IS_PRERELEASE" = "true" ]; then
-            echo "Error: Release $VERSION created as draft ($IS_DRAFT) or prerelease ($IS_PRERELEASE), expected formal release"
-            exit 1
-          fi
-          echo "Formal release created with ID: $RELEASE_ID"
-          # 检查文件是否存在
-          for file in worker.zip _worker.js.backup; do
-            if [ ! -f "$file" ]; then
-              echo "Error: $file not found for upload"
-              exit 1
-            fi
+
+          echo "Release 创建成功，ID: $RELEASE_ID"
+
+          # 上传资产
+          for asset in worker.zip _worker.js.backup; do
+            echo "上传 $asset ..."
+            curl -s -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Content-Type: $(file -b --mime-type $asset)" \
+              --data-binary "@$asset" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$asset"
           done
-          # 上传 worker.zip
-          curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/zip" \
-            --data-binary "@worker.zip" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=worker.zip" || {
-            echo "Error: Failed to upload worker.zip"
-            exit 1
-          }
-          # 上传 _worker.js.backup
-          curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/javascript" \
-            --data-binary "@_worker.js.backup" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=_worker.js.backup" || {
-            echo "Error: Failed to upload _worker.js.backup"
-            exit 1
-          }
-          echo "Assets uploaded successfully for formal release $VERSION"
+
+          echo "所有资产上传完成，Release $VERSION 已就绪"
