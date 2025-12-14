@@ -906,9 +906,9 @@ async function 读取config_JSON(env, hostname, userID, path, 重置配置 = fal
             TOKEN: await MD5MD5(hostname + userID),
         },
         订阅转换配置: {
-            SUBAPI: "https://SUBAPI.cmliussss.net",
-            SUBCONFIG: "https://raw.githubusercontent.com/cmliu/ACL4SSR/refs/heads/main/Clash/config/ACL4SSR_Online_Mini_MultiMode_CF.ini",
-            SUBEMOJI: false,
+		  SUBAPI: "https://subapi.qlp.dpdns.org",
+		  SUBCONFIG: "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/main/Clash/config/ACL4SSR_Online_Mini.ini",
+		  SUBEMOJI: false,
         },
         反代: {
             PROXYIP: "auto",
