@@ -315,7 +315,6 @@ export default {
                     }
 
                     if (订阅类型 === 'singbox') {
-                        订阅内容 = JSON.stringify(JSON.parse(订阅内容), null, 2);
                         responseHeaders["content-type"] = 'application/json; charset=utf-8';
                     } else if (订阅类型 === 'clash') {
                         responseHeaders["content-type"] = 'application/x-yaml; charset=utf-8';
@@ -1546,7 +1545,3 @@ async function html1101(host, 访问IP) {
 </body>
 </html>`;
 }
-
-
-
-
