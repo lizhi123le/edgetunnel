@@ -3,38 +3,67 @@ name: Upstream Sync
 permissions:
   contents: write
 
-on:
-  schedule:
-    - cron: "0 0 * * *" # every day
-  workflow_dispatch:
+on: 
+  schedule: 
+    - cron: "0 0 * * *"  
+  workflow_dispatch: 
+  push: 
+    branches: 
+      - main 
+    paths: 
+      - '.github/**/*.yml'
 
 jobs:
   sync_latest_from_upstream:
-    name: Sync latest commits from upstream repo
     runs-on: ubuntu-latest
     if: ${{ github.event.repository.fork }}
 
     steps:
-      # Step 1: run a standard checkout action
+      # Step 1: checkout fork 仓库，完整历史
       - name: Checkout target repo
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+          ref: main
+          
+      - name: Remove old upstream if exists
+        run: git remote remove upstream || true
 
-      # Step 2: run the sync action
+      # Step 2: 检查是否有新提交
+      - name: Check for upstream changes
+        id: check
+        run: |
+          git remote add upstream https://github.com/REIJI007/AdBlock_Rule_For_Sing-box.git || true
+          git fetch upstream main
+          if git log HEAD..upstream/main --oneline | grep .; then
+            echo "has_new_commits=true" >> $GITHUB_ENV
+            echo "New commits found, will sync."
+          else
+            echo "has_new_commits=false" >> $GITHUB_ENV
+            echo "Already up to date, skipping sync."
+            exit 0
+          fi
+
+      # Step 3: 仅在有新提交时才运行同步
       - name: Sync upstream changes
-        id: sync
+        if: env.has_new_commits == 'true'
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
         with:
           upstream_sync_repo: cmliu/edgetunnel
           upstream_sync_branch: main
           target_sync_branch: main
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }} # automatically generated, no need to set
-
-          # Set test_mode true to run tests instead of the true action!!
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
           test_mode: false
-
+          git_log_format_args: --pretty=oneline
+          git_config_user: GH Action - Upstream Sync
+          git_config_email: action@github.com
+          git_config_pull_rebase: false
+          host_domain: github.com
+          shallow_since: null
+      # Step 4: 如果失败，提示手动同步
       - name: Sync check
         if: failure()
         run: |
-          echo "[Error] 由于上游仓库的 workflow 文件变更，导致 GitHub 自动暂停了本次自动更新，你需要手动 Sync Fork 一次，详细教程请查看项目README.md "
-          echo "[Error] Due to a change in the workflow file of the upstream repository, GitHub has automatically suspended the scheduled automatic update. You need to manually sync your fork. Please refer to the project README.md for instructions. "
-          exit 1
+          echo "[Error] 上游仓库 workflow 文件变更，GitHub 自动暂停了本次自动更新。"
+          echo "[Error] 请手动 Sync Fork 一次，详细教程请查看项目 README.md。"
+          exit 0
