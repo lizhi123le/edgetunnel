@@ -24,21 +24,36 @@ try {
 // 混淆配置（国家级安全级别）
 const obfuscationOptions = {
   compact: true,
-  controlFlowFlattening: true,
-  controlFlowFlatteningThreshold: 0.75,
-  deadCodeInjection: true,
-  deadCodeInjectionThreshold: 0.4,
+  controlFlowFlattening: false,
+  controlFlowFlatteningThreshold: 0,
+  deadCodeInjection: false,
   stringArray: true,
   stringArrayEncoding: ['base64'],
-  stringArrayThreshold: 0.75,
+  stringArrayThreshold: 1.0,
+  stringArrayRotate: true,
+  stringArrayShuffle: true,
+  stringArrayWrappersCount: 2,
+  stringArrayWrappersChainedCalls: false,
+  stringArrayWrappersParametersMaxCount: 3,
   renameGlobals: true,
-  identifierNamesGenerator: 'mangled',
-  numbersToExpressions: true,
+  identifierNamesGenerator: 'mangled-shuffled',
+  identifierNamesCache: null,
+  identifiersPrefix: '',
+  renameProperties: false,
+  renamePropertiesMode: 'safe',
+  ignoreImports: false,
+  target: 'browser',
+  numbersToExpressions: false,
+  simplify: false,
   splitStrings: true,
-  splitStringsChunkLength: 10,
-  transformObjectKeys: true,
+  splitStringsChunkLength: 1,
+  transformObjectKeys: false,
+  unicodeEscapeSequence: true,
   selfDefending: false,
-  debugProtection: false
+  debugProtection: false,
+  debugProtectionInterval: 0,
+  disableConsoleOutput: true,
+  domainLock: []
 };
 
 // 执行混淆
@@ -52,6 +67,7 @@ try {
   process.exit(1);
 
 }
+
 
 
 
