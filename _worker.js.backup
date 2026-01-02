@@ -214,7 +214,7 @@ export default {
                             "Subscription-Userinfo": `upload=${pagesSum}; download=${workersSum}; total=${total}; expire=${expire}`,
                             "Cache-Control": "no-store",
                         };
-                        const isSubConverterRequest = request.headers.has('b64') || request.headers.has('base64') || request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase());
+                        const isSubConverterRequest = url.searchParams.has('b64') || url.searchParams.has('base64') || request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase());
                         const 订阅类型 = isSubConverterRequest
                             ? 'mixed'
                             : url.searchParams.has('target')
@@ -230,7 +230,7 @@ export default {
                                                 : url.searchParams.has('loon') || ua.includes('loon')
                                                     ? 'loon'
                                                     : 'mixed';
-                                                    
+
                         if (!ua.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
                         const 协议类型 = (url.searchParams.has('surge') || ua.includes('surge')) ? 'tro' + 'jan' : config_JSON.协议类型;
                         let 订阅内容 = '';
@@ -311,7 +311,7 @@ export default {
                                 const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel(https://github.com/cmliu/edge' + 'tunnel)' } });
                                 if (response.ok) {
                                     订阅内容 = await response.text();
-                                    if (url.searchParams.has('surge') || ua.includes('surge')) 订阅内容 = surge(订阅内容, url.protocol + '//' + url.host + '/sub?token=' + 订阅TOKEN + '&surge', config_JSON);
+                                    if (url.searchParams.has('surge') || ua.includes('surge')) 订阅内容 = Surge订阅配置文件热补丁(订阅内容, url.protocol + '//' + url.host + '/sub?token=' + 订阅TOKEN + '&surge', config_JSON);
                                 } else return new Response('订阅转换后端异常：' + response.statusText, { status: response.status });
                             } catch (error) {
                                 return new Response('订阅转换后端异常：' + error.message, { status: 403 });
@@ -320,10 +320,10 @@ export default {
 
                         if (!ua.includes('subconverter')) 订阅内容 = 批量替换域名(订阅内容.replace(/00000000-0000-4000-8000-000000000000/g, config_JSON.UUID), config_JSON.HOSTS)
 
-                        if (!ua.includes('mozilla') && 订阅类型 === 'mixed') 订阅内容 = btoa(订阅内容);
+                        if (订阅类型 === 'mixed' && (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64'))) 订阅内容 = btoa(订阅内容);
 
                         if (订阅类型 === 'singbox') {
-                            订阅内容 = JSON.stringify(JSON.parse(订阅内容), null, 2);
+                            订阅内容 = Singbox订阅配置文件热补丁(订阅内容);
                             responseHeaders["content-type"] = 'application/json; charset=utf-8';
                         } else if (订阅类型 === 'clash') {
                             responseHeaders["content-type"] = 'application/x-yaml; charset=utf-8';
@@ -787,13 +787,165 @@ async function httpConnect(targetHost, targetPort, initialData) {
     }
 }
 //////////////////////////////////////////////////功能性函数///////////////////////////////////////////////
-function surge(content, url, config_JSON) {
+function Singbox订阅配置文件热补丁(sb_json_text) {
+    try {
+        let config = JSON.parse(sb_json_text);
+
+        // --- 1. TUN 入站迁移 (1.10.0+) ---
+        if (Array.isArray(config.inbounds)) {
+            config.inbounds.forEach(inbound => {
+                if (inbound.type === 'tun') {
+                    const addresses = [];
+                    if (inbound.inet4_address) addresses.push(inbound.inet4_address);
+                    if (inbound.inet6_address) addresses.push(inbound.inet6_address);
+                    if (addresses.length > 0) {
+                        inbound.address = addresses;
+                        delete inbound.inet4_address;
+                        delete inbound.inet6_address;
+                    }
+
+                    const route_addresses = [];
+                    if (Array.isArray(inbound.inet4_route_address)) route_addresses.push(...inbound.inet4_route_address);
+                    if (Array.isArray(inbound.inet6_route_address)) route_addresses.push(...inbound.inet6_route_address);
+                    if (route_addresses.length > 0) {
+                        inbound.route_address = route_addresses;
+                        delete inbound.inet4_route_address;
+                        delete inbound.inet6_route_address;
+                    }
+
+                    const route_exclude_addresses = [];
+                    if (Array.isArray(inbound.inet4_route_exclude_address)) route_exclude_addresses.push(...inbound.inet4_route_exclude_address);
+                    if (Array.isArray(inbound.inet6_route_exclude_address)) route_exclude_addresses.push(...inbound.inet6_route_exclude_address);
+                    if (route_exclude_addresses.length > 0) {
+                        inbound.route_exclude_address = route_exclude_addresses;
+                        delete inbound.inet4_route_exclude_address;
+                        delete inbound.inet6_route_exclude_address;
+                    }
+                }
+            });
+        }
+
+        // --- 2. 迁移 Geosite/GeoIP 到 rule_set (1.8.0+) 及 Actions (1.11.0+) ---
+        const ruleSetsDefinitions = new Map();
+        const processRules = (rules, isDns = false) => {
+            if (!Array.isArray(rules)) return;
+            rules.forEach(rule => {
+                if (rule.geosite) {
+                    const geositeList = Array.isArray(rule.geosite) ? rule.geosite : [rule.geosite];
+                    rule.rule_set = geositeList.map(name => {
+                        const tag = `geosite-${name}`;
+                        if (!ruleSetsDefinitions.has(tag)) {
+                            ruleSetsDefinitions.set(tag, {
+                                tag: tag,
+                                type: "remote",
+                                format: "binary",
+                                url: `https://github.cmliussss.net/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-${name}.srs`,
+                                download_detour: "DIRECT"
+                            });
+                        }
+                        return tag;
+                    });
+                    delete rule.geosite;
+                }
+                if (rule.geoip) {
+                    const geoipList = Array.isArray(rule.geoip) ? rule.geoip : [rule.geoip];
+                    rule.rule_set = rule.rule_set || [];
+                    geoipList.forEach(name => {
+                        const tag = `geoip-${name}`;
+                        if (!ruleSetsDefinitions.has(tag)) {
+                            ruleSetsDefinitions.set(tag, {
+                                tag: tag,
+                                type: "remote",
+                                format: "binary",
+                                url: `https://github.cmliussss.net/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-${name}.srs`,
+                                download_detour: "DIRECT"
+                            });
+                        }
+                        rule.rule_set.push(tag);
+                    });
+                    delete rule.geoip;
+                }
+                const targetField = isDns ? 'server' : 'outbound';
+                const actionValue = String(rule[targetField]).toUpperCase();
+                if (actionValue === 'REJECT' || actionValue === 'BLOCK') {
+                    rule.action = 'reject';
+                    rule.method = 'drop'; // 强制使用现代方式
+                    delete rule[targetField];
+                }
+            });
+        };
+
+        if (config.dns && config.dns.rules) processRules(config.dns.rules, true);
+        if (config.route && config.route.rules) processRules(config.route.rules, false);
+
+        if (ruleSetsDefinitions.size > 0) {
+            if (!config.route) config.route = {};
+            config.route.rule_set = Array.from(ruleSetsDefinitions.values());
+        }
+
+        // --- 3. 兼容性与纠错 ---
+        if (!config.outbounds) config.outbounds = [];
+
+        // 移除 outbounds 中冗余的 block 类型节点 (如果它们已经被 action 替代)
+        // 但保留 DIRECT 这种必需的特殊出站
+        config.outbounds = config.outbounds.filter(o => {
+            if (o.tag === 'REJECT' || o.tag === 'block') {
+                return false; // 移除，因为已经改用 action: reject 了
+            }
+            return true;
+        });
+
+        const existingOutboundTags = new Set(config.outbounds.map(o => o.tag));
+
+        if (!existingOutboundTags.has('DIRECT')) {
+            config.outbounds.push({ "type": "direct", "tag": "DIRECT" });
+            existingOutboundTags.add('DIRECT');
+        }
+
+        if (config.dns && config.dns.servers) {
+            const dnsServerTags = new Set(config.dns.servers.map(s => s.tag));
+            if (config.dns.rules) {
+                config.dns.rules.forEach(rule => {
+                    if (rule.server && !dnsServerTags.has(rule.server)) {
+                        if (rule.server === 'dns_block' && dnsServerTags.has('block')) {
+                            rule.server = 'block';
+                        } else if (rule.server.toLowerCase().includes('block') && !dnsServerTags.has(rule.server)) {
+                            config.dns.servers.push({ "tag": rule.server, "address": "rcode://success" });
+                            dnsServerTags.add(rule.server);
+                        }
+                    }
+                });
+            }
+        }
+
+        config.outbounds.forEach(outbound => {
+            if (outbound.type === 'selector' || outbound.type === 'urltest') {
+                if (Array.isArray(outbound.outbounds)) {
+                    // 修正：如果选择器引用了被移除的 REJECT/block，直接将其过滤掉
+                    // 因为路由规则已经通过 action 拦截了，不需要走选择器
+                    outbound.outbounds = outbound.outbounds.filter(tag => {
+                        const upperTag = tag.toUpperCase();
+                        return existingOutboundTags.has(tag) && upperTag !== 'REJECT' && upperTag !== 'BLOCK';
+                    });
+                    if (outbound.outbounds.length === 0) outbound.outbounds.push("DIRECT");
+                }
+            }
+        });
+
+        return JSON.stringify(config, null, 2);
+    } catch (e) {
+        console.error("Singbox热补丁执行失败:", e);
+        return JSON.stringify(JSON.parse(sb_json_text), null, 2);
+    }
+}
+
+function Surge订阅配置文件热补丁(content, url, config_JSON) {
     const 每行内容 = content.includes('\r\n') ? content.split('\r\n') : content.split('\n');
 
     let 输出内容 = "";
     const realSurgePath = config_JSON.启用0RTT ? config_JSON.PATH + '?ed=2560' : config_JSON.PATH;
     for (let x of 每行内容) {
-        if (x.includes('= tro' + 'jan,')) {
+        if (x.includes('= tro' + 'jan,') && !x.includes('ws=true') && !x.includes('ws-path=')) {
             const host = x.split("sni=")[1].split(",")[0];
             const 备改内容 = `sni=${host}, skip-cert-verify=${config_JSON.跳过证书验证}`;
             const 正确内容 = `sni=${host}, skip-cert-verify=${config_JSON.跳过证书验证}, ws=true, ws-path=${realSurgePath}, ws-headers=Host:"${host}"`;
