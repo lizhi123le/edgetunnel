@@ -26,10 +26,11 @@ jobs:
           fetch-depth: 1
           ref: main
           
+      # Step 2: 删除旧上游
       - name: Remove old upstream if exists
         run: git remote remove upstream || true
 
-      # Step 2: 检查是否有新提交
+      # Step 3: 检查是否有新提交
       - name: Check for upstream changes
         id: check
         run: |
@@ -44,7 +45,7 @@ jobs:
             exit 0
           fi
 
-      # Step 3: 仅在有新提交时才运行同步
+      # Step 4: 仅在有新提交时才运行同步
       - name: Sync upstream changes
         if: env.has_new_commits == 'true'
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
@@ -60,7 +61,8 @@ jobs:
           git_config_pull_rebase: false
           host_domain: github.com
           shallow_since: null
-      # Step 4: 如果失败，提示手动同步
+          
+      # Step 5: 如果失败，提示手动同步
       - name: Sync check
         if: failure()
         run: |
