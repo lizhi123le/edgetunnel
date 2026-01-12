@@ -21,7 +21,7 @@ jobs:
           persist-credentials: true
 
       # ==================== 检查上游更新 ====================
-      - name: 检查上游仓库更新并同步备份文件
+      - name: 检查上游仓库更新并同步备份文件（使用 diff + patch 合并）
         id: check-update
         run: |
           set -euo pipefail
@@ -43,15 +43,32 @@ jobs:
 
           HAS_UPDATE="false"
 
+          # ========== 处理 _worker.js（使用 diff + patch 合并） ==========
           if [ "$NEW_WORKER_HASH" != "$OLD_WORKER_HASH" ]; then
-            echo "上游 _worker.js 已更新"
-            mv -f temp_worker.js "$BACKUP_FILE"
+            echo "上游 _worker.js 有更新"
+
+            if [ -f "$BACKUP_FILE" ]; then
+              echo "尝试合并上游 _worker.js 到本地版本..."
+              diff -u "$BACKUP_FILE" temp_worker.js > worker.patch || true
+
+              if [ -s worker.patch ]; then
+                echo "发现差异，应用补丁..."
+                patch "$BACKUP_FILE" worker.patch
+              else
+                echo "无差异，无需合并"
+              fi
+            else
+              echo "首次运行，直接保存上游文件"
+              mv -f temp_worker.js "$BACKUP_FILE"
+            fi
+
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
             HAS_UPDATE="true"
           else
             rm -f temp_worker.js
           fi
 
+          # ========== 处理 wrangler.toml（仍然使用覆盖方式） ==========
           if [ ! -f "$TOML_FILE" ] || [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
             echo "wrangler.toml 需要更新或初次创建"
             mv -f temp_toml.toml "$TOML_FILE"
@@ -59,13 +76,6 @@ jobs:
             HAS_UPDATE="true"
           else
             rm -f temp_toml.toml
-          fi
-
-          # 首次运行也强制视为更新
-          if [ ! -f "$BACKUP_FILE" ]; then
-            mv -f temp_worker.js "$BACKUP_FILE"
-            echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
-            HAS_UPDATE="true"
           fi
 
           echo "has_update=$HAS_UPDATE" >> $GITHUB_OUTPUT
@@ -140,7 +150,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: main
 
-      # ==================== 创建/覆盖 Release（版本号 = 本地 _worker.js.backup 的哈希前12位） ====================
+      # ==================== 创建/覆盖 Release ====================
       - name: 创建或覆盖 GitHub Release
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         env:
@@ -151,7 +161,6 @@ jobs:
 
           echo "正在创建/覆盖 Release，版本号：$VERSION"
 
-          # 删除可能已存在的同名 Release
           RELEASE_ID=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -r '.id // ""')
           if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
@@ -160,14 +169,12 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
           fi
 
-          # 删除可能已存在的同名 tag
           if curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION" | jq -e .ref >/dev/null 2>&1; then
             curl -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
               "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$VERSION"
           fi
 
-          # 创建新 Release
           PAYLOAD=$(jq -n --arg v "$VERSION" \
             '{tag_name: $v, name: $v, body: "自动构建版本\n基于本地 _worker.js.backup 的 SHA256 前12位", draft: false, prerelease: false}')
 
@@ -186,7 +193,6 @@ jobs:
 
           echo "Release 创建成功：$VERSION (ID: $RELEASE_ID)"
 
-          # 上传资产
           for asset in worker.zip _worker.js.backup; do
             echo "正在上传 $asset ..."
             curl -s -X POST \
