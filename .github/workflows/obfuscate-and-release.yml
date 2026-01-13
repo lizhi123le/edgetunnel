@@ -49,13 +49,19 @@ jobs:
 
             if [ -f "$BACKUP_FILE" ]; then
               echo "尝试合并上游 _worker.js 到本地版本..."
-              diff -u "$BACKUP_FILE" temp_worker.js > worker.patch || true
+              # 三方合并：本地版本 (BACKUP_FILE)、旧基线 (BACKUP_FILE.old)、上游版本 (temp_worker.js)
+              cp "$BACKUP_FILE" local_worker.js
+              cp "$BACKUP_FILE" base_worker.js   # 用当前备份作为基线
+              cp temp_worker.js upstream_worker.js
 
-              if [ -s worker.patch ]; then
-                echo "发现差异，应用补丁..."
-                patch "$BACKUP_FILE" worker.patch
+              git merge-file local_worker.js base_worker.js upstream_worker.js
+
+              if [ $? -eq 0 ]; then
+                echo "合并完成，更新本地版本"
+                mv -f local_worker.js "$BACKUP_FILE"
               else
-                echo "无差异，无需合并"
+                echo "合并出现冲突，请手动解决"
+                mv -f local_worker.js "$BACKUP_FILE"
               fi
             else
               echo "首次运行，直接保存上游文件"
@@ -67,6 +73,7 @@ jobs:
           else
             rm -f temp_worker.js
           fi
+
 
           # ========== 处理 wrangler.toml（仍然使用覆盖方式） ==========
           if [ ! -f "$TOML_FILE" ] || [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
@@ -203,3 +210,4 @@ jobs:
           done
 
           echo "Release $VERSION 及所有资产上传完成"
+
