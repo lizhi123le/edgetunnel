@@ -324,6 +324,7 @@ export default {
                             订阅内容 = Singbox订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.Fingerprint, config_JSON.ECH ? await getECH(host) : null);
                             responseHeaders["content-type"] = 'application/json; charset=utf-8';
                         } else if (订阅类型 === 'clash') {
+                            订阅内容 = Clash订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.ECH ? await getECH(host) : null);
                             responseHeaders["content-type"] = 'application/x-yaml; charset=utf-8';
                         }
                         return new Response(订阅内容, { status: 200, headers: responseHeaders });
@@ -784,6 +785,142 @@ async function httpConnect(targetHost, targetPort, initialData) {
     }
 }
 //////////////////////////////////////////////////功能性函数///////////////////////////////////////////////
+function Clash订阅配置文件热补丁(clash_yaml, uuid = null, ech_config = null) {
+    // 判断uuid字段是否为真
+    if (!uuid) {
+        return clash_yaml;
+    }
+
+    // 如果ech_config为null，直接返回
+    if (!ech_config) return clash_yaml;
+
+    const lines = clash_yaml.split('\n');
+    const processedLines = [];
+    let i = 0;
+
+    while (i < lines.length) {
+        const line = lines[i];
+        const trimmedLine = line.trim();
+
+        // 处理行格式（Flow）：- {name: ..., uuid: ..., ...}
+        if (trimmedLine.startsWith('- {') && (trimmedLine.includes('uuid:') || trimmedLine.includes('password:'))) {
+            let fullNode = line;
+            let braceCount = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+
+            // 如果括号不匹配，继续读取下一行
+            while (braceCount > 0 && i + 1 < lines.length) {
+                i++;
+                fullNode += '\n' + lines[i];
+                braceCount += (lines[i].match(/\{/g) || []).length - (lines[i].match(/\}/g) || []).length;
+            }
+
+            // 获取代理类型
+            const typeMatch = fullNode.match(/type:\s*(\w+)/);
+            const proxyType = typeMatch ? typeMatch[1] : 'vless';
+
+            // 根据代理类型确定要查找的字段
+            let credentialField = 'uuid';
+            if (proxyType === 'trojan') {
+                credentialField = 'password';
+            }
+
+            // 检查对应字段的值是否匹配
+            const credentialPattern = new RegExp(`${credentialField}:\\s*([^,}\\n]+)`);
+            const credentialMatch = fullNode.match(credentialPattern);
+
+            if (credentialMatch && credentialMatch[1].trim() === uuid.trim()) {
+                // 在最后一个}前添加ech-opts
+                fullNode = fullNode.replace(/\}(\s*)$/, `, ech-opts: {enable: true, config: "${ech_config}"}}$1`);
+            }
+
+            processedLines.push(fullNode);
+            i++;
+        }
+        // 处理块格式（Block）：- name: ..., 后续行为属性
+        else if (trimmedLine.startsWith('- name:')) {
+            // 收集完整的代理节点定义
+            let nodeLines = [line];
+            let baseIndent = line.search(/\S/);
+            let topLevelIndent = baseIndent + 2; // 顶级属性的缩进
+            i++;
+
+            // 继续读取这个节点的所有属性
+            while (i < lines.length) {
+                const nextLine = lines[i];
+                const nextTrimmed = nextLine.trim();
+
+                // 如果是空行，包含它但不继续
+                if (!nextTrimmed) {
+                    nodeLines.push(nextLine);
+                    i++;
+                    break;
+                }
+
+                const nextIndent = nextLine.search(/\S/);
+
+                // 如果缩进小于等于基础缩进且不是空行，说明节点结束了
+                if (nextIndent <= baseIndent && nextTrimmed.startsWith('- ')) {
+                    break;
+                }
+
+                // 如果缩进更小，节点也结束了
+                if (nextIndent < baseIndent && nextTrimmed) {
+                    break;
+                }
+
+                nodeLines.push(nextLine);
+                i++;
+            }
+
+            // 获取代理类型
+            const nodeText = nodeLines.join('\n');
+            const typeMatch = nodeText.match(/type:\s*(\w+)/);
+            const proxyType = typeMatch ? typeMatch[1] : 'vless';
+
+            // 根据代理类型确定要查找的字段
+            let credentialField = 'uuid';
+            if (proxyType === 'trojan') {
+                credentialField = 'password';
+            }
+
+            // 检查这个节点的对应字段是否匹配
+            const credentialPattern = new RegExp(`${credentialField}:\\s*([^\\n]+)`);
+            const credentialMatch = nodeText.match(credentialPattern);
+
+            if (credentialMatch && credentialMatch[1].trim() === uuid.trim()) {
+                // 找到在哪里插入ech-opts
+                // 策略：在最后一个顶级属性后面插入，或在ws-opts之前插入
+                let insertIndex = -1;
+
+                for (let j = nodeLines.length - 1; j >= 0; j--) {
+                    // 跳过空行，找到节点中最后一个非空行（可能是顶级属性或其子项）
+                    if (nodeLines[j].trim()) {
+                        insertIndex = j;
+                        break;
+                    }
+                }
+
+                if (insertIndex >= 0) {
+                    const indent = ' '.repeat(topLevelIndent);
+                    // 在节点末尾（最后一个属性块之后）插入 ech-opts 属性
+                    nodeLines.splice(insertIndex + 1, 0,
+                        `${indent}ech-opts:`,
+                        `${indent}  enable: true`,
+                        `${indent}  config: "${ech_config}"`
+                    );
+                }
+            }
+
+            processedLines.push(...nodeLines);
+        } else {
+            processedLines.push(line);
+            i++;
+        }
+    }
+
+    return processedLines.join('\n');
+}
+
 function Singbox订阅配置文件热补丁(sb_json_text, uuid = null, fingerprint = "chrome", ech_config = null) {
     try {
         let config = JSON.parse(sb_json_text);
@@ -932,8 +1069,8 @@ function Singbox订阅配置文件热补丁(sb_json_text, uuid = null, fingerpri
         // --- 4. UUID 匹配节点的 TLS 热补丁 (utls & ech) ---
         if (uuid) {
             config.outbounds.forEach(outbound => {
-                // 仅处理包含 uuid 且匹配的节点
-                if (outbound.uuid && outbound.uuid === uuid) {
+                // 仅处理包含 uuid 或 password 且匹配的节点
+                if ((outbound.uuid && outbound.uuid === uuid) || (outbound.password && outbound.password === uuid)) {
                     // 确保 tls 对象存在
                     if (!outbound.tls) {
                         outbound.tls = { enabled: true };
@@ -1158,7 +1295,7 @@ async function 读取config_JSON(env, hostname, userID, path, 重置配置 = fal
             },
             SUB: null,
             SUBNAME: "edge" + "tunnel",
-            SUBUpdateTime: 6, // 订阅更新时间（小时）
+            SUBUpdateTime: 3, // 订阅更新时间（小时）
             TOKEN: await MD5MD5(hostname + userID),
         },
         订阅转换配置: {
@@ -1217,6 +1354,7 @@ async function 读取config_JSON(env, hostname, userID, path, 重置配置 = fal
     const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
     if (!config_JSON.Fingerprint) config_JSON.Fingerprint = "chrome";
     if (!config_JSON.ECH) config_JSON.ECH = false;
+    else config_JSON.优选订阅生成.SUBUpdateTime = 1; // 启用 ECH 时强制将订阅更新时间改为 1 小时
     const ECHLINK参数 = config_JSON.ECH ? '&ech=' + encodeURIComponent(await getECH(config_JSON.HOST)) : '';
     config_JSON.LINK = `${config_JSON.协议类型}://${userID}@${host}:443?security=tls&type=${config_JSON.传输协议 + ECHLINK参数}&host=${host}&fp=${config_JSON.Fingerprint}&sni=${host}&path=${encodeURIComponent(config_JSON.启用0RTT ? config_JSON.PATH + '?ed=2560' : config_JSON.PATH) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
     config_JSON.优选订阅生成.TOKEN = await MD5MD5(hostname + userID);
