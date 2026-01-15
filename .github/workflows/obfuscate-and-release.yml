@@ -119,7 +119,9 @@ jobs:
 
       - name: 混淆代码
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        run: npm run build -- --input _worker_temp.js --output _worker.js
+        run: | 
+          rm -f _worker.js 
+          npm run build -- --input _worker_temp.js --output _worker.js
 
       - name: 压缩为 worker.zip
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -199,3 +201,4 @@ jobs:
           done
 
           echo "Release $VERSION 及所有资产上传完成"
+
