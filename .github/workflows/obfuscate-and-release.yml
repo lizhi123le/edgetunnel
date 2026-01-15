@@ -20,7 +20,7 @@ jobs:
         with:
           persist-credentials: true
 
-      # ==================== 检查上游更新 ====================
+      # ==================== 修复后的上游更新检测（关键修复） ====================
       - name: 检查上游仓库更新并同步备份文件（正确三方合并）
         id: check-update
         run: |
@@ -37,13 +37,14 @@ jobs:
           curl -fsSL -o temp_toml.toml "$TOML_URL"
 
           NEW_WORKER_HASH=$(sha256sum temp_worker.js | cut -d' ' -f1)
-          NEW_TOML_HASH=$(sha256sum temp_toml.toml | cut -d' ' -f1)
           OLD_WORKER_HASH=$(cat "$WORKER_HASH_FILE" 2>/dev/null || echo "")
+
+          NEW_TOML_HASH=$(sha256sum temp_toml.toml | cut -d' ' -f1)
           OLD_TOML_HASH=$(cat "$TOML_HASH_FILE" 2>/dev/null || echo "")
 
           HAS_UPDATE="false"
 
-          # ========== 处理 _worker.js（真正的三方合并） ==========
+          # ========== 修复点：正确检测上游更新 ==========
           if [ "$NEW_WORKER_HASH" != "$OLD_WORKER_HASH" ]; then
             echo "上游 _worker.js 有更新"
 
@@ -65,15 +66,16 @@ jobs:
               mv -f temp_worker.js "$BASE_FILE"
             fi
 
+            # 修复点：只有检测到更新时才写入 hash
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
             HAS_UPDATE="true"
           else
             rm -f temp_worker.js
           fi
 
-          # ========== 处理 wrangler.toml（覆盖方式） ==========
-          if [ ! -f "$TOML_FILE" ] || [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
-            echo "wrangler.toml 需要更新或初次创建"
+          # ========== wrangler.toml 覆盖方式 ==========
+          if [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
+            echo "wrangler.toml 有更新"
             mv -f temp_toml.toml "$TOML_FILE"
             echo "$NEW_TOML_HASH" > "$TOML_HASH_FILE"
             HAS_UPDATE="true"
@@ -95,7 +97,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "当前仓库 _worker.js.backup 的 SHA256 前12位：$VERSION"
 
-      # ==================== 以下步骤仅在需要时执行 ====================
+      # ==================== 以下步骤保持不变 ====================
       - name: 执行后续构建（仅在必要时）
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: echo "开始执行混淆、提交、发布流程..."
@@ -119,8 +121,8 @@ jobs:
 
       - name: 混淆代码
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        run: | 
-          rm -f _worker.js 
+        run: |
+          rm -f _worker.js
           npm run build -- --input _worker_temp.js --output _worker.js
 
       - name: 压缩为 worker.zip
@@ -201,4 +203,3 @@ jobs:
           done
 
           echo "Release $VERSION 及所有资产上传完成"
-
