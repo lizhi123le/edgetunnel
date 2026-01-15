@@ -97,21 +97,18 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       # ==================== 混淆流程 ====================
-      - name: Set up Node.js
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+      - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 'latest'
 
       - name: Install dependencies
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           npm install
           sudo apt-get update -qq
           sudo apt-get install -y jq zip
 
       - name: 创建 _worker_temp.js
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: cp _worker.js.backup _worker_temp.js
 
       - name: 混淆代码
@@ -152,5 +149,6 @@ jobs:
           VERSION="${{ steps.generate-version.outputs.version }}"
           gh release delete "$VERSION" -y || true
           gh release create "$VERSION" worker.zip _worker.js.backup -t "$VERSION" -n "自动构建版本"
+
 
 
