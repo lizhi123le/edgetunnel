@@ -129,9 +129,21 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add _worker.js _worker.js.backup _worker.js.upstream wrangler.toml .worker_hash .toml_hash worker.zip
-          git commit -m "自动更新：混淆版（版本 ${{ steps.generate-version.outputs.version }})"
-          git push
+
+          # 关键修复：仅在文件存在时 add
+          git add _worker.js _worker.js.backup wrangler.toml .worker_hash .toml_hash worker.zip
+          if [ -f "_worker.js.upstream" ]; then
+            git add _worker.js.upstream
+          fi
+
+          if git diff --cached --quiet; then
+            echo "无文件变更，跳过提交"
+            exit 0
+          fi
+
+          VERSION="${{ steps.generate-version.outputs.version }}"
+          git commit -m "自动更新：混淆版 + 备份（版本 $VERSION）"
+
 
       # ==================== 创建 Release ====================
       - name: 创建或覆盖 Release
@@ -142,3 +154,4 @@ jobs:
           VERSION="${{ steps.generate-version.outputs.version }}"
           gh release delete "$VERSION" -y || true
           gh release create "$VERSION" worker.zip _worker.js.backup -t "$VERSION" -n "自动构建版本"
+
