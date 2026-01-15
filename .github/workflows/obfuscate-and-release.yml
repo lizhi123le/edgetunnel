@@ -20,17 +20,19 @@ jobs:
         with:
           persist-credentials: true
 
-      # ==================== 修复后的上游更新检测（关键修复） ====================
+      # ==================== 修复后的上游更新检测（核心修复） ====================
       - name: 检查上游仓库更新并同步备份文件（正确三方合并）
         id: check-update
         run: |
           set -euo pipefail
           WORKER_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js"
           TOML_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/wrangler.toml"
+
           BACKUP_FILE="_worker.js.backup"
           BASE_FILE="_worker.js.upstream"
-          TOML_FILE="wrangler.toml"
           WORKER_HASH_FILE=".worker_hash"
+
+          TOML_FILE="wrangler.toml"
           TOML_HASH_FILE=".toml_hash"
 
           curl -fsSL -o temp_worker.js "$WORKER_URL"
@@ -66,7 +68,7 @@ jobs:
               mv -f temp_worker.js "$BASE_FILE"
             fi
 
-            # 修复点：只有检测到更新时才写入 hash
+            # 修复点：只有检测到更新时才更新 hash
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
             HAS_UPDATE="true"
           else
@@ -91,8 +93,7 @@ jobs:
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
-          BACKUP_FILE="_worker.js.backup"
-          LOCAL_HASH=$(sha256sum "$BACKUP_FILE" | cut -d' ' -f1)
+          LOCAL_HASH=$(sha256sum _worker.js.backup | cut -d' ' -f1)
           VERSION="${LOCAL_HASH:0:12}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "当前仓库 _worker.js.backup 的 SHA256 前12位：$VERSION"
