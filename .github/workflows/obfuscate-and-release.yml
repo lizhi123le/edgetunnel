@@ -115,13 +115,11 @@ jobs:
         run: cp _worker.js.backup _worker_temp.js
 
       - name: 混淆代码
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           rm -f _worker.js
           npm run build -- --input _worker_temp.js --output _worker.js
 
       - name: 压缩为 worker.zip
-        if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: zip worker.zip _worker.js
 
       - name: 提交并推送更改
@@ -154,4 +152,5 @@ jobs:
           VERSION="${{ steps.generate-version.outputs.version }}"
           gh release delete "$VERSION" -y || true
           gh release create "$VERSION" worker.zip _worker.js.backup -t "$VERSION" -n "自动构建版本"
+
 
