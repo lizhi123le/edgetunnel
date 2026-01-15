@@ -20,64 +20,64 @@ jobs:
         with:
           persist-credentials: true
 
-      # ==================== 修复后的上游更新检测（核心修复） ====================
-      - name: 检查上游仓库更新并同步备份文件（正确三方合并）
+      # ==================== 检查上游更新 ====================
+      - name: 检查上游仓库更新并同步备份文件（使用 diff + patch 合并）
         id: check-update
         run: |
           set -euo pipefail
           WORKER_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js"
           TOML_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/main/wrangler.toml"
-
           BACKUP_FILE="_worker.js.backup"
-          BASE_FILE="_worker.js.upstream"
-          WORKER_HASH_FILE=".worker_hash"
-
           TOML_FILE="wrangler.toml"
+          WORKER_HASH_FILE=".worker_hash"
           TOML_HASH_FILE=".toml_hash"
 
           curl -fsSL -o temp_worker.js "$WORKER_URL"
           curl -fsSL -o temp_toml.toml "$TOML_URL"
 
           NEW_WORKER_HASH=$(sha256sum temp_worker.js | cut -d' ' -f1)
-          OLD_WORKER_HASH=$(cat "$WORKER_HASH_FILE" 2>/dev/null || echo "")
-
           NEW_TOML_HASH=$(sha256sum temp_toml.toml | cut -d' ' -f1)
+
+          OLD_WORKER_HASH=$(cat "$WORKER_HASH_FILE" 2>/dev/null || echo "")
           OLD_TOML_HASH=$(cat "$TOML_HASH_FILE" 2>/dev/null || echo "")
 
           HAS_UPDATE="false"
 
-          # ========== 修复点：正确检测上游更新 ==========
+          # ========== 处理 _worker.js（使用 diff + patch 合并） ==========
           if [ "$NEW_WORKER_HASH" != "$OLD_WORKER_HASH" ]; then
             echo "上游 _worker.js 有更新"
 
-            # 首次运行：初始化基线与备份
-            if [ ! -f "$BASE_FILE" ]; then
-              echo "首次运行，初始化基线与备份"
-              cp temp_worker.js "$BASE_FILE"
-              cp temp_worker.js "$BACKUP_FILE"
-            else
-              echo "执行三方合并：local vs base vs upstream"
+            if [ -f "$BACKUP_FILE" ]; then
+              echo "尝试合并上游 _worker.js 到本地版本..."
+              # 三方合并：本地版本 (BACKUP_FILE)、旧基线 (BACKUP_FILE.old)、上游版本 (temp_worker.js)
               cp "$BACKUP_FILE" local_worker.js
-              cp "$BASE_FILE" base_worker.js
+              cp "$BACKUP_FILE" base_worker.js   # 用当前备份作为基线
               cp temp_worker.js upstream_worker.js
 
-              git merge-file local_worker.js base_worker.js upstream_worker.js || true
+              git merge-file local_worker.js base_worker.js upstream_worker.js
 
-              echo "更新本地备份与基线"
-              mv -f local_worker.js "$BACKUP_FILE"
-              mv -f temp_worker.js "$BASE_FILE"
+              if [ $? -eq 0 ]; then
+                echo "合并完成，更新本地版本"
+                mv -f local_worker.js "$BACKUP_FILE"
+              else
+                echo "合并出现冲突，请手动解决"
+                mv -f local_worker.js "$BACKUP_FILE"
+              fi
+            else
+              echo "首次运行，直接保存上游文件"
+              mv -f temp_worker.js "$BACKUP_FILE"
             fi
 
-            # 修复点：只有检测到更新时才更新 hash
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
             HAS_UPDATE="true"
           else
             rm -f temp_worker.js
           fi
 
-          # ========== wrangler.toml 覆盖方式 ==========
-          if [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
-            echo "wrangler.toml 有更新"
+
+          # ========== 处理 wrangler.toml（仍然使用覆盖方式） ==========
+          if [ ! -f "$TOML_FILE" ] || [ "$NEW_TOML_HASH" != "$OLD_TOML_HASH" ]; then
+            echo "wrangler.toml 需要更新或初次创建"
             mv -f temp_toml.toml "$TOML_FILE"
             echo "$NEW_TOML_HASH" > "$TOML_HASH_FILE"
             HAS_UPDATE="true"
@@ -87,21 +87,27 @@ jobs:
 
           echo "has_update=$HAS_UPDATE" >> $GITHUB_OUTPUT
 
-      # ==================== 计算版本号 ====================
+      # ==================== 计算当前仓库中 _worker.js.backup 的哈希作为版本号 ====================
       - name: 计算本地 _worker.js.backup 的哈希并设为 Release 版本号
         id: generate-version
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
-          LOCAL_HASH=$(sha256sum _worker.js.backup | cut -d' ' -f1)
+          BACKUP_FILE="_worker.js.backup"
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "Error: $BACKUP_FILE 不存在"
+            exit 1
+          fi
+          LOCAL_HASH=$(sha256sum "$BACKUP_FILE" | cut -d' ' -f1)
           VERSION="${LOCAL_HASH:0:12}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "当前仓库 _worker.js.backup 的 SHA256 前12位：$VERSION"
+          echo "当前仓库 _worker.js.backup 的 SHA256 前12位：$VERSION（将作为 Release 名称）"
 
-      # ==================== 以下步骤保持不变 ====================
+      # ==================== 以下步骤仅在需要时执行 ====================
       - name: 执行后续构建（仅在必要时）
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        run: echo "开始执行混淆、提交、发布流程..."
+        run: |
+          echo "开始执行混淆、提交、发布流程..."
 
       - name: Set up Node.js
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
@@ -118,24 +124,25 @@ jobs:
 
       - name: 创建 _worker_temp.js 用于混淆
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        run: cp _worker.js.backup _worker_temp.js
+        run: |
+          cp _worker.js.backup _worker_temp.js
 
       - name: 混淆代码
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          rm -f _worker.js
           npm run build -- --input _worker_temp.js --output _worker.js
 
       - name: 压缩为 worker.zip
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        run: zip worker.zip _worker.js
+        run: |
+          zip worker.zip _worker.js
 
       - name: 提交并推送更改
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add _worker.js _worker.js.backup _worker.js.upstream wrangler.toml .worker_hash .toml_hash worker.zip || true
+          git add _worker.js _worker.js.backup wrangler.toml .worker_hash .toml_hash worker.zip || true
           if git diff --cached --quiet; then
             echo "无文件变更，跳过提交"
             exit 0
@@ -158,11 +165,11 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.generate-version.outputs.version }}"
+
           echo "正在创建/覆盖 Release，版本号：$VERSION"
 
           RELEASE_ID=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -r '.id // ""')
-
           if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
             echo "删除旧 Release $RELEASE_ID"
             curl -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -185,7 +192,6 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/releases")
 
           RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id')
-
           if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
             echo "创建 Release 失败"
             echo "$RESPONSE"
