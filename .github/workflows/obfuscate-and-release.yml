@@ -119,24 +119,49 @@ jobs:
 
       - name: 混淆代码
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        run: npm run build -- --input _worker_temp.js --output _worker.js
+        run: |
+          npm run build -- --input _worker_temp.js --output _worker.js
+          # 验证混淆文件是否创建成功
+          ls -la _worker.js || (echo "混淆失败 - _worker.js 未创建" && exit 1)
 
       - name: 压缩为 worker.zip
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
-        run: zip worker.zip _worker.js
+        run: |
+          zip worker.zip _worker.js
+          # 验证压缩包是否创建成功
+          ls -la worker.zip || (echo "压缩包创建失败" && exit 1)
 
       - name: 提交并推送更改
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add _worker.js _worker.js.backup _worker.js.upstream wrangler.toml .worker_hash .toml_hash worker.zip || true
+          
+          # 检查添加前存在的文件
+          echo "=== 目录中的文件 ==="
+          ls -la
+          
+          echo "=== 添加前的 Git 状态 ==="
+          git status
+          
+          # 分步添加文件并验证
+          git add _worker.js || echo "警告：_worker.js 未找到或已跟踪"
+          git add worker.zip || echo "警告：worker.zip 未找到或已跟踪"
+          git add _worker.js.backup _worker.js.upstream wrangler.toml .worker_hash .toml_hash || true
+          
+          echo "=== 添加后的 Git 状态 ==="
+          git status
+          
           if git diff --cached --quiet; then
             echo "无文件变更，跳过提交"
             exit 0
           fi
+          
           VERSION="${{ steps.generate-version.outputs.version }}"
           git commit -m "自动更新：混淆版 + 备份（版本 $VERSION）"
+          
+          echo "=== 提交后的 Git 日志 ==="
+          git log --oneline -1
 
       - name: Push changes
         if: steps.check-update.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
