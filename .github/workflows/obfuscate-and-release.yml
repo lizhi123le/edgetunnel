@@ -21,7 +21,7 @@ jobs:
           persist-credentials: true
 
       # ==================== 检查上游更新 ====================
-      - name: 检查上游仓库更新并同步备份文件（正确三方合并）
+      - name: 检查上游仓库更新并同步备份文件（正确的三方合并）
         id: check-update
         run: |
           set -euo pipefail
@@ -32,6 +32,7 @@ jobs:
           TOML_FILE="wrangler.toml"
           WORKER_HASH_FILE=".worker_hash"
           TOML_HASH_FILE=".toml_hash"
+          CUSTOM_FILE="_worker.js.custom"  # 用户自定义修改文件
 
           curl -fsSL -o temp_worker.js "$WORKER_URL"
           curl -fsSL -o temp_toml.toml "$TOML_URL"
@@ -47,27 +48,85 @@ jobs:
           if [ "$NEW_WORKER_HASH" != "$OLD_WORKER_HASH" ]; then
             echo "上游 _worker.js 有更新"
 
-            # 首次运行：初始化基线与备份
+            # 首次运行：初始化基线
             if [ ! -f "$BASE_FILE" ]; then
-              echo "首次运行，初始化基线与备份"
+              echo "首次运行，初始化基线文件"
               cp temp_worker.js "$BASE_FILE"
-              cp temp_worker.js "$BACKUP_FILE"
+              # 如果没有自定义文件，用上游作为备份
+              if [ ! -f "$CUSTOM_FILE" ]; then
+                cp temp_worker.js "$BACKUP_FILE"
+              else
+                echo "发现自定义文件，保留自定义修改"
+                cp "$CUSTOM_FILE" "$BACKUP_FILE"
+              fi
             else
-              echo "执行三方合并：local vs base vs upstream"
-              cp "$BACKUP_FILE" local_worker.js
+              echo "执行三方合并：custom(local) vs base vs upstream"
+              
+              # 准备三个文件进行合并
+              # local: 当前的自定义修改（或备份）
+              if [ -f "$CUSTOM_FILE" ]; then
+                cp "$CUSTOM_FILE" local_worker.js
+                echo "使用自定义文件作为 local"
+              else
+                cp "$BACKUP_FILE" local_worker.js
+                echo "使用备份文件作为 local"
+              fi
+              
+              # base: 上次的上游版本
               cp "$BASE_FILE" base_worker.js
+              
+              # upstream: 新的上游版本
               cp temp_worker.js upstream_worker.js
 
-              git merge-file local_worker.js base_worker.js upstream_worker.js || true
+              # 执行三方合并
+              echo "开始三方合并..."
+              if git merge-file local_worker.js base_worker.js upstream_worker.js; then
+                echo "三方合并成功"
+                MERGE_SUCCESS="true"
+              else
+                echo "三方合并存在冲突，尝试自动解决..."
+                MERGE_SUCCESS="false"
+                
+                # 检查冲突标记
+                if grep -q "<<<<<<" local_worker.js; then
+                  echo "发现合并冲突，创建冲突报告文件"
+                  echo "# 合并冲突报告" > merge_conflict.md
+                  echo "## 冲突时间: $(date)" >> merge_conflict.md
+                  echo "## 上游更新哈希: $NEW_WORKER_HASH" >> merge_conflict.md
+                  echo "" >> merge_conflict.md
+                  echo "以下文件包含冲突标记，需要手动解决：" >> merge_conflict.md
+                  echo "" >> merge_conflict.md
+                  echo '```' >> merge_conflict.md
+                  cat local_worker.js >> merge_conflict.md
+                  echo '```' >> merge_conflict.md
+                  
+                  # 作为后备方案，使用上游版本但保留自定义文件
+                  echo "使用上游版本作为基础，保留自定义文件供后续手动合并"
+                  cp temp_worker.js local_worker.js
+                  cp temp_worker.js "$BACKUP_FILE"
+                else
+                  echo "合并成功（无冲突标记）"
+                  MERGE_SUCCESS="true"
+                fi
+              fi
 
-              echo "更新本地备份与基线"
-              mv -f local_worker.js "$BACKUP_FILE"
+              # 更新基线文件为新的上游版本
+              echo "更新基线文件为新的上游版本"
               mv -f temp_worker.js "$BASE_FILE"
+              
+              # 保存合并结果作为备份
+              if [ "$MERGE_SUCCESS" = "true" ]; then
+                echo "保存合并结果作为备份文件"
+                mv -f local_worker.js "$BACKUP_FILE"
+                # 同时保存为自定义文件，以便下次合并
+                cp "$BACKUP_FILE" "$CUSTOM_FILE"
+              fi
             fi
 
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
             HAS_UPDATE="true"
           else
+            echo "上游 _worker.js 无更新"
             rm -f temp_worker.js
           fi
 
@@ -78,6 +137,7 @@ jobs:
             echo "$NEW_TOML_HASH" > "$TOML_HASH_FILE"
             HAS_UPDATE="true"
           else
+            echo "wrangler.toml 无更新"
             rm -f temp_toml.toml
           fi
 
@@ -90,10 +150,15 @@ jobs:
         run: |
           set -euo pipefail
           BACKUP_FILE="_worker.js.backup"
-          LOCAL_HASH=$(sha256sum "$BACKUP_FILE" | cut -d' ' -f1)
-          VERSION="${LOCAL_HASH:0:12}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "当前仓库 _worker.js.backup 的 SHA256 前12位：$VERSION"
+          if [ -f "$BACKUP_FILE" ]; then
+            LOCAL_HASH=$(sha256sum "$BACKUP_FILE" | cut -d' ' -f1)
+            VERSION="${LOCAL_HASH:0:12}"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "当前仓库 _worker.js.backup 的 SHA256 前12位：$VERSION"
+          else
+            echo "错误：备份文件不存在"
+            exit 1
+          fi
 
       # ==================== 以下步骤仅在需要时执行 ====================
       - name: 执行后续构建（仅在必要时）
@@ -147,7 +212,10 @@ jobs:
           # 分步添加文件并验证
           git add _worker.js || echo "警告：_worker.js 未找到或已跟踪"
           git add worker.zip || echo "警告：worker.zip 未找到或已跟踪"
-          git add _worker.js.backup _worker.js.upstream wrangler.toml .worker_hash .toml_hash || true
+          git add _worker.js.backup _worker.js.upstream _worker.js.custom wrangler.toml .worker_hash .toml_hash || true
+          
+          # 如果有冲突报告，也添加
+          git add merge_conflict.md || true
           
           echo "=== 添加后的 Git 状态 ==="
           git status
@@ -158,7 +226,14 @@ jobs:
           fi
           
           VERSION="${{ steps.generate-version.outputs.version }}"
-          git commit -m "自动更新：混淆版 + 备份（版本 $VERSION）"
+          COMMIT_MSG="自动更新：混淆版 + 备份（版本 $VERSION）"
+          
+          # 如果有冲突，在提交信息中说明
+          if [ -f "merge_conflict.md" ]; then
+            COMMIT_MSG="$COMMIT_MSG [注意：存在合并冲突，请检查]"
+          fi
+          
+          git commit -m "$COMMIT_MSG"
           
           echo "=== 提交后的 Git 日志 ==="
           git log --oneline -1
