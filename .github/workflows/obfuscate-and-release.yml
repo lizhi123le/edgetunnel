@@ -32,7 +32,6 @@ jobs:
           TOML_FILE="wrangler.toml"
           WORKER_HASH_FILE=".worker_hash"
           TOML_HASH_FILE=".toml_hash"
-          CUSTOM_FILE="_worker.js.custom"  # 用户自定义修改文件
 
           curl -fsSL -o temp_worker.js "$WORKER_URL"
           curl -fsSL -o temp_toml.toml "$TOML_URL"
@@ -52,24 +51,23 @@ jobs:
             if [ ! -f "$BASE_FILE" ]; then
               echo "首次运行，初始化基线文件"
               cp temp_worker.js "$BASE_FILE"
-              # 如果没有自定义文件，用上游作为备份
-              if [ ! -f "$CUSTOM_FILE" ]; then
+              # 如果没有备份文件，用上游作为备份
+              if [ ! -f "$BACKUP_FILE" ]; then
                 cp temp_worker.js "$BACKUP_FILE"
               else
-                echo "发现自定义文件，保留自定义修改"
-                cp "$CUSTOM_FILE" "$BACKUP_FILE"
+                echo "发现现有备份文件，保留用户修改"
               fi
             else
-              echo "执行三方合并：custom(local) vs base vs upstream"
+              echo "执行三方合并：backup(local) vs base vs upstream"
               
               # 准备三个文件进行合并
-              # local: 当前的自定义修改（或备份）
-              if [ -f "$CUSTOM_FILE" ]; then
-                cp "$CUSTOM_FILE" local_worker.js
-                echo "使用自定义文件作为 local"
-              else
+              # local: 当前的用户修改（backup文件）
+              if [ -f "$BACKUP_FILE" ]; then
                 cp "$BACKUP_FILE" local_worker.js
-                echo "使用备份文件作为 local"
+                echo "使用备份文件作为 local（用户修改）"
+              else
+                echo "警告：备份文件不存在，使用上游版本作为 local"
+                cp "$BASE_FILE" local_worker.js
               fi
               
               # base: 上次的上游版本
@@ -100,10 +98,11 @@ jobs:
                   cat local_worker.js >> merge_conflict.md
                   echo '```' >> merge_conflict.md
                   
-                  # 作为后备方案，使用上游版本但保留自定义文件
-                  echo "使用上游版本作为基础，保留自定义文件供后续手动合并"
+                  # 作为后备方案，使用上游版本但保留原备份供手动处理
+                  echo "使用上游版本作为基础，保留原备份文件供后续手动合并"
                   cp temp_worker.js local_worker.js
-                  cp temp_worker.js "$BACKUP_FILE"
+                  # 保存原备份为 .old 版本
+                  cp "$BACKUP_FILE" "${BACKUP_FILE}.old"
                 else
                   echo "合并成功（无冲突标记）"
                   MERGE_SUCCESS="true"
@@ -115,12 +114,8 @@ jobs:
               mv -f temp_worker.js "$BASE_FILE"
               
               # 保存合并结果作为备份
-              if [ "$MERGE_SUCCESS" = "true" ]; then
-                echo "保存合并结果作为备份文件"
-                mv -f local_worker.js "$BACKUP_FILE"
-                # 同时保存为自定义文件，以便下次合并
-                cp "$BACKUP_FILE" "$CUSTOM_FILE"
-              fi
+              echo "保存合并结果作为备份文件"
+              mv -f local_worker.js "$BACKUP_FILE"
             fi
 
             echo "$NEW_WORKER_HASH" > "$WORKER_HASH_FILE"
@@ -212,10 +207,13 @@ jobs:
           # 分步添加文件并验证
           git add _worker.js || echo "警告：_worker.js 未找到或已跟踪"
           git add worker.zip || echo "警告：worker.zip 未找到或已跟踪"
-          git add _worker.js.backup _worker.js.upstream _worker.js.custom wrangler.toml .worker_hash .toml_hash || true
+          git add _worker.js.backup _worker.js.upstream wrangler.toml .worker_hash .toml_hash || true
           
           # 如果有冲突报告，也添加
           git add merge_conflict.md || true
+          
+          # 如果有旧备份文件，也添加（用于冲突时手动处理）
+          git add _worker.js.backup.old || true
           
           echo "=== 添加后的 Git 状态 ==="
           git status
