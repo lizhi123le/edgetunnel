@@ -1,6 +1,6 @@
 # 合并冲突报告
-## 冲突时间: Fri Jan 23 02:10:32 UTC 2026
-## 上游更新哈希: 996f15a1002a05a2eb1df6259a3169af4dd0faa94516cd8560a3ad920003f2ab
+## 冲突时间: Tue Jan 27 18:49:49 UTC 2026
+## 上游更新哈希: 95f0ec22be7829feb0b172ad685c6406760c1c79b914a8a712149e8518ae8cbc
 
 以下文件包含冲突标记，需要手动解决：
 
@@ -99,11 +99,11 @@ export default {
                         return new Response(JSON.stringify(检测代理响应, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                     }
 
-                    config_JSON = await 读取config_JSON(env, host, userID, env.PATH);
+                    config_JSON = await 读取config_JSON(env, host, userID);
 
                     if (访问路径 === 'admin/init') {// 重置配置为默认值
                         try {
-                            config_JSON = await 读取config_JSON(env, host, userID, env.PATH, true);
+                            config_JSON = await 读取config_JSON(env, host, userID, true);
                             ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Init_Config', config_JSON));
                             config_JSON.init = '配置已重置为默认值';
                             return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -198,7 +198,7 @@ export default {
                 } else if (访问路径 === 'sub') {//处理订阅请求
                     const 订阅TOKEN = await MD5MD5(host + userID);
                     if (url.searchParams.get('token') === 订阅TOKEN) {
-                        config_JSON = await 读取config_JSON(env, host, userID, env.PATH);
+                        config_JSON = await 读取config_JSON(env, host, userID);
                         ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
                         const ua = UA.toLowerCase();
                         const expire = 4102329600;//2099-12-31 到期时间
@@ -240,7 +240,6 @@ export default {
                         const 协议类型 = (url.searchParams.has('surge') || ua.includes('surge')) ? 'tro' + 'jan' : config_JSON.协议类型;
                         let 订阅内容 = '';
                         if (订阅类型 === 'mixed') {
-                            const 节点路径 = config_JSON.启用0RTT ? config_JSON.PATH + '?ed=2560' : config_JSON.PATH;
                             const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
                             let 完整优选IP = [], 其他节点LINK = '';
 
@@ -308,7 +307,7 @@ export default {
                                     return null;
                                 }
 
-                                return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${config_JSON.传输协议 + ECHLINK参数}&host=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&path=${encodeURIComponent(config_JSON.随机路径 ? 随机路径() + 节点路径 : 节点路径) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
+                                return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${config_JSON.传输协议 + ECHLINK参数}&host=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&path=${encodeURIComponent(config_JSON.随机路径 ? 随机路径(config_JSON.完整节点路径) : config_JSON.完整节点路径) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
                             }).filter(item => item !== null).join('\n');
                         } else { // 订阅转换
                             const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 订阅TOKEN + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
@@ -808,7 +807,6 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid = null,
     - https://dns.alidns.com/dns-query
   fallback:
     - 8.8.4.4
-    - 101.101.101.101
     - 208.67.220.220
   fallback-filter:
     geoip: true
@@ -833,7 +831,7 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid = null,
     // 如果 ECH 启用且 HOSTS 有效，添加 nameserver-policy
     if (ECH启用 && HOSTS.length > 0) {
         // 生成 HOSTS 的 nameserver-policy 条目
-        const hostsEntries = HOSTS.map(host => `    "${host}":\n      - tls://223.5.5.5\n      - tls://8.8.8.8\n      - https://doh.090227.xyz/CMLiussss${ECH_DNS ? `\n      - ${ECH_DNS}` : ''}`).join('\n');
+        const hostsEntries = HOSTS.map(host => `    "${host}":${ECH_DNS ? `\n      - ${ECH_DNS}` : ''}\n      - https://doh.cm.edu.kg/CMLiussss`).join('\n');
 
         // 检查是否存在 nameserver-policy:
         const hasNameserverPolicy = /^\s{2}nameserver-policy:\s*(?:\n|$)/m.test(clash_yaml);
@@ -1196,12 +1194,11 @@ function Surge订阅配置文件热补丁(content, url, config_JSON) {
     const 每行内容 = content.includes('\r\n') ? content.split('\r\n') : content.split('\n');
 
     let 输出内容 = "";
-    const realSurgePath = config_JSON.启用0RTT ? config_JSON.PATH + '?ed=2560' : config_JSON.PATH;
     for (let x of 每行内容) {
         if (x.includes('= tro' + 'jan,') && !x.includes('ws=true') && !x.includes('ws-path=')) {
             const host = x.split("sni=")[1].split(",")[0];
             const 备改内容 = `sni=${host}, skip-cert-verify=${config_JSON.跳过证书验证}`;
-            const 正确内容 = `sni=${host}, skip-cert-verify=${config_JSON.跳过证书验证}, ws=true, ws-path=${realSurgePath}, ws-headers=Host:"${host}"`;
+            const 正确内容 = `sni=${host}, skip-cert-verify=${config_JSON.跳过证书验证}, ws=true, ws-path=${config_JSON.随机路径 ? 随机路径(config_JSON.完整节点路径) : config_JSON.完整节点路径}, ws-headers=Host:"${host}"`;
             输出内容 += x.replace(new RegExp(备改内容, 'g'), 正确内容).replace("[", "").replace("]", "") + '\n';
         } else {
             输出内容 += x + '\n';
@@ -1299,11 +1296,17 @@ async function MD5MD5(文本) {
     return 第二次十六进制.toLowerCase();
 }
 
+<<<<<<< local_worker.js
 function 随机路径() {
     const 常用路径目录 = ["#","about","account","acg","act","activity","ad","admin","ads","ajax","album","albums","anime","api","app","apps","archive","archives","article","articles","ask","auth","avatar","bbs","bd","blog","blogs","book","books","bt","buy","cart","category","categories","cb","channel","channels","chat","china","city","class","classify","clip","clips","club","cn","code","collect","collection","comic","comics","community","company","config","contact","content","course","courses","cp","data","detail","details","dh","directory","discount","discuss","dl","dload","doc","docs","document","documents","doujin","download","downloads","drama","edu","en","ep","episode","episodes","event","events","f","faq","favorite","favourites","favs","feedback","file","files","film","films","forum","forums","friend","friends","game","games","gif","go","go.html","go.php","group","groups","help","home","hot","htm","html","image","images","img","index","info","intro","item","items","ja","jp","jump","jump.html","jump.php","jumping","knowledge","lang","lesson","lessons","lib","library","link","links","list","live","lives","login","logout","m","mag","magnet","mall","manhua","map","member","members","message","messages","mobile","movie","movies","music","my","new","news","note","novel","novels","online","order","out","out.html","out.php","outbound","p","page","pages","pay","payment","pdf","photo","photos","pic","pics","picture","pictures","play","player","playlist","post","posts","product","products","program","programs","project","qa","question","rank","ranking","read","readme","redirect","redirect.html","redirect.php","reg","register","res","resource","retrieve","sale","search","season","seasons","section","seller","series","service","services","setting","settings","share","shop","show","shows","site","soft","sort","source","special","star","stars","static","stock","store","stream","streaming","streams","student","study","tag","tags","task","teacher","team","tech","temp","test","thread","tool","tools","topic","topics","torrent","trade","travel","tv","txt","type","u","upload","uploads","url","urls","user","users","v","version","video","videos","view","vip","vod","watch","web","wenku","wiki","work","www","zh","zh-cn","zh-tw","zip","about-us","access","accounting","activation","address","advertising","affiliate","agreement","alert","alerts","analytics-dashboard","announcement","api-docs","apply","archive-news","article-detail","attendance","author","auto","backup","banner","billing","board","brand","browse-all","business","calendar","campaign","career","cart-checkout","catalog","certificate","checkout-success","client","cloud","comment","company-info","competition","complaint","conference","connect","console","contact-form","contest","contract","contribute","control","cookie","copyright","coupon","create","crm","currency","custom","customer","dashboard-admin","data-center","deal","default","demo","department","design","developer","development","device","directory-list","discounts","display","donate","editor","email","employee","employment","enterprise","entry","environment","error-log","estimate","exam","example","exchange","experience","expert","export","faq-page","feature","feedback-form","finance","financial","fleet","flow","form","gallery","gateway","general","global","guide","hardware","health","history-page","holiday","host","hosting","identity","image-gallery","import","index-page","industry","info-center","information","inquiry","install","instruction","insurance","integration","interface","internal","invoice","issue","job","join","journal","key","knowledge-base","lab","landing","language","launch","legal","license","limited","location","log","logging","logs","machine","mail","manage","management","manual","map-view","market","marketing","master","media-center","member-area","menu","merchant","message-board","meta","method","metrics","misc","moderator","module","monitor","monthly","navigation","network","newsletter","notification","office","official","open","operation","opinion","option","order-detail","organization","overview","owner","package","partner","password","payment-info","people","performance","personal","phone","photo-gallery","plan","platform","policy","portal","portfolio","position","preferences","press-release","preview","pricing","print","privacy-policy","problem","process","profile-edit","project-detail","promotion","property","proposal","public","publication","purchase","quality","queue","quote","ranking-list","rate","rating","record","register-form","release","report","reporting","request","requirement","research","resource-center","response","result","resume","review","role","rule","sales","sample","schedule","school","score","screen","script","search-results","section-list","security","server","session","setting-page","setup","shop-cart","shopping","signin","signup-form","site-map","solution","staff","statistics","status-page","storage","store-front","studio","submission","subscribe-form","subscription","success","summary","support-center","survey","system","table","task-list","team-member","template","terms-of-service","test-case","ticket","timeline","toolbox","topic-list","tour","tracking-info","training","transaction","transfer","translation","tutorial","update","upgrade","upload-file","usage","user-guide","utility","validation","value","vendor","verification","version-info","visitor","voice","webmail","workflow"];
-	const 随机数 = Math.floor(Math.random() * 3 + 1);
+=======
+function 随机路径(完整节点路径 = "/") {
+    const 常用路径目录 = ["about", "account", "acg", "act", "activity", "ad", "ads", "ajax", "album", "albums", "anime", "api", "app", "apps", "archive", "archives", "article", "articles", "ask", "auth", "avatar", "bbs", "bd", "blog", "blogs", "book", "books", "bt", "buy", "cart", "category", "categories", "cb", "channel", "channels", "chat", "china", "city", "class", "classify", "clip", "clips", "club", "cn", "code", "collect", "collection", "comic", "comics", "community", "company", "config", "contact", "content", "course", "courses", "cp", "data", "detail", "details", "dh", "directory", "discount", "discuss", "dl", "dload", "doc", "docs", "document", "documents", "doujin", "download", "downloads", "drama", "edu", "en", "ep", "episode", "episodes", "event", "events", "f", "faq", "favorite", "favourites", "favs", "feedback", "file", "files", "film", "films", "forum", "forums", "friend", "friends", "game", "games", "gif", "go", "go.html", "go.php", "group", "groups", "help", "home", "hot", "htm", "html", "image", "images", "img", "index", "info", "intro", "item", "items", "ja", "jp", "jump", "jump.html", "jump.php", "jumping", "knowledge", "lang", "lesson", "lessons", "lib", "library", "link", "links", "list", "live", "lives", "m", "mag", "magnet", "mall", "manhua", "map", "member", "members", "message", "messages", "mobile", "movie", "movies", "music", "my", "new", "news", "note", "novel", "novels", "online", "order", "out", "out.html", "out.php", "outbound", "p", "page", "pages", "pay", "payment", "pdf", "photo", "photos", "pic", "pics", "picture", "pictures", "play", "player", "playlist", "post", "posts", "product", "products", "program", "programs", "project", "qa", "question", "rank", "ranking", "read", "readme", "redirect", "redirect.html", "redirect.php", "reg", "register", "res", "resource", "retrieve", "sale", "search", "season", "seasons", "section", "seller", "series", "service", "services", "setting", "settings", "share", "shop", "show", "shows", "site", "soft", "sort", "source", "special", "star", "stars", "static", "stock", "store", "stream", "streaming", "streams", "student", "study", "tag", "tags", "task", "teacher", "team", "tech", "temp", "test", "thread", "tool", "tools", "topic", "topics", "torrent", "trade", "travel", "tv", "txt", "type", "u", "upload", "uploads", "url", "urls", "user", "users", "v", "version", "video", "videos", "view", "vip", "vod", "watch", "web", "wenku", "wiki", "work", "www", "zh", "zh-cn", "zh-tw", "zip"];
+>>>>>>> upstream_worker.js
+    const 随机数 = Math.floor(Math.random() * 3 + 1);
     const 随机路径 = 常用路径目录.sort(() => 0.5 - Math.random()).slice(0, 随机数).join('/');
-    return `/${随机路径}`;
+    if (完整节点路径 === "/") return `/${随机路径}`;
+    else return `/${随机路径 + 完整节点路径.replace('/?', '?')}`;
 }
 
 function 随机替换通配符(h) {
@@ -1359,7 +1362,7 @@ async function getECH(host) {
     }
 }
 
-async function 读取config_JSON(env, hostname, userID, path, 重置配置 = false) {
+async function 读取config_JSON(env, hostname, userID, 重置配置 = false) {
     //const host = 随机替换通配符(hostname);
     const host = hostname, CM_DoH = "https://doh.cmliussss.net/CMLiussss";
     const 初始化开始时间 = performance.now();
@@ -1368,6 +1371,7 @@ async function 读取config_JSON(env, hostname, userID, path, 重置配置 = fal
         HOST: host,
         HOSTS: [hostname],
         UUID: userID,
+        PATH: "/",
         协议类型: "v" + "le" + "ss",
         传输协议: "ws",
         跳过证书验证: true,
@@ -1444,13 +1448,26 @@ async function 读取config_JSON(env, hostname, userID, path, 重置配置 = fal
     if (!config_JSON.HOSTS) config_JSON.HOSTS = [hostname];
     if (env.HOST) config_JSON.HOSTS = (await 整理成数组(env.HOST)).map(h => h.toLowerCase().replace(/^https?:\/\//, '').split('/')[0].split(':')[0]);
     config_JSON.UUID = userID;
-    config_JSON.PATH = path ? (path.startsWith('/') ? path : '/' + path) : (config_JSON.反代.SOCKS5.启用 ? ('/' + config_JSON.反代.SOCKS5.启用 + (config_JSON.反代.SOCKS5.全局 ? '://' : '=') + config_JSON.反代.SOCKS5.账号) : (config_JSON.反代.PROXYIP === 'auto' ? '/' : `/proxyip=${config_JSON.反代.PROXYIP}`));
+    if (!config_JSON.随机路径) config_JSON.随机路径 = false;
+    if (!config_JSON.启用0RTT) config_JSON.启用0RTT = false;
+
+    if (env.PATH) config_JSON.PATH = env.PATH.startsWith('/') ? env.PATH : '/' + env.PATH;
+    else if (!config_JSON.PATH) config_JSON.PATH = '/';
+
+    const { SOCKS5, PROXYIP } = config_JSON.反代;
+    const PATH反代参数 = SOCKS5.启用 ? `${SOCKS5.启用}${SOCKS5.全局 ? '://' : '='}${SOCKS5.账号}` : (PROXYIP === 'auto' ? '' : `proxyip=${PROXYIP}`);
+    const normalizedPath = config_JSON.PATH === '/' ? '' : config_JSON.PATH.replace(/\/+(?=\?|$)/, '').replace(/\/+$/, '');
+    const [路径部分, ...查询数组] = normalizedPath.split('?');
+    const 查询部分 = 查询数组.length ? '?' + 查询数组.join('?') : '';
+    config_JSON.完整节点路径 = (路径部分 || '/') + (路径部分 && PATH反代参数 ? '/' : '') + PATH反代参数 + 查询部分 + (config_JSON.启用0RTT ? (查询部分 ? '&' : '?') + 'ed=2560' : '');
+
+    if (!config_JSON.TLS分片 && config_JSON.TLS分片 !== null) config_JSON.TLS分片 = null;
     const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
     if (!config_JSON.Fingerprint) config_JSON.Fingerprint = "chrome";
     if (!config_JSON.ECH) config_JSON.ECH = false;
     if (!config_JSON.ECHConfig) config_JSON.ECHConfig = { DNS: CM_DoH, SNI: null };
     const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
-    config_JSON.LINK = `${config_JSON.协议类型}://${userID}@${host}:443?security=tls&type=${config_JSON.传输协议 + ECHLINK参数}&host=${host}&fp=${config_JSON.Fingerprint}&sni=${host}&path=${encodeURIComponent(config_JSON.启用0RTT ? config_JSON.PATH + '?ed=2560' : config_JSON.PATH) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
+    config_JSON.LINK = `${config_JSON.协议类型}://${userID}@${host}:443?security=tls&type=${config_JSON.传输协议 + ECHLINK参数}&host=${host}&fp=${config_JSON.Fingerprint}&sni=${host}&path=${encodeURIComponent(config_JSON.随机路径 ? 随机路径(config_JSON.完整节点路径) : config_JSON.完整节点路径) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
     config_JSON.优选订阅生成.TOKEN = await MD5MD5(hostname + userID);
 
     const 初始化TG_JSON = { BotToken: null, ChatID: null };
@@ -1503,9 +1520,9 @@ async function 读取config_JSON(env, hostname, userID, path, 重置配置 = fal
 }
 
 async function 生成随机IP(request, count = 16, 指定端口 = -1) {
-    const asnMap = { '9808': 'cmcc', '4837': 'cu', '4134': 'ct' }, asn = request.cf.asn;
+    const asnMap = { '9808': 'cmcc', '4837': 'cu', '17623': 'cu', '4134': 'ct' }, asn = request.cf.asn;
     const cidr_url = asnMap[asn] ? `https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR/${asnMap[asn]}.txt` : 'https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt';
-    const cfname = { '9808': 'CF移动优选', '4837': 'CF联通优选', '4134': 'CF电信优选' }[asn] || 'CF官方优选';
+    const cfname = { '9808': 'CF移动优选', '4837': 'CF联通优选', '17623': 'CF联通优选', '4134': 'CF电信优选' }[asn] || 'CF官方优选';
     const cfport = [443, 2053, 2083, 2087, 2096, 8443];
     let cidrList = [];
     try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13']; } catch { cidrList = ['104.16.0.0/13']; }
@@ -1683,7 +1700,7 @@ async function 反代参数获取(request) {
     启用SOCKS5全局反代 = searchParams.has('globalproxy') || false;
 
     // 统一处理反代IP参数 (优先级最高,使用正则一次匹配)
-    const proxyMatch = pathLower.match(/\/(proxyip[.=]|pyip=|ip=)(.+)/);
+    const proxyMatch = pathLower.match(/\/(proxyip[.=]|pyip=|ip=)([^/?]+)/);
     if (searchParams.has('proxyip')) {
         const 路参IP = searchParams.get('proxyip');
         反代IP = 路参IP.includes(',') ? 路参IP.split(',')[Math.floor(Math.random() * 路参IP.split(',').length)] : 路参IP;
@@ -1698,10 +1715,10 @@ async function 反代参数获取(request) {
 
     // 处理SOCKS5/HTTP代理参数
     let socksMatch;
-    if ((socksMatch = pathname.match(/\/(socks5?|http):\/?\/?(.+)/i))) {
+    if ((socksMatch = pathname.match(/\/(socks5?|http):\/?\/?([^/?#]+)/i))) {
         // 格式: /socks5://... 或 /http://...
         启用SOCKS5反代 = socksMatch[1].toLowerCase() === 'http' ? 'http' : 'socks5';
-        我的SOCKS5账号 = socksMatch[2].split('#')[0];
+        我的SOCKS5账号 = socksMatch[2];
         启用SOCKS5全局反代 = true;
 
         // 处理Base64编码的用户名密码
@@ -1713,7 +1730,7 @@ async function 反代参数获取(request) {
             }
             我的SOCKS5账号 = `${userPassword}@${我的SOCKS5账号.substring(atIndex + 1)}`;
         }
-    } else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http)=(.+)/i))) {
+    } else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http)=([^/?#]+)/i))) {
         // 格式: /socks5=... 或 /s5=... 或 /gs5=... 或 /http=... 或 /ghttp=...
         const type = socksMatch[1].toLowerCase();
         我的SOCKS5账号 = socksMatch[2];
@@ -2093,9 +2110,5 @@ async function html1101(host, 访问IP) {
 </body>
 </html>`;
 }
-<<<<<<< local_worker.js
 
-
-=======
->>>>>>> upstream_worker.js
 ```
