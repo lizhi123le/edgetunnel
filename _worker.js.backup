@@ -308,9 +308,19 @@ export default {
                             const subParam = url.searchParams.get('sub');
                             const subQuery = subParam ? `&sub=${encodeURIComponent(subParam)}` : '';
                             const innerSubUrl = `${url.origin}/sub?target=mixed&token=${订阅TOKEN}${subQuery}`;
-                            const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(innerSubUrl)}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
+                            // 将布尔值转换为字符串，避免后端解析错误
+                            const emojiParam = config_JSON.订阅转换配置.SUBEMOJI ? 'true' : 'false';
+                            const scvParam = config_JSON.跳过证书验证 ? 'true' : 'false';
+                            const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(innerSubUrl)}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${emojiParam}&scv=${scvParam}`;
+                            console.log('[订阅转换] 请求URL:', 订阅转换URL);
                             try {
-                                const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel(https://github.com/cmliu/edge' + 'tunnel)' } });
+                                const controller = new AbortController();
+                                const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时
+                                const response = await fetch(订阅转换URL, {
+                                    headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel(https://github.com/cmliu/edge' + 'tunnel)' },
+                                    signal: controller.signal
+                                });
+                                clearTimeout(timeoutId);
                                 if (response.ok) {
                                     订阅内容 = await response.text();
                                     if (url.searchParams.has('surge') || ua.includes('surge')) {
