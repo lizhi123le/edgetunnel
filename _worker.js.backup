@@ -1,4 +1,4 @@
-﻿import //crypto from "node:crypto";
+import //crypto from "node:crypto";
 /*How can we utilize the*/ { connect }
 /*function*/ from /*the*/ "cloudflare:sockets";//​ library in this Worker?
 let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
@@ -210,7 +210,7 @@ export default {
                         const responseHeaders = {
                             "content-type": "text/plain; charset=utf-8",
                             "Profile-Update-Interval": config_JSON.优选订阅生成.SUBUpdateTime,
-                            "Profile-web-page-url": url.protocol + '//' + url.host + '/admin',
+                            "Profile-web-page-url": `${url.origin}/admin`,
                             "Subscription-Userinfo": `upload=${pagesSum}; download=${workersSum}; total=${total}; expire=${expire}`,
                             "Cache-Control": "no-store",
                         };
@@ -305,21 +305,36 @@ export default {
                                 return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${config_JSON.传输协议 + ECHLINK参数}&host=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&path=${encodeURIComponent(config_JSON.随机路径 ? 随机路径(config_JSON.完整节点路径) : config_JSON.完整节点路径) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
                             }).filter(item => item !== null).join('\n');
                         } else { // 订阅转换
-                            const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 订阅TOKEN + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
+                            const subParam = url.searchParams.get('sub');
+                            const subQuery = subParam ? `&sub=${encodeURIComponent(subParam)}` : '';
+                            const innerSubUrl = `${url.origin}/sub?target=mixed&token=${订阅TOKEN}${subQuery}`;
+                            const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(innerSubUrl)}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
                             try {
                                 const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel(https://github.com/cmliu/edge' + 'tunnel)' } });
                                 if (response.ok) {
                                     订阅内容 = await response.text();
-                                    if (url.searchParams.has('surge') || ua.includes('surge')) 订阅内容 = Surge订阅配置文件热补丁(订阅内容, url.protocol + '//' + url.host + '/sub?token=' + 订阅TOKEN + '&surge', config_JSON);
-                                } else return new Response('订阅转换后端异常：' + response.statusText, { status: response.status });
+                                    if (url.searchParams.has('surge') || ua.includes('surge')) {
+                                        const surgeUrl = `${url.origin}/sub?token=${订阅TOKEN}&surge`;
+                                        订阅内容 = Surge订阅配置文件热补丁(订阅内容, surgeUrl, config_JSON);
+                                    }
+                                } else {
+                                    const errorText = await response.text().catch(() => 'Unknown error');
+                                    console.error('订阅转换后端错误:', response.status, response.statusText, errorText);
+                                    return new Response('订阅转换后端异常：' + response.statusText + ' (Status: ' + response.status + ')', { status: response.status });
+                                }
                             } catch (error) {
-                                return new Response('订阅转换后端异常：' + error.message, { status: 403 });
+                                console.error('订阅转换请求失败:', error);
+                                return new Response('订阅转换后端异常：' + error.message, { status: 503 });
                             }
                         }
 
-                        if (!ua.includes('subconverter')) 订阅内容 = await 批量替换域名(订阅内容.replace(/00000000-0000-4000-8000-000000000000/g, config_JSON.UUID), config_JSON.HOSTS)
+                        if (!ua.includes('subconverter')) {
+                            订阅内容 = await 批量替换域名(订阅内容.replace(/00000000-0000-4000-8000-000000000000/g, config_JSON.UUID), config_JSON.HOSTS);
+                        }
 
-                        if (订阅类型 === 'mixed' && (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64'))) 订阅内容 = btoa(订阅内容);
+                        if (订阅类型 === 'mixed' && (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64'))) {
+                            订阅内容 = btoa(订阅内容);
+                        }
 
                         if (订阅类型 === 'singbox') {
                             订阅内容 = Singbox订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.Fingerprint, config_JSON.ECH ? await getECH(config_JSON.ECHConfig.SNI || host) : null);
@@ -2114,4 +2129,3 @@ async function html1101(host, 访问IP) {
 </body>
 </html>`;
 }
-
