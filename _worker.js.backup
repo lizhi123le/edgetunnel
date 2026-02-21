@@ -1,4 +1,4 @@
-﻿/*In our project workflow, we first*/ import //the necessary modules, 
+/*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
     'cloudflare\u003asockets';
@@ -235,6 +235,9 @@ export default {
                         // 非clash/singbox的订阅添加下载附件头
                         const isClashOrSingbox = 订阅类型 === 'clash' || 订阅类型 === 'singbox';
                         if (!ua.includes('mozilla') && !isClashOrSingbox) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
+
+                        // 显式设置content-type
+                        responseHeaders["content-type"] = isClashOrSingbox ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8';
 
                         const 协议类型 = (url.searchParams.has('surge') || ua.includes('surge')) ? 'tro' + 'jan' : config_JSON.协议类型;
                         let 订阅内容 = '';
