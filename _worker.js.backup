@@ -237,7 +237,7 @@ export default {
                         if (!ua.includes('mozilla') && !isClashOrSingbox) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
 
                         // 显式设置content-type
-                        responseHeaders["content-type"] = isClashOrSingbox ? 'text/plain; charset=utf-8';
+                        responseHeaders["content-type"] = isClashOrSingbox ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8';
 
                         const 协议类型 = (url.searchParams.has('surge') || ua.includes('surge')) ? 'tro' + 'jan' : config_JSON.协议类型;
                         let 订阅内容 = '';
