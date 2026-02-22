@@ -324,11 +324,9 @@ export default {
                         if (订阅类型 === 'singbox') {
                             订阅内容 = Singbox订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.Fingerprint, config_JSON.ECH ? await getECH(config_JSON.ECHConfig.SNI || host) : null);
                             responseHeaders["content-type"] = 'application/json; charset=utf-8';
-                            responseHeaders["Content-Disposition"] = "inline";
                         } else if (订阅类型 === 'clash') {
                             订阅内容 = Clash订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.ECH, config_JSON.HOSTS, config_JSON.ECHConfig.SNI, config_JSON.ECHConfig.DNS);
                             responseHeaders["content-type"] = 'application/json; charset=utf-8';
-                            responseHeaders["Content-Disposition"] = "inline";
                         }
                         return new Response(订阅内容, { status: 200, headers: responseHeaders });
                     }
