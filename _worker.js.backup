@@ -1817,12 +1817,14 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
                 lastError = e;
                 // 如果是 abort(超时)，等待后重试
                 if (e.name === 'AbortError' || e.message?.includes('aborted')) {
-                    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 270) + 1000)));
+                    const 随机退避 = 1000 + Math.floor(Math.random() * 270);
+                    await new Promise(r => setTimeout(r, 随机退避));
                     continue;
                 }
                 // 网络错误，等待后重试
                 if (i < maxRetries - 1) {
-                    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 270) + 1000));
+                    const 随机退避 = 1000 + Math.floor(Math.random() * 270);
+                    await new Promise(r => setTimeout(r, 随机退避));
                 }
             }
         }
