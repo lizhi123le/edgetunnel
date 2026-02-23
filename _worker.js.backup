@@ -1795,10 +1795,40 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
     return [优选IP, 其他节点LINK];
 }
 
-async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) {
+async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) {
     if (!urls?.length) return [[], [], []];
     const results = new Set();
     let 订阅链接响应的明文LINK内容 = '', 需要订阅转换订阅URLs = [];
+
+    // 带重试的请求辅助函数
+    const fetchWithRetry = async (url, maxRetries = 2) => {
+        let lastError;
+        for (let i = 0; i < maxRetries; i++) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 超时时间);
+                const response = await fetch(url, { signal: controller.signal });
+                clearTimeout(timeoutId);
+                if (response.ok) {
+                    return response;
+                }
+                lastError = new Error(`HTTP ${response.status}`);
+            } catch (e) {
+                lastError = e;
+                // 如果是 abort(超时)，等待后重试
+                if (e.name === 'AbortError' || e.message?.includes('aborted')) {
+                    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 270) + 1000)));
+                    continue;
+                }
+                // 网络错误，等待后重试
+                if (i < maxRetries - 1) {
+                    await new Promise(r => setTimeout(r, Math.floor(Math.random() * 270) + 1000));
+                }
+            }
+        }
+        throw lastError;
+    };
+
     await Promise.allSettled(urls.map(async (url) => {
         if (url.toLowerCase().startsWith('sub://')) {
             try {
@@ -1810,10 +1840,8 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
         }
 
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 超时时间);
-            const response = await fetch(url, { signal: controller.signal });
-            clearTimeout(timeoutId);
+            // 使用带重试的 fetch
+            const response = await fetchWithRetry(url);
             let text = '';
             try {
                 const buffer = await response.arrayBuffer();
