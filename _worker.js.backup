@@ -232,7 +232,9 @@ export default {
                                                     ? 'loon'
                                                     : 'mixed';
 
-                        if (!ua.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
+                        // 非clash/singbox的订阅添加下载附件头
+                        const isClashOrSingbox = 订阅类型 === 'clash' || 订阅类型 === 'singbox';
+                        if (!ua.includes('mozilla') && !isClashOrSingbox) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
                         const 协议类型 = (url.searchParams.has('surge') || ua.includes('surge')) ? 'tro' + 'jan' : config_JSON.协议类型;
                         let 订阅内容 = '';
                         if (订阅类型 === 'mixed') {
@@ -317,10 +319,12 @@ export default {
 
                         if (订阅类型 === 'singbox') {
                             订阅内容 = Singbox订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.Fingerprint, config_JSON.ECH ? await getECH(config_JSON.ECHConfig.SNI || host) : null);
-                            responseHeaders["content-type"] = 'application/json; charset=utf-8';
+                            responseHeaders["content-type"] = 'text/plain; charset=utf-8';
+                            responseHeaders["Content-Disposition"] = "inline";
                         } else if (订阅类型 === 'clash') {
                             订阅内容 = Clash订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.ECH, config_JSON.HOSTS, config_JSON.ECHConfig.SNI, config_JSON.ECHConfig.DNS);
-                            responseHeaders["content-type"] = 'application/x-yaml; charset=utf-8';
+                            responseHeaders["content-type"] = 'text/plain; charset=utf-8';
+                            responseHeaders["Content-Disposition"] = "inline";
                         }
                         return new Response(订阅内容, { status: 200, headers: responseHeaders });
                     }
@@ -1788,10 +1792,35 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
     return [优选IP, 其他节点LINK];
 }
 
-async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) {
+async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) {
     if (!urls?.length) return [[], [], []];
     const results = new Set();
     let 订阅链接响应的明文LINK内容 = '', 需要订阅转换订阅URLs = [];
+
+    // 带重试的请求辅助函数
+    const fetchWithRetry = async (url, maxRetries = 2) => {
+        let lastError;
+        for (let i = 0; i < maxRetries; i++) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 超时时间);
+                const response = await fetch(url, { signal: controller.signal });
+                clearTimeout(timeoutId);
+                if (response.ok) return response;
+                lastError = new Error(`HTTP ${response.status}`);
+            } catch (e) {
+                lastError = e;
+                if (e.name === 'AbortError' || e.message?.includes('aborted')) {
+                    await new Promise(r => setTimeout(r, 1000 + Math.random() * 270));
+                    continue;
+                }
+                if (i < maxRetries - 1) {
+                    await new Promise(r => setTimeout(r, 1000 + Math.random() * 270));
+                }
+            }
+        }
+        throw lastError;
+    };
     await Promise.allSettled(urls.map(async (url) => {
         // 检查URL是否包含备注名
         const hashIndex = url.indexOf('#');
@@ -1829,10 +1858,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
         }
 
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 超时时间);
-            const response = await fetch(urlWithoutHash, { signal: controller.signal });
-            clearTimeout(timeoutId);
+            const response = await fetchWithRetry(urlWithoutHash);
             let text = '';
             try {
                 const buffer = await response.arrayBuffer();
