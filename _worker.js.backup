@@ -338,7 +338,11 @@ export default {
                         }
 
                         const 加密密码 = 管理员密码 || 加密秘钥;
-                        if (加密密码 && !isSubConverterRequest) {
+                        const envAF = env.AF || env.af;
+                        const queryAF = url.searchParams.get('AF') || url.searchParams.get('af');
+                        const skipEncryption = envAF && queryAF && envAF === queryAF;
+                        
+                        if (加密密码 && !isSubConverterRequest && !skipEncryption) {
                             const 加密后内容 = await AESEncrypt(订阅内容, 加密密码);
                             if (加密后内容) {
                                 订阅内容 = 加密后内容;
