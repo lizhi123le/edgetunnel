@@ -339,7 +339,7 @@ export default {
                         }
                         console.log("[加密] 管理员密码:", 管理员密码, "加密秘钥:", 加密秘钥);
                         const 加密密码 = 管理员密码 || 加密秘钥;
-                        if (加密密码) {
+                        if (加密密码 && !isSubConverterRequest) {
                             const 加密后内容 = await AESEncrypt(订阅内容, 加密密码);
                             if (加密后内容) {
                                 订阅内容 = 加密后内容;
