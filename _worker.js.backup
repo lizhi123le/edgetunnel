@@ -192,6 +192,7 @@ export default {
                     响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
                     return 响应;
                 } else if (访问路径 === 'sub') {//处理订阅请求
+                    console.log('[订阅] 进入订阅处理分支');
                     const 订阅TOKEN = await MD5MD5(host + userID);
                     if (url.searchParams.get('token') === 订阅TOKEN) {
                         config_JSON = await 读取config_JSON(env, host, userID);
