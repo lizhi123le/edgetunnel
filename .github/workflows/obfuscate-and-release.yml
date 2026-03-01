@@ -1,6 +1,5 @@
 name: 混淆并创建 GitHub 发行版
 on:
-  push:
   workflow_dispatch:
 
 jobs:
@@ -293,5 +292,6 @@ jobs:
           done
 
           echo "Release $VERSION 及所有资产上传完成"
+
 
 
