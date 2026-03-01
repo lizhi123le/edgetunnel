@@ -1338,7 +1338,13 @@ async function AESEncrypt(plaintext, password) {
         const result = new Uint8Array(iv.length + encrypted.byteLength);
         result.set(iv, 0);
         result.set(new Uint8Array(encrypted), iv.length);
-        return btoa(String.fromCharCode.apply(null, result));
+        // 分块转换，避免 apply 参数超限
+        let binaryString = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < result.length; i += chunkSize) {
+            binaryString += String.fromCharCode.apply(null, result.slice(i, i + chunkSize));
+        }
+        return btoa(binaryString);
     } catch (e) {
         console.error('AES加密失败:', e);
         return null;
