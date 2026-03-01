@@ -192,7 +192,6 @@ export default {
                     响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
                     return 响应;
                 } else if (访问路径 === 'sub') {//处理订阅请求
-                    console.log('[订阅] 进入订阅处理分支');
                     const 订阅TOKEN = await MD5MD5(host + userID);
                     if (url.searchParams.get('token') === 订阅TOKEN) {
                         config_JSON = await 读取config_JSON(env, host, userID);
@@ -297,7 +296,7 @@ export default {
                                     节点备注 = match[3] || 节点地址;  // 备注,默认为地址本身
                                 } else {
                                     // 不规范的格式，跳过处理返回null
-                                    console.warn(`[订阅内容] 不规范的IP格式已忽略: ${原始地址}`);
+
                                     return null;
                                 }
 
@@ -337,7 +336,7 @@ export default {
                             responseHeaders["content-type"] = 'text/plain; charset=utf-8';
                             responseHeaders["Content-Disposition"] = "inline";
                         }
-                        console.log("[加密] 管理员密码:", 管理员密码, "加密秘钥:", 加密秘钥);
+
                         const 加密密码 = 管理员密码 || 加密秘钥;
                         if (加密密码 && !isSubConverterRequest) {
                             const 加密后内容 = await AESEncrypt(订阅内容, 加密密码);
@@ -536,7 +535,7 @@ function 解析魏烈思请求(chunk, token) {
     return { hasError: false, addressType, port, hostname, isUDP, rawIndex: addrValIdx + addrLen, version };
 }
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID) {
-    console.log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
+
 
     async function connectDirect(address, port, data, 所有反代数组 = null, 反代兜底 = true) {
         let remoteSock;
@@ -545,7 +544,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                 const 反代数组索引 = (缓存反代数组索引 + i) % 所有反代数组.length;
                 const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
                 try {
-                    console.log(`[反代连接] 尝试连接到: ${反代地址}:${反代端口} (索引: ${反代数组索引})`);
+
                     remoteSock = connect({ hostname: 反代地址, port: 反代端口 });
                     // 等待TCP连接真正建立，设置1秒超时
                     await Promise.race([
@@ -555,11 +554,11 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                     const testWriter = remoteSock.writable.getWriter();
                     await testWriter.write(data);
                     testWriter.releaseLock();
-                    console.log(`[反代连接] 成功连接到: ${反代地址}:${反代端口}`);
+
                     缓存反代数组索引 = 反代数组索引;
                     return remoteSock;
                 } catch (err) {
-                    console.log(`[反代连接] 连接失败: ${反代地址}:${反代端口}, 错误: ${err.message}`);
+
                     try { remoteSock?.close?.(); } catch (e) { }
                     continue;
                 }
@@ -581,13 +580,13 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
     async function connecttoPry() {
         let newSocket;
         if (启用SOCKS5反代 === 'socks5') {
-            console.log(`[SOCKS5代理] 代理到: ${host}:${portNum}`);
+
             newSocket = await socks5Connect(host, portNum, rawData);
         } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
-            console.log(`[HTTP代理] 代理到: ${host}:${portNum}`);
+
             newSocket = await httpConnect(host, portNum, rawData);
         } else {
-            console.log(`[反代连接] 代理到: ${host}:${portNum}`);
+
             const 所有反代数组 = await 解析地址端口(反代IP, host, yourUUID);
             newSocket = await connectDirect(atob('UFJPWFlJUC50cDEuMDkwMjI3Lnh5eg=='), 1, rawData, 所有反代数组, 启用反代兜底);
         }
@@ -598,21 +597,21 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 
     const 验证SOCKS5白名单 = (addr) => SOCKS5白名单.some(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i').test(addr));
     if (启用SOCKS5反代 && (启用SOCKS5全局反代 || 验证SOCKS5白名单(host))) {
-        console.log(`[TCP转发] 启用 SOCKS5/HTTP 全局代理`);
+
         try {
             await connecttoPry();
         } catch (err) {
-            console.log(`[TCP转发] SOCKS5/HTTP 代理连接失败: ${err.message}`);
+
             throw err;
         }
     } else {
         try {
-            console.log(`[TCP转发] 尝试直连到: ${host}:${portNum}`);
+
             const initialSocket = await connectDirect(host, portNum, rawData);
             remoteConnWrapper.socket = initialSocket;
             connectStreams(initialSocket, ws, respHeader, connecttoPry);
         } catch (err) {
-            console.log(`[TCP转发] 直连 ${host}:${portNum} 失败: ${err.message}`);
+
             await connecttoPry();
         }
     }
@@ -1393,7 +1392,7 @@ function 批量替换域名(内容, hosts, 每组数量 = 2) {
 
 async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudflare-dns.com/dns-query") {
     const 开始时间 = performance.now();
-    console.log(`[DoH查询] 开始查询 ${域名} ${记录类型} via ${DoH解析服务}`);
+
     try {
         // 记录类型字符串转数值
         const 类型映射 = { 'A': 1, 'NS': 2, 'CNAME': 5, 'MX': 15, 'TXT': 16, 'AAAA': 28, 'SRV': 33, 'HTTPS': 65 };
@@ -1427,7 +1426,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
         qview.setUint16(12 + qname.length + 2, 1); // QCLASS = IN
 
         // 通过 POST 发送 dns-message 请求
-        console.log(`[DoH查询] 发送查询报文 ${域名} via ${DoH解析服务} (type=${qtype}, ${query.length}字节)`);
+
         const response = await fetch(DoH解析服务, {
             method: 'POST',
             headers: {
@@ -1437,7 +1436,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
             body: query,
         });
         if (!response.ok) {
-            console.warn(`[DoH查询] 请求失败 ${域名} ${记录类型} via ${DoH解析服务} 响应代码:${response.status}`);
+
             return [];
         }
 
@@ -1446,7 +1445,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
         const dv = new DataView(buf.buffer);
         const qdcount = dv.getUint16(4);
         const ancount = dv.getUint16(6);
-        console.log(`[DoH查询] 收到响应 ${域名} ${记录类型} via ${DoH解析服务} (${buf.length}字节, ${ancount}条应答)`);
+
 
         // 解析域名（处理指针压缩）
         const 解析域名 = (pos) => {
@@ -1516,7 +1515,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
             answers.push({ name, type, TTL: ttl, data, rdata });
         }
         const 耗时 = (performance.now() - 开始时间).toFixed(2);
-        console.log(`[DoH查询] 查询完成 ${域名} ${记录类型} via ${DoH解析服务} ${耗时}ms 共${answers.length}条结果${answers.length > 0 ? '\n' + answers.map((a, i) => `  ${i + 1}. ${a.name} type=${a.type} TTL=${a.TTL} data=${a.data}`).join('\n') : ''}`);
+
         return answers;
     } catch (error) {
         const 耗时 = (performance.now() - 开始时间).toFixed(2);
@@ -2254,7 +2253,7 @@ async function getCloudflareUsage(Email, GlobalAPIKey, AccountID, APIToken) {
         const workers = sum(acc.workersInvocationsAdaptive);
         const total = pages + workers;
         const max = 100000;
-        console.log(`统计结果 - Pages: ${pages}, Workers: ${workers}, 总计: ${total}, 上限: 100000`);
+
         return { success: true, pages, workers, total, max };
 
     } catch (error) {
@@ -2324,7 +2323,7 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
                     let txtRecords = await DoH查询(singleProxyIP, 'TXT');
                     let txtData = txtRecords.filter(r => r.type === 16).map(r => /** @type {string} */(r.data));
                     if (txtData.length === 0) {
-                        console.log(`[反代解析] 默认DoH未获取到TXT记录，切换Google DoH重试 ${singleProxyIP}`);
+
                         txtRecords = await DoH查询(singleProxyIP, 'TXT', 'https://dns.google/dns-query');
                         txtData = txtRecords.filter(r => r.type === 16).map(r => /** @type {string} */(r.data));
                     }
@@ -2362,7 +2361,7 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
 
                     // 默认DoH无结果时，切换Google DoH重试
                     if (ipAddresses.length === 0) {
-                        console.log(`[反代解析] 默认DoH未获取到解析结果，切换Google DoH重试 ${地址}`);
+
                         [aRecords, aaaaRecords] = await Promise.all([
                             DoH查询(地址, 'A', 'https://dns.google/dns-query'),
                             DoH查询(地址, 'AAAA', 'https://dns.google/dns-query')
@@ -2385,12 +2384,12 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
         const 排序后数组 = 所有反代数组.sort((a, b) => a[0].localeCompare(b[0]));
         const 目标根域名 = 目标域名.includes('.') ? 目标域名.split('.').slice(-2).join('.') : 目标域名;
         let 随机种子 = [...(目标根域名 + UUID)].reduce((a, c) => a + c.charCodeAt(0), 0);
-        console.log(`[反代解析] 随机种子: ${随机种子}\n目标站点: ${目标根域名}`)
+
         const 洗牌后 = [...排序后数组].sort(() => (随机种子 = (随机种子 * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5);
         缓存反代解析数组 = 洗牌后.slice(0, 8);
-        console.log(`[反代解析] 解析完成 总数: ${缓存反代解析数组.length}个\n${缓存反代解析数组.map(([ip, port], index) => `${index + 1}. ${ip}:${port}`).join('\n')}`);
+
         缓存反代IP = proxyIP;
-    } else console.log(`[反代解析] 读取缓存 总数: ${缓存反代解析数组.length}个\n${缓存反代解析数组.map(([ip, port], index) => `${index + 1}. ${ip}:${port}`).join('\n')}`);
+    }
     return 缓存反代解析数组;
 }
 
@@ -2413,7 +2412,7 @@ async function SOCKS5可用性验证(代理协议 = 'socks5', 代理参数) {
             await tcpSocket.close();
             return { success: true, proxy: 代理协议 + "://" + 完整代理参数, ip: response.match(/ip=(.*)/)[1], loc: response.match(/loc=(.*)/)[1], responseTime: Date.now() - startTime };
         } catch (error) {
-            try { await tcpSocket.close(); } catch (e) { console.log('关闭连接时出错:', e); }
+            try { await tcpSocket.close(); } catch (e) { }
             return { success: false, error: error.message, proxy: 代理协议 + "://" + 完整代理参数, responseTime: Date.now() - startTime };
         }
     } catch (error) { return { success: false, error: error.message, proxy: 代理协议 + "://" + 完整代理参数, responseTime: Date.now() - startTime }; }
