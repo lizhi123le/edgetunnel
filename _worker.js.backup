@@ -342,8 +342,23 @@ export default {
                         const queryAF = url.searchParams.get('AF') || url.searchParams.get('af');
                         const skipEncryption = envAF && queryAF && envAF === queryAF;
                         
+                        // 判断订阅内容是否已经是 Base64 格式
+                        function isBase64(str) {
+                            try {
+                                return btoa(atob(str)) === str;
+                            } catch (e) {
+                                return false;
+                            }
+                        }
+                        
                         if (加密密码 && !isSubConverterRequest && !skipEncryption) {
-                            const 加密后内容 = await AESEncrypt(订阅内容, 加密密码);
+                            // 如果订阅内容已经是 Base64，就先解码成明文再加密
+                            let 待加密内容 = 订阅内容;
+                            if (isBase64(订阅内容)) {
+                                待加密内容 = atob(订阅内容);
+                            }
+                        
+                            const 加密后内容 = await AESEncrypt(待加密内容, 加密密码);
                             if (加密后内容) {
                                 订阅内容 = 加密后内容;
                                 responseHeaders['subscription-encryption'] = 'true';
