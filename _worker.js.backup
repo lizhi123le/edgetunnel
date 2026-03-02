@@ -337,31 +337,52 @@ export default {
                             responseHeaders["Content-Disposition"] = "inline";
                         }
 
+                        function isLikelyBase64(s) {
+                            if (typeof s !== 'string' || s.length === 0) return false;
+                            // 长度为4的倍数且只含 base64 字符或 = 号
+                            return /^[A-Za-z0-9+/]+={0,2}$/.test(s) && (s.length % 4 === 0);
+                        }
+                        
                         const 加密密码 = 管理员密码 || 加密秘钥;
                         const envAF = env.AF || env.af;
                         const queryAF = url.searchParams.get('AF') || url.searchParams.get('af');
                         const skipEncryption = envAF && queryAF && envAF === queryAF;
                         
-                        // 判断订阅内容是否已经是 Base64 格式
-                        function isBase64(str) {
-                            try {
-                                return btoa(atob(str)) === str;
-                            } catch (e) {
-                                return false;
-                            }
-                        }
-                        
                         if (加密密码 && !isSubConverterRequest && !skipEncryption) {
-                            // 如果订阅内容已经是 Base64，就先解码成明文再加密
-                            let 待加密内容 = 订阅内容;
-                            if (isBase64(订阅内容)) {
-                                待加密内容 = atob(订阅内容);
-                            }
+                            try {
+                                // 1) 如果订阅内容看起来像 Base64，先解码为明文（避免对已编码字符串再加密）
+                                let 待加密内容 = 订阅内容;
+                                if (isLikelyBase64(订阅内容)) {
+                                    try {
+                                        待加密内容 = atob(订阅内容);
+                                        console.log('[SUB] Detected base64 input, decoded before AES.');
+                                    } catch (e) {
+                                        // 不是有效 base64，保持原样
+                                        console.log('[SUB] base64 detection true but atob failed, keep original.');
+                                    }
+                                }
                         
-                            const 加密后内容 = await AESEncrypt(待加密内容, 加密密码);
-                            if (加密后内容) {
-                                订阅内容 = 加密后内容;
-                                responseHeaders['subscription-encryption'] = 'true';
+                                // 2) 调用 AESEncrypt（应返回 iv+cipher 的 Base64 字符串）
+                                const 加密后内容 = await AESEncrypt(待加密内容, 加密密码);
+                        
+                                // 3) 校验 AESEncrypt 返回值是否合理（非 null 且看起来像 Base64）
+                                if (加密后内容 && typeof 加密后内容 === 'string' && isLikelyBase64(加密后内容)) {
+                                    // 防止后续代码再次对加密结果做 btoa/Buffer.toString('base64')：标记并替换
+                                    订阅内容 = 加密后内容;
+                                    responseHeaders['subscription-encryption'] = 'true';
+                                    // 明确告诉后续处理不要再做额外 base64 编码（如果后续代码有条件分支可读此 header）
+                                    responseHeaders['X-Subscription-Encrypted'] = '1';
+                                    console.log('[SUB] AES encryption succeeded, output replaced.');
+                                } else {
+                                    // 加密失败或返回异常内容，记录并保留原始订阅（避免静默失败）
+                                    console.error('[SUB] AESEncrypt returned invalid result:', 加密后内容);
+                                    // 可选：强制中断输出以避免明文泄露（注释掉则继续输出原文）
+                                    // return new Response('Encryption failed', { status: 500 });
+                                }
+                            } catch (err) {
+                                console.error('[SUB] Encryption step threw:', err);
+                                // 可选：返回错误响应以避免明文泄露
+                                // return new Response('Encryption error', { status: 500 });
                             }
                         }
                         return new Response(订阅内容, { status: 200, headers: responseHeaders });
