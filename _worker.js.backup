@@ -215,7 +215,7 @@ export default {
                             "Subscription-Userinfo": `upload=${pagesSum}; download=${workersSum}; total=${total}; expire=${expire}`,
                             "Cache-Control": "no-store",
                         };
-                        const isSubConverterRequest = url.searchParams.has('b64') || url.searchParams.has('base64') || request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase());
+                        const isSubConverterRequest = request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase());
                         const 订阅类型 = isSubConverterRequest
                             ? 'mixed'
                             : url.searchParams.has('target')
@@ -349,6 +349,7 @@ export default {
                                 responseHeaders['subscription-encryption'] = 'true';
                             }
                         }
+
                         return new Response(订阅内容, { status: 200, headers: responseHeaders });
                     }
                 } else if (访问路径 === 'locations') {//反代locations列表
