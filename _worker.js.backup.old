@@ -75,7 +75,8 @@ export default {
                             try {
                                 new URL(待验证优选URL);
                                 const 请求优选API内容 = await 请求优选API([待验证优选URL], url.searchParams.get('port') || '443');
-                                const 优选API的IP = 请求优选API内容[0].length > 0 ? 请求优选API内容[0] : 请求优选API内容[1];
+                                let 优选API的IP = 请求优选API内容[0].length > 0 ? 请求优选API内容[0] : 请求优选API内容[1];
+                                优选API的IP = 优选API的IP.map(item => item.replace(/#(.+)$/, (_, remark) => '#' + decodeURIComponent(remark)));
                                 return new Response(JSON.stringify({ success: true, data: 优选API的IP }, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (err) {
                                 const errorResponse = { msg: '验证优选API失败，失败原因：' + err.message, error: err.message };
@@ -215,7 +216,7 @@ export default {
                             "Subscription-Userinfo": `upload=${pagesSum}; download=${workersSum}; total=${total}; expire=${expire}`,
                             "Cache-Control": "no-store",
                         };
-                        const isSubConverterRequest = url.searchParams.has('b64') || url.searchParams.has('base64') || request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase());
+                        const isSubConverterRequest = request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase());
                         const 订阅类型 = isSubConverterRequest
                             ? 'mixed'
                             : url.searchParams.has('target')
@@ -296,7 +297,7 @@ export default {
                                     节点备注 = match[3] || 节点地址;  // 备注,默认为地址本身
                                 } else {
                                     // 不规范的格式，跳过处理返回null
-                                    console.warn(`[订阅内容] 不规范的IP格式已忽略: ${原始地址}`);
+
                                     return null;
                                 }
 
@@ -336,6 +337,20 @@ export default {
                             responseHeaders["content-type"] = 'text/plain; charset=utf-8';
                             responseHeaders["Content-Disposition"] = "inline";
                         }
+
+                        const 加密密码 = 管理员密码 || 加密秘钥;
+                        const envAF = env.AF || env.af;
+                        const queryAF = url.searchParams.get('AF') || url.searchParams.get('af');
+                        const skipEncryption = envAF && queryAF && envAF === queryAF;
+                        
+                        if (加密密码 && !isSubConverterRequest && !skipEncryption) {
+                            const 加密后内容 = await AESEncrypt(订阅内容, 加密密码);
+                            if (加密后内容) {
+                                订阅内容 = 加密后内容;
+                                responseHeaders['subscription-encryption'] = 'true';
+                            }
+                        }
+
                         return new Response(订阅内容, { status: 200, headers: responseHeaders });
                     }
                 } else if (访问路径 === 'locations') {//反代locations列表
@@ -526,7 +541,7 @@ function 解析魏烈思请求(chunk, token) {
     return { hasError: false, addressType, port, hostname, isUDP, rawIndex: addrValIdx + addrLen, version };
 }
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID) {
-    console.log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
+
 
     async function connectDirect(address, port, data, 所有反代数组 = null, 反代兜底 = true) {
         let remoteSock;
@@ -535,7 +550,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                 const 反代数组索引 = (缓存反代数组索引 + i) % 所有反代数组.length;
                 const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
                 try {
-                    console.log(`[反代连接] 尝试连接到: ${反代地址}:${反代端口} (索引: ${反代数组索引})`);
+
                     remoteSock = connect({ hostname: 反代地址, port: 反代端口 });
                     // 等待TCP连接真正建立，设置1秒超时
                     await Promise.race([
@@ -545,11 +560,11 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                     const testWriter = remoteSock.writable.getWriter();
                     await testWriter.write(data);
                     testWriter.releaseLock();
-                    console.log(`[反代连接] 成功连接到: ${反代地址}:${反代端口}`);
+
                     缓存反代数组索引 = 反代数组索引;
                     return remoteSock;
                 } catch (err) {
-                    console.log(`[反代连接] 连接失败: ${反代地址}:${反代端口}, 错误: ${err.message}`);
+
                     try { remoteSock?.close?.(); } catch (e) { }
                     continue;
                 }
@@ -571,13 +586,13 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
     async function connecttoPry() {
         let newSocket;
         if (启用SOCKS5反代 === 'socks5') {
-            console.log(`[SOCKS5代理] 代理到: ${host}:${portNum}`);
+
             newSocket = await socks5Connect(host, portNum, rawData);
         } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
-            console.log(`[HTTP代理] 代理到: ${host}:${portNum}`);
+
             newSocket = await httpConnect(host, portNum, rawData);
         } else {
-            console.log(`[反代连接] 代理到: ${host}:${portNum}`);
+
             const 所有反代数组 = await 解析地址端口(反代IP, host, yourUUID);
             newSocket = await connectDirect(atob('UFJPWFlJUC50cDEuMDkwMjI3Lnh5eg=='), 1, rawData, 所有反代数组, 启用反代兜底);
         }
@@ -588,21 +603,21 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 
     const 验证SOCKS5白名单 = (addr) => SOCKS5白名单.some(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i').test(addr));
     if (启用SOCKS5反代 && (启用SOCKS5全局反代 || 验证SOCKS5白名单(host))) {
-        console.log(`[TCP转发] 启用 SOCKS5/HTTP 全局代理`);
+
         try {
             await connecttoPry();
         } catch (err) {
-            console.log(`[TCP转发] SOCKS5/HTTP 代理连接失败: ${err.message}`);
+
             throw err;
         }
     } else {
         try {
-            console.log(`[TCP转发] 尝试直连到: ${host}:${portNum}`);
+
             const initialSocket = await connectDirect(host, portNum, rawData);
             remoteConnWrapper.socket = initialSocket;
             connectStreams(initialSocket, ws, respHeader, connecttoPry);
         } catch (err) {
-            console.log(`[TCP转发] 直连 ${host}:${portNum} 失败: ${err.message}`);
+
             await connecttoPry();
         }
     }
@@ -1219,12 +1234,19 @@ function Surge订阅配置文件热补丁(content, url, config_JSON) {
 }
 
 async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SUB", config_JSON) {
-    const KV容量限制 = 4;//MB
     try {
         const 当前时间 = new Date();
         const 日志内容 = { TYPE: 请求类型, IP: 访问IP, ASN: `AS${request.cf.asn || '0'} ${request.cf.asOrganization || 'Unknown'}`, CC: `${request.cf.country || 'N/A'} ${request.cf.city || 'N/A'}`, URL: request.url, UA: request.headers.get('User-Agent') || 'Unknown', TIME: 当前时间.getTime() };
+        if (config_JSON.TG.启用) {
+            try {
+                const TG_TXT = await env.KV.get('tg.json');
+                const TG_JSON = JSON.parse(TG_TXT);
+                await sendMessage(TG_JSON.BotToken, TG_JSON.ChatID, 日志内容, config_JSON);
+            } catch (error) { console.error(`读取tg.json出错: ${error.message}`) }
+        }
+        if (env.OFF_LOG && !['0', 'false'].includes(env.OFF_LOG)) return;
         let 日志数组 = [];
-        const 现有日志 = await env.KV.get('log.json');
+        const 现有日志 = await env.KV.get('log.json'), KV容量限制 = 4;//MB
         if (现有日志) {
             try {
                 日志数组 = JSON.parse(现有日志);
@@ -1237,13 +1259,6 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
                 } else {
                     日志数组.push(日志内容);
                     while (JSON.stringify(日志数组, null, 2).length > KV容量限制 * 1024 * 1024 && 日志数组.length > 0) 日志数组.shift();
-                }
-                if (config_JSON.TG.启用) {
-                    try {
-                        const TG_TXT = await env.KV.get('tg.json');
-                        const TG_JSON = JSON.parse(TG_TXT);
-                        await sendMessage(TG_JSON.BotToken, TG_JSON.ChatID, 日志内容, config_JSON);
-                    } catch (error) { console.error(`读取tg.json出错: ${error.message}`) }
                 }
             } catch (e) { 日志数组 = [日志内容]; }
         } else { 日志数组 = [日志内容]; }
@@ -1305,6 +1320,53 @@ async function MD5MD5(文本) {
     return 第二次十六进制.toLowerCase();
 }
 
+// AES-128-CBC 加密函数 (用于订阅内容加密)
+async function AESEncrypt(plaintext, password) {
+    if (!plaintext || !password) return null;
+    try {
+        const encoder = new TextEncoder();
+        const keyHash = await crypto.subtle.digest('MD5', encoder.encode(password));
+        const keyBytes = new Uint8Array(keyHash);
+        const iv = crypto.getRandomValues(new Uint8Array(16));
+        const cryptoKey = await crypto.subtle.importKey(
+            'raw',
+            keyBytes,
+            { name: 'AES-CBC', length: 128 },
+            false,
+            ['encrypt']
+        );
+        const encrypted = await crypto.subtle.encrypt(
+            { name: 'AES-CBC', iv: iv },
+            cryptoKey,
+            encoder.encode(plaintext)
+        );
+        const result = new Uint8Array(iv.length + encrypted.byteLength);
+        result.set(iv, 0);
+        result.set(new Uint8Array(encrypted), iv.length);
+        // 直接对 Uint8Array 做 Base64 编码，无大小限制
+        return uint8ArrayToBase64(result);
+    } catch (e) {
+        console.error('AES加密失败:', e);
+        return null;
+    }
+}
+
+// 高性能 Uint8Array → Base64，不依赖 btoa/String.fromCharCode，无大小限制
+function uint8ArrayToBase64(bytes) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const len = bytes.length;
+    const parts = [];
+    for (let i = 0; i < len; i += 3) {
+        const b0 = bytes[i], b1 = i + 1 < len ? bytes[i + 1] : 0, b2 = i + 2 < len ? bytes[i + 2] : 0;
+        parts.push(chars[b0 >> 2]);
+        parts.push(chars[((b0 & 3) << 4) | (b1 >> 4)]);
+        parts.push(i + 1 < len ? chars[((b1 & 15) << 2) | (b2 >> 6)] : '=');
+        parts.push(i + 2 < len ? chars[b2 & 63] : '=');
+    }
+    return parts.join('');
+}
+
+
 function 随机路径(完整节点路径 = "/") {
     const 常用路径目录 = ["#","about","account","acg","act","activity","ad","admin","ads","ajax","album","albums","anime","api","app","apps","archive","archives","article","articles","ask","auth","avatar","bbs","bd","blog","blogs","book","books","bt","buy","cart","category","categories","cb","channel","channels","chat","china","city","class","classify","clip","clips","club","cn","code","collect","collection","comic","comics","community","company","config","contact","content","course","courses","cp","data","detail","details","dh","directory","discount","discuss","dl","dload","doc","docs","document","documents","doujin","download","downloads","drama","edu","en","ep","episode","episodes","event","events","f","faq","favorite","favourites","favs","feedback","file","files","film","films","forum","forums","friend","friends","game","games","gif","go","go.html","go.php","group","groups","help","home","hot","htm","html","image","images","img","index","info","intro","item","items","ja","jp","jump","jump.html","jump.php","jumping","knowledge","lang","lesson","lessons","lib","library","link","links","list","live","lives","login","logout","m","mag","magnet","mall","manhua","map","member","members","message","messages","mobile","movie","movies","music","my","new","news","note","novel","novels","online","order","out","out.html","out.php","outbound","p","page","pages","pay","payment","pdf","photo","photos","pic","pics","picture","pictures","play","player","playlist","post","posts","product","products","program","programs","project","qa","question","rank","ranking","read","readme","redirect","redirect.html","redirect.php","reg","register","res","resource","retrieve","sale","search","season","seasons","section","seller","series","service","services","setting","settings","share","shop","show","shows","site","soft","sort","source","special","star","stars","static","stock","store","stream","streaming","streams","student","study","tag","tags","task","teacher","team","tech","temp","test","thread","tool","tools","topic","topics","torrent","trade","travel","tv","txt","type","u","upload","uploads","url","urls","user","users","v","version","video","videos","view","vip","vod","watch","web","wenku","wiki","work","www","zh","zh-cn","zh-tw","zip","about-us","access","accounting","activation","address","advertising","affiliate","agreement","alert","alerts","analytics-dashboard","announcement","api-docs","apply","archive-news","article-detail","attendance","author","auto","backup","banner","billing","board","brand","browse-all","business","calendar","campaign","career","cart-checkout","catalog","certificate","checkout-success","client","cloud","comment","company-info","competition","complaint","conference","connect","console","contact-form","contest","contract","contribute","control","cookie","copyright","coupon","create","crm","currency","custom","customer","dashboard-admin","data-center","deal","default","demo","department","design","developer","development","device","directory-list","discounts","display","donate","editor","email","employee","employment","enterprise","entry","environment","error-log","estimate","exam","example","exchange","experience","expert","export","faq-page","feature","feedback-form","finance","financial","fleet","flow","form","gallery","gateway","general","global","guide","hardware","health","history-page","holiday","host","hosting","identity","image-gallery","import","index-page","industry","info-center","information","inquiry","install","instruction","insurance","integration","interface","internal","invoice","issue","job","join","journal","key","knowledge-base","lab","landing","language","launch","legal","license","limited","location","log","logging","logs","machine","mail","manage","management","manual","map-view","market","marketing","master","media-center","member-area","menu","merchant","message-board","meta","method","metrics","misc","moderator","module","monitor","monthly","navigation","network","newsletter","notification","office","official","open","operation","opinion","option","order-detail","organization","overview","owner","package","partner","password","payment-info","people","performance","personal","phone","photo-gallery","plan","platform","policy","portal","portfolio","position","preferences","press-release","preview","pricing","print","privacy-policy","problem","process","profile-edit","project-detail","promotion","property","proposal","public","publication","purchase","quality","queue","quote","ranking-list","rate","rating","record","register-form","release","report","reporting","request","requirement","research","resource-center","response","result","resume","review","role","rule","sales","sample","schedule","school","score","screen","script","search-results","section-list","security","server","session","setting-page","setup","shop-cart","shopping","signin","signup-form","site-map","solution","staff","statistics","status-page","storage","store-front","studio","submission","subscribe-form","subscription","success","summary","support-center","survey","system","table","task-list","team-member","template","terms-of-service","test-case","ticket","timeline","toolbox","topic-list","tour","tracking-info","training","transaction","transfer","translation","tutorial","update","upgrade","upload-file","usage","user-guide","utility","validation","value","vendor","verification","version-info","visitor","voice","webmail","workflow"];
     const 随机数 = Math.floor(Math.random() * 3 + 1);
@@ -1336,7 +1398,7 @@ function 批量替换域名(内容, hosts, 每组数量 = 2) {
 
 async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudflare-dns.com/dns-query") {
     const 开始时间 = performance.now();
-    console.log(`[DoH查询] 开始查询 ${域名} ${记录类型} via ${DoH解析服务}`);
+
     try {
         // 记录类型字符串转数值
         const 类型映射 = { 'A': 1, 'NS': 2, 'CNAME': 5, 'MX': 15, 'TXT': 16, 'AAAA': 28, 'SRV': 33, 'HTTPS': 65 };
@@ -1370,7 +1432,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
         qview.setUint16(12 + qname.length + 2, 1); // QCLASS = IN
 
         // 通过 POST 发送 dns-message 请求
-        console.log(`[DoH查询] 发送查询报文 ${域名} via ${DoH解析服务} (type=${qtype}, ${query.length}字节)`);
+
         const response = await fetch(DoH解析服务, {
             method: 'POST',
             headers: {
@@ -1380,7 +1442,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
             body: query,
         });
         if (!response.ok) {
-            console.warn(`[DoH查询] 请求失败 ${域名} ${记录类型} via ${DoH解析服务} 响应代码:${response.status}`);
+
             return [];
         }
 
@@ -1389,7 +1451,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
         const dv = new DataView(buf.buffer);
         const qdcount = dv.getUint16(4);
         const ancount = dv.getUint16(6);
-        console.log(`[DoH查询] 收到响应 ${域名} ${记录类型} via ${DoH解析服务} (${buf.length}字节, ${ancount}条应答)`);
+
 
         // 解析域名（处理指针压缩）
         const 解析域名 = (pos) => {
@@ -1459,7 +1521,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
             answers.push({ name, type, TTL: ttl, data, rdata });
         }
         const 耗时 = (performance.now() - 开始时间).toFixed(2);
-        console.log(`[DoH查询] 查询完成 ${域名} ${记录类型} via ${DoH解析服务} ${耗时}ms 共${answers.length}条结果${answers.length > 0 ? '\n' + answers.map((a, i) => `  ${i + 1}. ${a.name} type=${a.type} TTL=${a.TTL} data=${a.data}`).join('\n') : ''}`);
+
         return answers;
     } catch (error) {
         const 耗时 = (performance.now() - 开始时间).toFixed(2);
@@ -2197,7 +2259,7 @@ async function getCloudflareUsage(Email, GlobalAPIKey, AccountID, APIToken) {
         const workers = sum(acc.workersInvocationsAdaptive);
         const total = pages + workers;
         const max = 100000;
-        console.log(`统计结果 - Pages: ${pages}, Workers: ${workers}, 总计: ${total}, 上限: 100000`);
+
         return { success: true, pages, workers, total, max };
 
     } catch (error) {
@@ -2267,7 +2329,7 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
                     let txtRecords = await DoH查询(singleProxyIP, 'TXT');
                     let txtData = txtRecords.filter(r => r.type === 16).map(r => /** @type {string} */(r.data));
                     if (txtData.length === 0) {
-                        console.log(`[反代解析] 默认DoH未获取到TXT记录，切换Google DoH重试 ${singleProxyIP}`);
+
                         txtRecords = await DoH查询(singleProxyIP, 'TXT', 'https://dns.google/dns-query');
                         txtData = txtRecords.filter(r => r.type === 16).map(r => /** @type {string} */(r.data));
                     }
@@ -2305,7 +2367,7 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
 
                     // 默认DoH无结果时，切换Google DoH重试
                     if (ipAddresses.length === 0) {
-                        console.log(`[反代解析] 默认DoH未获取到解析结果，切换Google DoH重试 ${地址}`);
+
                         [aRecords, aaaaRecords] = await Promise.all([
                             DoH查询(地址, 'A', 'https://dns.google/dns-query'),
                             DoH查询(地址, 'AAAA', 'https://dns.google/dns-query')
@@ -2328,12 +2390,12 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
         const 排序后数组 = 所有反代数组.sort((a, b) => a[0].localeCompare(b[0]));
         const 目标根域名 = 目标域名.includes('.') ? 目标域名.split('.').slice(-2).join('.') : 目标域名;
         let 随机种子 = [...(目标根域名 + UUID)].reduce((a, c) => a + c.charCodeAt(0), 0);
-        console.log(`[反代解析] 随机种子: ${随机种子}\n目标站点: ${目标根域名}`)
+
         const 洗牌后 = [...排序后数组].sort(() => (随机种子 = (随机种子 * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5);
         缓存反代解析数组 = 洗牌后.slice(0, 8);
-        console.log(`[反代解析] 解析完成 总数: ${缓存反代解析数组.length}个\n${缓存反代解析数组.map(([ip, port], index) => `${index + 1}. ${ip}:${port}`).join('\n')}`);
+
         缓存反代IP = proxyIP;
-    } else console.log(`[反代解析] 读取缓存 总数: ${缓存反代解析数组.length}个\n${缓存反代解析数组.map(([ip, port], index) => `${index + 1}. ${ip}:${port}`).join('\n')}`);
+    }
     return 缓存反代解析数组;
 }
 
@@ -2356,7 +2418,7 @@ async function SOCKS5可用性验证(代理协议 = 'socks5', 代理参数) {
             await tcpSocket.close();
             return { success: true, proxy: 代理协议 + "://" + 完整代理参数, ip: response.match(/ip=(.*)/)[1], loc: response.match(/loc=(.*)/)[1], responseTime: Date.now() - startTime };
         } catch (error) {
-            try { await tcpSocket.close(); } catch (e) { console.log('关闭连接时出错:', e); }
+            try { await tcpSocket.close(); } catch (e) { }
             return { success: false, error: error.message, proxy: 代理协议 + "://" + 完整代理参数, responseTime: Date.now() - startTime };
         }
     } catch (error) { return { success: false, error: error.message, proxy: 代理协议 + "://" + 完整代理参数, responseTime: Date.now() - startTime }; }
@@ -2483,3 +2545,4 @@ async function html1101(host, 访问IP) {
 </body>
 </html>`;
 }
+
