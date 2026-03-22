@@ -1,10 +1,3 @@
-# 合并冲突报告
-## 冲突时间: Sun Mar 22 18:08:57 UTC 2026
-## 上游更新哈希: 8f22f902e9885652b707def99ff605a9ca318c5c22feaaebd5ba3386957b01e6
-
-以下文件包含冲突标记，需要手动解决：
-
-```
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -224,11 +217,7 @@ export default {
                             "Subscription-Userinfo": `upload=${pagesSum}; download=${workersSum}; total=${total}; expire=${expire}`,
                             "Cache-Control": "no-store",
                         };
-<<<<<<< local_worker.js
-                        const isSubConverterRequest = request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase());
-=======
-                        const isSubConverterRequest = url.searchParams.has('b64') || url.searchParams.has('base64') || request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase()) || 作为优选订阅生成器;
->>>>>>> upstream_worker.js
+                        const isSubConverterRequest = request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase()) || 作为优选订阅生成器;
                         const 订阅类型 = isSubConverterRequest
                             ? 'mixed'
                             : url.searchParams.has('target')
@@ -2559,5 +2548,3 @@ async function html1101(host, 访问IP) {
 </body>
 </html>`;
 }
-
-```
