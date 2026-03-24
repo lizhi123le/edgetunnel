@@ -1,0 +1,3 @@
+node_modules/
+_worker_temp.js
+*.log

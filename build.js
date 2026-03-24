@@ -21,7 +21,7 @@ try {
   process.exit(1);
 }
 
-// 混淆配置（国家级安全级别）
+// 混淆配置（适配 Cloudflare Workers）
 const obfuscationOptions = {
   compact: true,
   controlFlowFlattening: false,
@@ -29,30 +29,30 @@ const obfuscationOptions = {
   deadCodeInjection: false,
   stringArray: true,
   stringArrayEncoding: ['base64'],
-  stringArrayThreshold: 1.0,
+  stringArrayThreshold: 0.8,  // 降低阈值，只混淆80%的字符串
   stringArrayRotate: true,
   stringArrayShuffle: true,
-  stringArrayWrappersCount: 2,
+  stringArrayWrappersCount: 1,  // 减少包装器数量
   stringArrayWrappersChainedCalls: false,
-  stringArrayWrappersParametersMaxCount: 3,
-  renameGlobals: true,
-  identifierNamesGenerator: 'mangled-shuffled',
+  stringArrayWrappersParametersMaxCount: 2,
+  renameGlobals: false,  // 禁用全局变量重命名，避免冲突
+  identifierNamesGenerator: 'mangled',
   identifierNamesCache: null,
   identifiersPrefix: '',
   renameProperties: false,
   renamePropertiesMode: 'safe',
-  ignoreImports: false,
-  target: 'browser',
+  ignoreImports: true,  // 忽略 import 语句
+  target: 'node',
   numbersToExpressions: false,
   simplify: false,
   splitStrings: true,
-  splitStringsChunkLength: 1,
+  splitStringsChunkLength: 2,  // 增加分块长度
   transformObjectKeys: false,
-  unicodeEscapeSequence: true,
+  unicodeEscapeSequence: false,
   selfDefending: false,
   debugProtection: false,
   debugProtectionInterval: 0,
-  disableConsoleOutput: true,
+  disableConsoleOutput: false,
   domainLock: []
 };
 
