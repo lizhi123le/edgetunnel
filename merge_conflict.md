@@ -1,10 +1,3 @@
-# 合并冲突报告
-## 冲突时间: Tue Mar 24 01:13:05 UTC 2026
-## 上游更新哈希: 24108e23a57ad7eb415394ea71f87675524a3e43a13bc3851965e4cf65379d2d
-
-以下文件包含冲突标记，需要手动解决：
-
-```
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -327,25 +320,7 @@ export default {
                             } else { // 优选订阅生成器
                                 let 优选订阅生成器HOST = url.searchParams.get('sub') || config_JSON.优选订阅生成.SUB;
                                 const [优选生成器IP数组, 优选生成器其他节点] = await 获取优选订阅生成器数据(优选订阅生成器HOST);
-<<<<<<< local_worker.js
-                                if (优选生成器其他节点) 订阅列表.push(...优选生成器其他节点.split(/\r?\n/).filter(line => line.trim()));
-                                if (优选生成器IP数组 && 优选生成器IP数组.length > 0) {
-                                    const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
-                                    const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
-                                    const IP转换节点 = (原始地址) => {
-                                        const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
-                                        const match = 原始地址.match(regex);
-                                        if (!match) return null;
-                                        let 节点地址 = match[1], 节点端口 = match[2] || "443", 节点备注 = match[3] || 节点地址;
-                                        let 完整节点路径 = config_JSON.完整节点路径;
-                                        if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
-                                        return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${config_JSON.传输协议 + ECHLINK参数}&host=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&path=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
-                                    };
-                                    订阅列表.push(...优选生成器IP数组.map(ip => IP转换节点(ip)).filter(item => item !== null));
-                                }
-                            }
-                            订阅内容 = 订阅列表.join('\n');
-=======
+
                                 完整优选IP = 完整优选IP.concat(优选生成器IP数组);
                                 其他节点LINK += 优选生成器其他节点;
                             }
@@ -384,7 +359,7 @@ export default {
 
                                 return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
                             }).filter(item => item !== null).join('\n');
->>>>>>> upstream_worker.js
+
                         } else { // 订阅转换
                             const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 订阅TOKEN + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
                             try {
@@ -1168,9 +1143,6 @@ function 解析魏烈思请求(chunk, token) {
 }
 
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID) {
-<<<<<<< local_worker.js
-
-=======
     console.log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
     const 连接超时毫秒 = 1000;
     let 已通过代理发送首包 = false;
@@ -1181,7 +1153,6 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
             new Promise((_, reject) => setTimeout(() => reject(new Error('连接超时')), timeoutMs))
         ]);
     }
->>>>>>> upstream_worker.js
 
     async function connectDirect(address, port, data = null, 所有反代数组 = null, 反代兜底 = true) {
         let remoteSock;
@@ -1192,17 +1163,6 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                 try {
 
                     remoteSock = connect({ hostname: 反代地址, port: 反代端口 });
-<<<<<<< local_worker.js
-                    // 等待TCP连接真正建立，设置1秒超时
-                    await Promise.race([
-                        remoteSock.opened,
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('连接超时')), 1000))
-                    ]);
-                    const testWriter = remoteSock.writable.getWriter();
-                    await testWriter.write(data);
-                    testWriter.releaseLock();
-
-=======
                     await 等待连接建立(remoteSock);
                     if (有效数据长度(data) > 0) {
                         const testWriter = remoteSock.writable.getWriter();
@@ -1210,7 +1170,6 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                         testWriter.releaseLock();
                     }
                     console.log(`[反代连接] 成功连接到: ${反代地址}:${反代端口}`);
->>>>>>> upstream_worker.js
                     缓存反代数组索引 = 反代数组索引;
                     return remoteSock;
                 } catch (err) {
@@ -1236,20 +1195,6 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
         }
     }
 
-<<<<<<< local_worker.js
-    async function connecttoPry() {
-        let newSocket;
-        if (启用SOCKS5反代 === 'socks5') {
-
-            newSocket = await socks5Connect(host, portNum, rawData);
-        } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
-
-            newSocket = await httpConnect(host, portNum, rawData);
-        } else {
-
-            const 所有反代数组 = await 解析地址端口(反代IP, host, yourUUID);
-            newSocket = await connectDirect(atob('UFJPWFlJUC50cDEuMDkwMjI3Lnh5eg=='), 1, rawData, 所有反代数组, 启用反代兜底);
-=======
     async function connecttoPry(允许发送首包 = true) {
         if (remoteConnWrapper.connectingPromise) {
             await remoteConnWrapper.connectingPromise;
@@ -1285,7 +1230,6 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
             if (remoteConnWrapper.connectingPromise === 当前连接任务) {
                 remoteConnWrapper.connectingPromise = null;
             }
->>>>>>> upstream_worker.js
         }
     }
     remoteConnWrapper.retryConnect = async () => connecttoPry(!已通过代理发送首包);
@@ -3209,5 +3153,3 @@ async function html1101(host, 访问IP) {
 </body>
 </html>`;
 }
-
-```
