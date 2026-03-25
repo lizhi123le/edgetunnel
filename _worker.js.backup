@@ -280,6 +280,9 @@ export default {
                                 反代IP池 = api反代IP池 || [];
                                 const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
                                 const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
+                                const 传输协议 = config_JSON.传输协议 === 'xhttp' ? 'xhttp&mode=stream-one' : (config_JSON.传输协议 === 'grpc' ? (config_JSON.gRPC模式 === 'multi' ? 'grpc&mode=multi' : 'grpc&mode=gun') : 'ws');
+                                let 路径字段名 = 'path', 域名字段名 = 'host';
+                                if (config_JSON.传输协议 === 'grpc') 路径字段名 = 'serviceName', 域名字段名 = 'authority';
 
                                 const IP转换节点 = (原始地址) => {
                                     const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
@@ -292,7 +295,7 @@ export default {
                                         if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
                                     }
                                     if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
-                                    return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${config_JSON.传输协议 + ECHLINK参数}&host=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&path=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
+                                    return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
                                 };
 
                                 for (const 元素 of 完整优选列表) {
@@ -325,6 +328,9 @@ export default {
                                 if (优选生成器IP数组 && 优选生成器IP数组.length > 0) {
                                     const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
                                     const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
+                                    const 传输协议 = config_JSON.传输协议 === 'xhttp' ? 'xhttp&mode=stream-one' : (config_JSON.传输协议 === 'grpc' ? (config_JSON.gRPC模式 === 'multi' ? 'grpc&mode=multi' : 'grpc&mode=gun') : 'ws');
+                                    let 路径字段名 = 'path', 域名字段名 = 'host';
+                                    if (config_JSON.传输协议 === 'grpc') 路径字段名 = 'serviceName', 域名字段名 = 'authority';
                                     const IP转换节点 = (原始地址) => {
                                         const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
                                         const match = 原始地址.match(regex);
@@ -332,7 +338,7 @@ export default {
                                         let 节点地址 = match[1], 节点端口 = match[2] || "443", 节点备注 = match[3] || 节点地址;
                                         let 完整节点路径 = config_JSON.完整节点路径;
                                         if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
-                                        return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${config_JSON.传输协议 + ECHLINK参数}&host=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&path=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
+                                        return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
                                     };
                                     订阅列表.push(...优选生成器IP数组.map(ip => IP转换节点(ip)).filter(item => item !== null));
                                 }
