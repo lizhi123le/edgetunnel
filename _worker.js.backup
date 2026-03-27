@@ -1122,45 +1122,106 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
         ]);
     }
 
-    async function connectDirect(address, port, data = null, 所有反代数组 = null, 反代兜底 = true) {
-        let remoteSock;
-        if (所有反代数组 && 所有反代数组.length > 0) {
-            for (let i = 0; i < 所有反代数组.length; i++) {
-                const 反代数组索引 = (缓存反代数组索引 + i) % 所有反代数组.length;
-                const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
-                try {
-                    console.log(`[反代连接] 尝试连接到: ${反代地址}:${反代端口} (索引: ${反代数组索引})`);
-                    remoteSock = connect({ hostname: 反代地址, port: 反代端口 });
-                    await 等待连接建立(remoteSock);
-                    if (有效数据长度(data) > 0) {
-                        const testWriter = remoteSock.writable.getWriter();
-                        await testWriter.write(data);
-                        testWriter.releaseLock();
-                    }
-                    console.log(`[反代连接] 成功连接到: ${反代地址}:${反代端口}`);
-                    缓存反代数组索引 = 反代数组索引;
-                    return remoteSock;
-                } catch (err) {
-                    console.log(`[反代连接] 连接失败: ${反代地址}:${反代端口}, 错误: ${err.message}`);
-                    try { remoteSock?.close?.(); } catch (e) { }
-                    continue;
-                }
+    async function connectDirect(address, port, data = null) {
+        const remoteSock = connect({ hostname: address, port });
+        await 等待连接建立(remoteSock);
+        if (有效数据长度(data) > 0) {
+            const writer = remoteSock.writable.getWriter();
+            await writer.write(data);
+            writer.releaseLock();
+        }
+        return remoteSock;
+    }
+
+    async function connectAndSend(address, port, useSocks = false, data = null) {
+        if (useSocks) {
+            if (启用SOCKS5反代 === 'socks5') {
+                return await socks5Connect(address, port, data);
+            } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
+                return await httpConnect(address, port, data);
+            }
+        }
+        return await connectDirect(address, port, data);
+    }
+
+    function parseFallbackEntry(entry) {
+        let weight = 1;
+        let hostPort = entry.trim();
+
+        // 提取 weight=xxx 或 w=xxx 格式
+        const weightMatch = hostPort.match(/(?:\?|#|&)(?:weight|w)=(\d+)/i);
+        if (weightMatch) {
+            weight = parseInt(weightMatch[1], 10) || 1;
+            hostPort = hostPort.replace(weightMatch[0], '');
+        }
+
+        // 保留备注但不影响地址端口解析
+        const hashIndex = hostPort.indexOf('#');
+        if (hashIndex !== -1) {
+            hostPort = hostPort.substring(0, hashIndex);
+        }
+
+        let address = hostPort;
+        let port = 443;
+        if (hostPort.includes(':') && !hostPort.startsWith('[')) {
+            const parts = hostPort.split(':');
+            if (parts.length === 2 && /^\d+$/.test(parts[1])) {
+                address = parts[0];
+                port = parseInt(parts[1], 10);
+            }
+        } else if (hostPort.startsWith('[')) {
+            const parts = hostPort.split(']');
+            if (parts.length > 1 && parts[1].startsWith(':')) {
+                address = parts[0] + ']';
+                port = parseInt(parts[1].substring(1), 10) || port;
             }
         }
 
-        if (反代兜底) {
-            remoteSock = connect({ hostname: address, port: port });
-            await 等待连接建立(remoteSock);
-            if (有效数据长度(data) > 0) {
-                const writer = remoteSock.writable.getWriter();
-                await writer.write(data);
-                writer.releaseLock();
-            }
-            return remoteSock;
-        } else {
-            closeSocketQuietly(ws);
-            throw new Error('[反代连接] 所有反代连接失败，且未启用反代兜底，连接终止。');
+        return { address, port, weight: weight > 0 ? weight : 1 };
+    }
+
+    function chooseWeightedEntry(entries) {
+        const totalWeight = entries.reduce((sum, e) => sum + e.weight, 0);
+        if (totalWeight <= 0) return null;
+        let rnd = Math.random() * totalWeight;
+        for (const entry of entries) {
+            if (rnd < entry.weight) return entry;
+            rnd -= entry.weight;
         }
+        return entries[entries.length - 1] || null;
+    }
+
+    async function tryFallbackConnections(data) {
+        const fallbackList = [];
+        if (反代IP) {
+            const proxies = (typeof 反代IP === 'string' ? 反代IP.split(/[,\s]+/) : []);
+            for (const proxyStr of proxies) {
+                if (!proxyStr) continue;
+                const parsed = parseFallbackEntry(proxyStr);
+                fallbackList.push(parsed);
+            }
+        }
+
+        if (fallbackList.length === 0) {
+            throw new Error('没有可用的反代回退地址');
+        }
+
+        const candidates = [...fallbackList];
+        while (candidates.length > 0) {
+            const picked = chooseWeightedEntry(candidates);
+            if (!picked) break;
+
+            try {
+                const socket = await connectDirect(picked.address, picked.port, data);
+                return socket;
+            } catch (err) {
+                console.log(`[回退连接] 连接失败: ${picked.address}:${picked.port} 错误: ${err.message}`);
+                const index = candidates.indexOf(picked);
+                if (index !== -1) candidates.splice(index, 1);
+            }
+        }
+
+        throw new Error('所有回退连接失败');
     }
 
     async function connecttoPry(允许发送首包 = true) {
@@ -1172,19 +1233,38 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
         const 本次发送首包 = 允许发送首包 && !已通过代理发送首包 && 有效数据长度(rawData) > 0;
         const 本次首包数据 = 本次发送首包 ? rawData : null;
 
-        const 当前连接任务 = (async () => {
-            let newSocket;
-            if (启用SOCKS5反代 === 'socks5') {
-                console.log(`[SOCKS5代理] 代理到: ${host}:${portNum}`);
-                newSocket = await socks5Connect(host, portNum, 本次首包数据);
-            } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
-                console.log(`[HTTP代理] 代理到: ${host}:${portNum}`);
-                newSocket = await httpConnect(host, portNum, 本次首包数据);
-            } else {
-                console.log(`[反代连接] 代理到: ${host}:${portNum}`);
-                const 所有反代数组 = await 解析地址端口(反代IP, host, yourUUID);
-                newSocket = await connectDirect(host, portNum, 本次首包数据, 所有反代数组, 启用反代兜底);
+        const 连接顺序 = async () => {
+            const useSocks = 启用SOCKS5反代 && (启用SOCKS5全局反代 || 验证SOCKS5白名单(host));
+            if (useSocks) {
+                try {
+                    console.log(`[SOCKS/HTTP代理] 优先代理到: ${host}:${portNum}`);
+                    return await connectAndSend(host, portNum, true, 本次首包数据);
+                } catch (err) {
+                    console.log(`[SOCKS/HTTP代理] 失败: ${err.message}`);
+                }
             }
+
+            try {
+                console.log(`[直连] 尝试连接到: ${host}:${portNum}`);
+                return await connectAndSend(host, portNum, false, 本次首包数据);
+            } catch (err) {
+                console.log(`[直连] 失败: ${err.message}`);
+            }
+
+            if (反代IP) {
+                try {
+                    console.log(`[回退] 使用反代IP尝试连接`);
+                    return await tryFallbackConnections(本次首包数据);
+                } catch (err) {
+                    console.log(`[回退] 失败: ${err.message}`);
+                }
+            }
+
+            throw new Error('[connecttoPry] 所有连接方式失败');
+        };
+
+        const 当前连接任务 = (async () => {
+            const newSocket = await 连接顺序();
             if (本次发送首包) 已通过代理发送首包 = true;
             remoteConnWrapper.socket = newSocket;
             newSocket.closed.catch(() => { }).finally(() => closeSocketQuietly(ws));
