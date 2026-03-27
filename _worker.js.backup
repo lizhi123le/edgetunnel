@@ -868,7 +868,28 @@ async function 处理gRPC请求(request, yourUUID) {
                         const grpcPayload = pending.slice(5, frameSize);
                         pending = pending.slice(frameSize);
                         if (!grpcPayload.byteLength) continue;
+
                         let payload = grpcPayload;
+                        if (payload.byteLength >= 2 && payload[0] === 0x0a) {
+                            let offset = 1;
+                            let value = 0;
+                            let shift = 0;
+                            let validVarint = false;
+                            while (offset < payload.length) {
+                                const b = payload[offset++];
+                                value |= (b & 0x7f) << shift;
+                                if ((b & 0x80) === 0) {
+                                    validVarint = true;
+                                    break;
+                                }
+                                shift += 7;
+                                if (shift > 28) break;
+                            }
+                            if (validVarint && value >= 0 && payload.length >= offset + value) {
+                                payload = payload.slice(offset, offset + value);
+                            }
+                        }
+
                         if (isDnsQuery) {
                             await forwardataudp(payload, grpcBridge, null);
                             continue;
