@@ -512,6 +512,7 @@ async function 处理XHTTP请求(request, yourUUID) {
                         udpRespHeader = null;
                     }
                 } else {
+                    console.log(`[XHTTP转发] 目标 ${首包.hostname}:${首包.port} 首包长度 ${首包.rawData?.byteLength || 0}`);
                     await forwardataTCP(首包.hostname, 首包.port, 首包.rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID);
                 }
 
@@ -870,23 +871,23 @@ async function 处理gRPC请求(request, yourUUID) {
                         if (!grpcPayload.byteLength) continue;
 
                         let payload = grpcPayload;
+                        console.log(`[gRPC] 收到帧 length=${grpcLen}, payload_len=${payload.byteLength}, first=${Array.from(payload.slice(0, Math.min(8, payload.byteLength))).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
                         if (payload.byteLength >= 2 && payload[0] === 0x0a) {
                             let offset = 1;
-                            let value = 0;
                             let shift = 0;
-                            let validVarint = false;
+                            let varint有效 = false;
                             while (offset < payload.length) {
-                                const b = payload[offset++];
-                                value |= (b & 0x7f) << shift;
-                                if ((b & 0x80) === 0) {
-                                    validVarint = true;
+                                const current = payload[offset++];
+                                if ((current & 0x80) === 0) {
+                                    varint有效 = true;
                                     break;
                                 }
                                 shift += 7;
-                                if (shift > 28) break;
+                                if (shift > 35) break;
                             }
-                            if (validVarint && value >= 0 && payload.length >= offset + value) {
-                                payload = payload.slice(offset, offset + value);
+                            if (varint有效) {
+                                console.log(`[gRPC] 发现 varint 包装，剥离 ${offset} 字节`);
+                                payload = payload.slice(offset);
                             }
                         }
 
@@ -914,7 +915,7 @@ async function 处理gRPC请求(request, yourUUID) {
                                 const 解析结果 = 解析魏烈思请求(首包buffer, yourUUID);
                                 if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid vless request');
                                 const { port, hostname, rawIndex, version, isUDP } = 解析结果;
-                                //console.log(`[gRPC] 魏烈思首包: ${hostname}:${port} | UDP: ${isUDP ? '是' : '否'}`);
+                                console.log(`[gRPC] 魏烈思首包: ${hostname}:${port} | UDP: ${isUDP ? '是' : '否'} | rawIndex=${rawIndex}`);
                                 if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
                                 if (isUDP) {
                                     if (port !== 53) throw new Error('UDP is not supported');
