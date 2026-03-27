@@ -36,7 +36,7 @@ export default {
             await 反代参数获取(request);
             const referer = request.headers.get('Referer') || '';
             const 命中XHTTP特征 = referer.includes('x_padding', 14) || referer.includes('x_padding=');
-            if (!命中XHTTP特征 && contentType.startsWith('application/grpc')) {
+            if (!命中XHTTP特征 && (contentType.includes('application/grpc') || contentType.includes('application/grpc-web'))) {
                 console.log(`[gRPC] 命中请求: ${url.pathname}${url.search}`);
                 return await 处理gRPC请求(request, userID);
             }
