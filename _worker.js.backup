@@ -306,8 +306,8 @@ export default {
                                     if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
                                     if (协议类型 === 'ss') {
                                         完整节点路径 = 完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式);
-                                        return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + 完整节点路径 + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数}#${encodeURIComponent(节点备注)}`;
-                                    } else return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
+                                        return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + config_JSON.UUID)}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + 完整节点路径 + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数}#${encodeURIComponent(节点备注)}`;
+                                    } else return `${协议类型}://${config_JSON.UUID}@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
                                 };
 
                                 for (const 元素 of 完整优选列表) {
@@ -352,8 +352,8 @@ export default {
                                         if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
                                         if (协议类型 === 'ss') {
                                             完整节点路径 = 完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式);
-                                            return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + 完整节点路径 + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数}#${encodeURIComponent(节点备注)}`;
-                                        } else return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
+                                            return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + config_JSON.UUID)}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + 完整节点路径 + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数}#${encodeURIComponent(节点备注)}`;
+                                        } else return `${协议类型}://${config_JSON.UUID}@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
                                     };
                                     订阅列表.push(...优选生成器IP数组.map(ip => IP转换节点(ip)).filter(item => item !== null));
                                 }
