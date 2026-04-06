@@ -1079,6 +1079,7 @@ async function 处理WS请求(request, yourUUID, url) {
 				const 入站状态 = {
 					buffer: new Uint8Array(0), hasSalt: false, waitPayloadLength: null,
 					decryptKey: null, nonceCounter: new Uint8Array(SSNonce长度), 加密配置: null,
+					cpuYieldCounter: 0,
 				};
 				const 初始化入站解密状态 = async () => {
 					const lengthCipherTotalLength = 2 + SSAEAD标签长度;
@@ -1127,6 +1128,11 @@ async function 处理WS请求(request, yourUUID, url) {
 						}
 						const plaintextChunks = [];
 						while (true) {
+							入站状态.cpuYieldCounter++;
+							if (入站状态.cpuYieldCounter >= 8) {
+								入站状态.cpuYieldCounter = 0;
+								await new Promise(r => setTimeout(r, 0));
+							}
 							if (入站状态.waitPayloadLength === null) {
 								const lengthCipherTotalLength = 2 + SSAEAD标签长度;
 								if (入站状态.buffer.byteLength < lengthCipherTotalLength) break;
@@ -1159,6 +1165,7 @@ async function 处理WS请求(request, yourUUID, url) {
 					const 出站加密密钥 = await SS派生会话密钥(出站加密配置, 出站主密钥, 出站随机字节, ['encrypt']);
 					const 出站Nonce计数器 = new Uint8Array(SSNonce长度);
 					let 随机字节已发送 = false;
+					let 出站CPU让出计数器 = 0;
 					出站加密器 = {
 						async 加密并发送(dataChunk, sendChunk) {
 							const plaintextData = SS数据转Uint8Array(dataChunk);
@@ -1169,6 +1176,11 @@ async function 处理WS请求(request, yourUUID, url) {
 							if (plaintextData.byteLength === 0) return;
 							let offset = 0;
 							while (offset < plaintextData.byteLength) {
+								出站CPU让出计数器++;
+								if (出站CPU让出计数器 >= 8) {
+									出站CPU让出计数器 = 0;
+									await new Promise(r => setTimeout(r, 0));
+								}
 								const end = Math.min(offset + 出站加密配置.maxChunk, plaintextData.byteLength);
 								const payloadPlain = plaintextData.subarray(offset, end);
 								const lengthPlain = new Uint8Array(2);
