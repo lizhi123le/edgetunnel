@@ -1187,8 +1187,13 @@ async function 处理WS请求(request, yourUUID, url) {
 					return 出站加密器;
 				};
 				let SS发送队列 = Promise.resolve();
+				let SS首包发送前一次性让出CPU = true;
 				const SS入队发送 = (chunk) => {
 					SS发送队列 = SS发送队列.then(async () => {
+						if (SS首包发送前一次性让出CPU) {
+							SS首包发送前一次性让出CPU = false;
+							await new Promise(r => setTimeout(r, 0));
+						}
 						if (serverSock.readyState !== WebSocket.OPEN) return;
 						const 已初始化出站加密器 = await 获取出站加密器();
 						await 已初始化出站加密器.加密并发送(chunk, async (encryptedChunk) => {
