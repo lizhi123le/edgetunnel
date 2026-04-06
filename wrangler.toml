@@ -8,3 +8,18 @@ placement = { mode = "smart" }
 [[kv_namespaces]]
 binding = "KV"			#KV绑定名默认不可修改
 id = "750da6aa82024e5b89860ae8902b9595"				#KV数据库id
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
