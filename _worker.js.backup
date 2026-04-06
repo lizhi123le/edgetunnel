@@ -1885,6 +1885,7 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 			let 等待刷新恢复 = null;
 			let 正在读取 = false;
 			let 读取中待刷新 = false;
+			let cpuYieldCounter = 0;
 
 			const flush = async () => {
 				if (正在读取) {
@@ -1912,6 +1913,11 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 			};
 
 			while (true) {
+				cpuYieldCounter++;
+				if (cpuYieldCounter >= 16) {
+					cpuYieldCounter = 0;
+					await new Promise(r => setTimeout(r, 0));
+				}
 				正在读取 = true;
 				const { done, value } = await reader.read(new Uint8Array(mainBuf, offset, BYOB单次读取上限));
 				正在读取 = false;
