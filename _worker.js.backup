@@ -1129,7 +1129,7 @@ async function 处理WS请求(request, yourUUID, url) {
 						const plaintextChunks = [];
 						while (true) {
 							入站状态.cpuYieldCounter++;
-							if (入站状态.cpuYieldCounter >= 5) {
+							if (入站状态.cpuYieldCounter >= 8) {
 								入站状态.cpuYieldCounter = 0;
 								await new Promise(r => setTimeout(r, 0));
 							}
@@ -1177,7 +1177,7 @@ async function 处理WS请求(request, yourUUID, url) {
 							let offset = 0;
 							while (offset < plaintextData.byteLength) {
 								出站CPU让出计数器++;
-								if (出站CPU让出计数器 >= 5) {
+								if (出站CPU让出计数器 >= 8) {
 									出站CPU让出计数器 = 0;
 									await new Promise(r => setTimeout(r, 0));
 								}
@@ -1889,7 +1889,7 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 		if (!useBYOB) {
 			while (true) {
 				非BYOBCPU让出计数器++;
-				if (非BYOBCPU让出计数器 >= 5) {
+				if (非BYOBCPU让出计数器 >= 8) {
 					非BYOBCPU让出计数器 = 0;
 					await new Promise(r => setTimeout(r, 0));
 				}
@@ -1937,7 +1937,7 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 
 			while (true) {
 				cpuYieldCounter++;
-				if (cpuYieldCounter >= 5) {
+				if (cpuYieldCounter >= 16) {
 					cpuYieldCounter = 0;
 					await new Promise(r => setTimeout(r, 0));
 				}
