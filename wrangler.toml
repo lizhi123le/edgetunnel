@@ -1,7 +1,9 @@
 name = "v20251104"
 main = "_worker.js"
-compatibility_date = "2025-11-04"
+compatibility_date = "2026-04-01"
 keep_vars = true
+keep_alive = "enable"
+placement = { mode = "smart" }
 
 #[[kv_namespaces]]
 #binding = "KV"			#KV绑定名默认不可修改

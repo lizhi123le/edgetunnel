@@ -1,4 +1,4 @@
-const Version = '2026-04-04 22:11:14';
+const Version = '2026-04-06 18:42:41';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -970,21 +970,67 @@ async function 处理WS请求(request, yourUUID, url) {
 	const earlyData = request.headers.get('sec-websocket-protocol') || '';
 	const SS模式禁用EarlyData = !!url.searchParams.get('enc');
 	let 已取消读取 = false;
+	let 可读流已结束 = false;
 	const readable = new ReadableStream({
 		start(controller) {
-			serverSock.addEventListener('message', (e) => controller.enqueue(e.data));
-			serverSock.addEventListener('close', () => controller.close());
-			serverSock.addEventListener('error', (err) => controller.error(err));
+			const 是流已关闭错误 = (err) => {
+				const msg = err?.message || `${err || ''}`;
+				return msg.includes('ReadableStream is closed') || msg.includes('The stream is closed') || msg.includes('already closed');
+			};
+			const 安全入队 = (data) => {
+				if (已取消读取 || 可读流已结束) return;
+				try {
+					controller.enqueue(data);
+				} catch (err) {
+					可读流已结束 = true;
+					if (!是流已关闭错误(err)) {
+						try { controller.error(err); } catch (_) { }
+					}
+				}
+			};
+			const 安全关闭流 = () => {
+				if (已取消读取 || 可读流已结束) return;
+				可读流已结束 = true;
+				try {
+					controller.close();
+				} catch (err) {
+					if (!是流已关闭错误(err)) {
+						try { controller.error(err); } catch (_) { }
+					}
+				}
+			};
+			const 安全报错流 = (err) => {
+				if (已取消读取 || 可读流已结束) return;
+				可读流已结束 = true;
+				try { controller.error(err); } catch (_) { }
+			};
+			serverSock.addEventListener('message', (event) => {
+				安全入队(event.data);
+			});
+			serverSock.addEventListener('close', () => {
+				closeSocketQuietly(serverSock);
+				安全关闭流();
+			});
+			serverSock.addEventListener('error', (err) => {
+				安全报错流(err);
+				closeSocketQuietly(serverSock);
+			});
 			// SS 模式下禁用 sec-websocket-protocol early-data，避免把子协议值（如 "binary"）误当作 base64 数据注入首包导致 AEAD 解密失败。
 			if (SS模式禁用EarlyData || !earlyData) return;
 			try {
 				const binaryString = atob(earlyData.replace(/-/g, '+').replace(/_/g, '/'));
 				const bytes = new Uint8Array(binaryString.length);
 				for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-				controller.enqueue(bytes.buffer);
-			} catch (err) { log(`[WS] earlyData 解码失败: ${err.message}`); }
+				安全入队(bytes.buffer);
+			} catch (error) {
+				安全报错流(error);
+			}
 		},
-		cancel() { 已取消读取 = true; try { remoteConnWrapper.socket?.close(); } catch (e) { } }
+		cancel() {
+			已取消读取 = true;
+			可读流已结束 = true;
+			closeSocketQuietly(serverSock);
+		}
 	});
 	let 判断协议类型 = null, 当前写入Socket = null, 远端写入器 = null;
 	let ss上下文 = null, ss初始化任务 = null;
@@ -1259,8 +1305,14 @@ async function 处理WS请求(request, yourUUID, url) {
 		close() { 释放远端写入器(); },
 		abort() { 释放远端写入器(); }
 	})).catch((err) => {
-		log(`[WS转发] 处理失败: ${err?.message || err}`);
+		const msg = err?.message || `${err}`;
+		if (msg.includes('Network connection lost') || msg.includes('ReadableStream is closed')) {
+			log(`[WS转发] 连接结束: ${msg}`);
+		} else {
+			log(`[WS转发] 处理失败: ${msg}`);
+		}
 		释放远端写入器();
+		closeSocketQuietly(serverSock);
 	});
 
 	return new Response(null, { status: 101, webSocket: clientSock });
@@ -1786,30 +1838,146 @@ async function WebSocket发送并等待(webSocket, payload) {
 }
 
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
-    let header = headerData, hasData = false;
-    await remoteSocket.readable.pipeTo(
-        new WritableStream({
-            async write(chunk, controller) {
-                hasData = true;
-                if (webSocket.readyState !== WebSocket.OPEN) controller.error('ws.readyState is not open');
-                if (header) {
-                    const response = new Uint8Array(header.length + chunk.byteLength);
-                    response.set(header, 0);
-                    response.set(chunk, header.length);
-                    await WebSocket发送并等待(webSocket, response.buffer);
-                    header = null;
-                } else {
-                    await WebSocket发送并等待(webSocket, chunk);
-                }
-            },
-            abort() { },
-        })
-    ).catch((err) => {
-        closeSocketQuietly(webSocket);
-    });
-    if (!hasData && retryFunc) {
-        await retryFunc();
-    }
+	let header = headerData, hasData = false;
+	let reader, useBYOB = false;
+	let flush定时器 = null;
+	const BYOB缓冲区大小 = 512 * 1024;
+	const BYOB单次读取上限 = 64 * 1024;
+	const BYOB高吞吐阈值 = 50 * 1024 * 1024;
+	const BYOB慢速刷新间隔 = 20;
+	const BYOB快速刷新间隔 = 2;
+	const BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
+
+	const 发送块 = async (chunk) => {
+		if (webSocket.readyState !== WebSocket.OPEN) throw new Error('ws.readyState is not open');
+		if (header) {
+			const response = new Uint8Array(header.length + chunk.byteLength);
+			response.set(header, 0);
+			response.set(chunk, header.length);
+			await WebSocket发送并等待(webSocket, response.buffer);
+			header = null;
+		} else {
+			await WebSocket发送并等待(webSocket, chunk);
+		}
+	};
+
+	try {
+		reader = remoteSocket.readable.getReader({ mode: 'byob' });
+		useBYOB = true;
+	} catch (e) {
+		reader = remoteSocket.readable.getReader();
+	}
+	try {
+		if (!useBYOB) {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				if (!value || value.byteLength === 0) continue;
+				hasData = true;
+				const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+				await 发送块(chunk);
+			}
+		} else {
+			let mainBuf = new ArrayBuffer(BYOB缓冲区大小);
+			let offset = 0;
+			let totalBytes = 0;
+			let flush间隔毫秒 = BYOB快速刷新间隔;
+			let 等待刷新恢复 = null;
+			let 正在读取 = false;
+			let 读取中待刷新 = false;
+
+			const flush = async () => {
+				if (正在读取) {
+					读取中待刷新 = true;
+					return;
+				}
+				try {
+					if (offset > 0) {
+						const payload = new Uint8Array(mainBuf.slice(0, offset));
+						offset = 0;
+						await 发送块(payload);
+					}
+				} finally {
+					读取中待刷新 = false;
+					if (flush定时器) {
+						clearTimeout(flush定时器);
+						flush定时器 = null;
+					}
+					if (等待刷新恢复) {
+						const resolve = 等待刷新恢复;
+						等待刷新恢复 = null;
+						resolve();
+					}
+				}
+			};
+
+			while (true) {
+				正在读取 = true;
+				const { done, value } = await reader.read(new Uint8Array(mainBuf, offset, BYOB单次读取上限));
+				正在读取 = false;
+				if (done) break;
+				if (!value || value.byteLength === 0) {
+					if (读取中待刷新) await flush();
+					continue;
+				}
+
+				hasData = true;
+				mainBuf = value.buffer;
+				const chunkLen = value.byteLength;
+				if (value.byteOffset !== offset) {
+					log(`[BYOB] 偏移不一致: 预期=${offset}, 实际=${value.byteOffset}, 长度=${chunkLen}`);
+					if (offset > 0) {
+						await 发送块(new Uint8Array(mainBuf, 0, offset).slice());
+					}
+					await 发送块(new Uint8Array(mainBuf, value.byteOffset, chunkLen).slice());
+					mainBuf = new ArrayBuffer(BYOB缓冲区大小);
+					offset = 0;
+					totalBytes = 0;
+					continue;
+				}
+
+				if (chunkLen < BYOB单次读取上限) {
+					flush间隔毫秒 = BYOB快速刷新间隔;
+					if (chunkLen < 4096) totalBytes = 0;
+					if (offset > 0) {
+						offset += chunkLen;
+						await flush();
+					} else {
+						await 发送块(value.slice());
+					}
+				} else {
+					totalBytes += chunkLen;
+					offset += chunkLen;
+					if (!flush定时器) {
+						flush定时器 = setTimeout(() => {
+							flush().catch(() => closeSocketQuietly(webSocket));
+						}, flush间隔毫秒);
+					}
+					if (读取中待刷新) await flush();
+					if (offset > BYOB安全阈值) {
+						if (totalBytes > BYOB高吞吐阈值) flush间隔毫秒 = BYOB慢速刷新间隔;
+						await new Promise((resolve) => { 等待刷新恢复 = resolve; });
+					}
+				}
+			}
+
+			正在读取 = false;
+			await flush();
+		}
+	} catch (err) {
+		closeSocketQuietly(webSocket);
+	} finally {
+		if (flush定时器) {
+			clearTimeout(flush定时器);
+			flush定时器 = null;
+		}
+		try { await reader.cancel(); } catch (e) { }
+		try { reader.releaseLock(); } catch (e) { }
+		try { remoteSocket.close(); } catch (e) { }
+	}
+	if (!hasData && retryFunc) {
+		await retryFunc();
+	}
 }
 
 function makeReadableStr(socket, earlyDataHeader) {
@@ -2953,9 +3121,9 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1) {
         return [(randomIP >>> 24) & 0xFF, (randomIP >>> 16) & 0xFF, (randomIP >>> 8) & 0xFF, randomIP & 0xFF].join('.');
     };
 
-    const randomIPs = Array.from({ length: count }, () => {
+    const randomIPs = Array.from({ length: count }, (_, index) => {
         const ip = generateRandomIPFromCIDR(cidrList[Math.floor(Math.random() * cidrList.length)]);
-        return `${ip}:${指定端口 === -1 ? cfport[Math.floor(Math.random() * cfport.length)] : 指定端口}#${cfname}`;
+        return `${ip}:${指定端口 === -1 ? cfport[Math.floor(Math.random() * cfport.length)] : 指定端口}#${cfname}${index + 1}`;
     });
     return [randomIPs, randomIPs.join('\n')];
 }
