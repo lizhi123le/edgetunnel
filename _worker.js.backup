@@ -1079,7 +1079,7 @@ async function 处理WS请求(request, yourUUID, url) {
 				const 入站状态 = {
 					buffer: new Uint8Array(0), hasSalt: false, waitPayloadLength: null,
 					decryptKey: null, nonceCounter: new Uint8Array(SSNonce长度), 加密配置: null,
-					上次CPU让出时间: 0,
+					cpuYieldCounter: 0,
 				};
 				const 初始化入站解密状态 = async () => {
 					const lengthCipherTotalLength = 2 + SSAEAD标签长度;
@@ -1128,10 +1128,10 @@ async function 处理WS请求(request, yourUUID, url) {
 						}
 						const plaintextChunks = [];
 						while (true) {
-							const 当前时间 = Date.now();
-							if (当前时间 - 入站状态.上次CPU让出时间 >= 10) {
-								入站状态.上次CPU让出时间 = 当前时间;
-								await new Promise(r => setTimeout(r, 0));
+							入站状态.cpuYieldCounter++;
+							if (入站状态.cpuYieldCounter >= 4) {
+								入站状态.cpuYieldCounter = 0;
+								await new Promise(r => queueMicrotask(r));
 							}
 							if (入站状态.waitPayloadLength === null) {
 								const lengthCipherTotalLength = 2 + SSAEAD标签长度;
@@ -1165,7 +1165,7 @@ async function 处理WS请求(request, yourUUID, url) {
 					const 出站加密密钥 = await SS派生会话密钥(出站加密配置, 出站主密钥, 出站随机字节, ['encrypt']);
 					const 出站Nonce计数器 = new Uint8Array(SSNonce长度);
 					let 随机字节已发送 = false;
-					let 出站上次CPU让出时间 = 0;
+					let 出站CPU让出计数器 = 0;
 					出站加密器 = {
 						async 加密并发送(dataChunk, sendChunk) {
 							const plaintextData = SS数据转Uint8Array(dataChunk);
@@ -1176,10 +1176,10 @@ async function 处理WS请求(request, yourUUID, url) {
 							if (plaintextData.byteLength === 0) return;
 							let offset = 0;
 							while (offset < plaintextData.byteLength) {
-								const 当前时间 = Date.now();
-								if (当前时间 - 出站上次CPU让出时间 >= 10) {
-									出站上次CPU让出时间 = 当前时间;
-									await new Promise(r => setTimeout(r, 0));
+								出站CPU让出计数器++;
+								if (出站CPU让出计数器 >= 4) {
+									出站CPU让出计数器 = 0;
+									await new Promise(r => queueMicrotask(r));
 								}
 								const end = Math.min(offset + 出站加密配置.maxChunk, plaintextData.byteLength);
 								const payloadPlain = plaintextData.subarray(offset, end);
@@ -1204,7 +1204,7 @@ async function 处理WS请求(request, yourUUID, url) {
 					SS发送队列 = SS发送队列.then(async () => {
 						if (SS首包发送前一次性让出CPU) {
 							SS首包发送前一次性让出CPU = false;
-							await new Promise(r => setTimeout(r, 0));
+							await new Promise(r => queueMicrotask(r));
 						}
 						if (serverSock.readyState !== WebSocket.OPEN) return;
 						const 已初始化出站加密器 = await 获取出站加密器();
@@ -1885,13 +1885,13 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 		reader = remoteSocket.readable.getReader();
 	}
 	try {
-		let 非BYOB上次CPU让出时间 = 0;
+		let 非BYOBCPU让出计数器 = 0;
 		if (!useBYOB) {
 			while (true) {
-				const 当前时间 = Date.now();
-				if (当前时间 - 非BYOB上次CPU让出时间 >= 10) {
-					非BYOB上次CPU让出时间 = 当前时间;
-					await new Promise(r => setTimeout(r, 0));
+				非BYOBCPU让出计数器++;
+				if (非BYOBCPU让出计数器 >= 4) {
+					非BYOBCPU让出计数器 = 0;
+					await new Promise(r => queueMicrotask(r));
 				}
 				const { done, value } = await reader.read();
 				if (done) break;
@@ -1908,7 +1908,7 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 			let 等待刷新恢复 = null;
 			let 正在读取 = false;
 			let 读取中待刷新 = false;
-			let BYOB上次CPU让出时间 = 0;
+			let BYOBCPU让出计数器 = 0;
 
 			const flush = async () => {
 				if (正在读取) {
@@ -1936,10 +1936,10 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 			};
 
 			while (true) {
-				const 当前时间 = Date.now();
-				if (当前时间 - BYOB上次CPU让出时间 >= 10) {
-					BYOB上次CPU让出时间 = 当前时间;
-					await new Promise(r => setTimeout(r, 0));
+				BYOBCPU让出计数器++;
+				if (BYOBCPU让出计数器 >= 4) {
+					BYOBCPU让出计数器 = 0;
+					await new Promise(r => queueMicrotask(r));
 				}
 				正在读取 = true;
 				const { done, value } = await reader.read(new Uint8Array(mainBuf, offset, BYOB单次读取上限));
