@@ -286,7 +286,7 @@ export default {
                                 let 完整节点路径 = config_JSON.完整节点路径;
                                 if (反代IP池.length > 0) {
                                     const 匹配到的反代IP = 反代IP池.find(p => p.includes(节点地址));
-                                    if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
+                                    if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/');
                                 }
                                 if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
 
@@ -294,7 +294,11 @@ export default {
                                 if (协议类型 === 'ss') {
                                     完整节点路径 = (完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
                                     if (!isSubConverterRequest) 完整节点路径 = 完整节点路径 + ';mux=0';
-                                    return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + uuidToUse)}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(节点备注)}`;
+                                    let ssPath = config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径;
+                                    if (config_JSON.启用0RTT && !ssPath.includes('ed=2560')) {
+                                        ssPath = ssPath.includes('?') ? (ssPath + '&ed=2560') : (ssPath + '?ed=2560');
+                                    }
+                                    return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + uuidToUse)}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + ssPath + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(节点备注)}`;
                                 } else {
                                     const 传输路径参数值 = 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器);
                                     return `${协议类型}://${uuidToUse}@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
@@ -2080,7 +2084,9 @@ function 获取传输协议配置(config_JSON) {
 function 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器) {
 	let 传输路径参数值 = 作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径);
 	if (config_JSON.启用0RTT && config_JSON.传输协议 === 'ws' && !作为优选订阅生成器) {
-		传输路径参数值 = 传输路径参数值.includes('?') ? (传输路径参数值 + '&ed=2560') : (传输路径参数值 + '?ed=2560');
+		if (!传输路径参数值.includes('ed=2560')) {
+			传输路径参数值 = 传输路径参数值.includes('?') ? (传输路径参数值 + '&ed=2560') : (传输路径参数值 + '?ed=2560');
+		}
 	}
 	return 传输路径参数值;
 }
