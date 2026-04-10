@@ -1,4 +1,4 @@
-const Version = '2026-04-06 18:42:41';
+const Version = '2026-04-10 06:03:17 (Local Enhanced)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -118,6 +118,8 @@ export default {
                             检测代理响应 = await SOCKS5可用性验证('socks5', url.searchParams.get('socks5'));
                         } else if (url.searchParams.has('http')) {
                             检测代理响应 = await SOCKS5可用性验证('http', url.searchParams.get('http'));
+                        } else if (url.searchParams.has('https')) {
+                            检测代理响应 = await SOCKS5可用性验证('https', url.searchParams.get('https'));
                         } else {
                             return new Response(JSON.stringify({ error: '缺少代理参数' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                         }
@@ -270,12 +272,37 @@ export default {
 
                         if (订阅类型 === 'mixed') {
                             const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
-                            let 订阅列表 = [], 反代IP池 = [];
+                            const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
+                            const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
+                            const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
+
+                            let 完整优选IP = [], 其他节点LINK = '', 反代IP池 = [];
+
+                            const IP转换节点 = (原始地址) => {
+                                const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
+                                const match = 原始地址.match(regex);
+                                if (!match) return null;
+                                let 节点地址 = match[1], 节点端口 = match[2] ? match[2] : (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443', 节点备注 = match[3] || 节点地址;
+                                let 完整节点路径 = config_JSON.完整节点路径;
+                                if (反代IP池.length > 0) {
+                                    const 匹配到的反代IP = 反代IP池.find(p => p.includes(节点地址));
+                                    if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
+                                }
+                                if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
+
+                                if (协议类型 === 'ss' && !作为优选订阅生成器) {
+                                    完整节点路径 = (完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
+                                    if (!isSubConverterRequest) 完整节点路径 = 完整节点路径 + ';mux=0';
+                                    return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(节点备注)}`;
+                                } else {
+                                    const 传输路径参数值 = 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器);
+                                    return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
+                                }
+                            };
 
                             if (!url.searchParams.has('sub') && config_JSON.优选订阅生成.local) { // 本地生成订阅
-                                const 协议类型 = config_JSON.协议类型;
                                 const 完整优选列表 = config_JSON.优选订阅生成.本地IP库.随机IP ? (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0] : await env.KV.get('ADD.txt') ? await 整理成数组(await env.KV.get('ADD.txt')) : (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0];
-                                const 优选API = [];
+                                const 优选API = [], 优选IP = [], 其他节点 = [];
                                 for (const 元素 of 完整优选列表) {
                                     if (元素.toLowerCase().startsWith('sub://')) {
                                         优选API.push(元素);
@@ -286,84 +313,36 @@ export default {
                                             优选API.push('sub://' + subMatch[1].trim() + (优选IP作为反代IP ? "?proxyip=true" : "") + (元素.includes('#') ? ('#' + 元素.split('#')[1]) : ''));
                                         } else if (元素.toLowerCase().startsWith('https://')) {
                                             优选API.push(元素);
+                                        } else if (元素.toLowerCase().includes('://')) {
+                                            if (元素.includes('#')) {
+                                                const 地址备注分离 = 元素.split('#');
+                                                其他节点.push(地址备注分离[0] + '#' + encodeURIComponent(decodeURIComponent(地址备注分离[1])));
+                                            } else 其他节点.push(元素);
+                                        } else {
+                                            优选IP.push(元素);
                                         }
                                     }
                                 }
 
                                 const [resultsMap, _, api反代IP池] = await 请求优选API(优选API, (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443');
                                 反代IP池 = api反代IP池 || [];
-                                const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
-                                const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
-                                const 传输协议 = config_JSON.传输协议 === 'xhttp' ? 'xhttp&mode=stream-one' : (config_JSON.传输协议 === 'grpc' ? (config_JSON.gRPC模式 === 'multi' ? 'grpc&mode=multi' : 'grpc&mode=gun') : 'ws');
-                                let 路径字段名 = 'path', 域名字段名 = 'host';
-                                if (config_JSON.传输协议 === 'grpc') 路径字段名 = 'serviceName', 域名字段名 = 'authority';
+                                其他节点LINK = 其他节点.length > 0 ? 其他节点.join('\n') + '\n' : '';
 
-                                const IP转换节点 = (原始地址) => {
-                                    const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
-                                    const match = 原始地址.match(regex);
-                                    if (!match) return null;
-                                    let 节点地址 = match[1], 节点端口 = match[2] ? match[2] : (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443', 节点备注 = match[3] || 节点地址;
-                                    let 完整节点路径 = config_JSON.完整节点路径;
-                                    if (反代IP池.length > 0) {
-                                        const 匹配到的反代IP = 反代IP池.find(p => p.includes(节点地址));
-                                        if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
-                                    }
-                                    if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
-                                    if (协议类型 === 'ss') {
-                                        完整节点路径 = (完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
-                                        return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + config_JSON.UUID)}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数}#${encodeURIComponent(节点备注)}`;
-                                    } else return `${协议类型}://${config_JSON.UUID}@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
-                                };
-
-                                for (const 元素 of 完整优选列表) {
-                                    if (元素.toLowerCase().startsWith('sub://') || 元素.toLowerCase().startsWith('https://') || (元素.match(/sub\s*=\s*([^\s&#]+)/i) && 元素.match(/sub\s*=\s*([^\s&#]+)/i)[1].trim().includes('.'))) {
-                                        let key = 元素;
-                                        if (!元素.toLowerCase().startsWith('https://') && !元素.toLowerCase().startsWith('sub://')) {
-                                            const subMatch = 元素.match(/sub\s*=\s*([^\s&#]+)/i);
-                                            const 优选IP作为反代IP = 元素.toLowerCase().includes('proxyip=true');
-                                            key = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? "?proxyip=true" : "") + (元素.includes('#') ? ('#' + 元素.split('#')[1]) : '');
-                                        }
-                                        const res = resultsMap.get(key);
-                                        if (res) {
-                                            if (res.Nodes && res.Nodes.length > 0) 订阅列表.push(...res.Nodes);
-                                            if (res.IPs && res.IPs.length > 0) 订阅列表.push(...res.IPs.map(ip => IP转换节点(ip)).filter(item => item !== null));
-                                        }
-                                    } else if (元素.toLowerCase().includes('://')) {
-                                        if (元素.includes('#')) {
-                                            const 地址备注分离 = 元素.split('#');
-                                            订阅列表.push(地址备注分离[0] + '#' + encodeURIComponent(decodeURIComponent(地址备注分离[1])));
-                                        } else 订阅列表.push(元素);
-                                    } else {
-                                        const node = IP转换节点(元素);
-                                        if (node) 订阅列表.push(node);
+                                for (const key of resultsMap.keys()) {
+                                    const res = resultsMap.get(key);
+                                    if (res) {
+                                        if (res.Nodes && res.Nodes.length > 0) 其他节点LINK += res.Nodes.join('\n') + '\n';
+                                        if (res.IPs && res.IPs.length > 0) 完整优选IP.push(...res.IPs);
                                     }
                                 }
+                                完整优选IP.push(...优选IP);
                             } else { // 优选订阅生成器
                                 let 优选订阅生成器HOST = url.searchParams.get('sub') || config_JSON.优选订阅生成.SUB;
                                 const [优选生成器IP数组, 优选生成器其他节点] = await 获取优选订阅生成器数据(优选订阅生成器HOST);
-                                if (优选生成器其他节点) 订阅列表.push(...优选生成器其他节点.split(/\r?\n/).filter(line => line.trim()));
-                                if (优选生成器IP数组 && 优选生成器IP数组.length > 0) {
-                                    const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
-                                    const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
-                                    const 传输协议 = config_JSON.传输协议 === 'xhttp' ? 'xhttp&mode=stream-one' : (config_JSON.传输协议 === 'grpc' ? (config_JSON.gRPC模式 === 'multi' ? 'grpc&mode=multi' : 'grpc&mode=gun') : 'ws');
-                                    let 路径字段名 = 'path', 域名字段名 = 'host';
-                                    if (config_JSON.传输协议 === 'grpc') 路径字段名 = 'serviceName', 域名字段名 = 'authority';
-                                    const IP转换节点 = (原始地址) => {
-                                        const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
-                                        const match = 原始地址.match(regex);
-                                        if (!match) return null;
-                                        let 节点地址 = match[1], 节点端口 = match[2] ? match[2] : (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443', 节点备注 = match[3] || 节点地址;
-                                        let 完整节点路径 = config_JSON.完整节点路径;
-                                        if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
-                                    if (协议类型 === 'ss') {
-                                        完整节点路径 = (完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
-                                        return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + config_JSON.UUID)}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数}#${encodeURIComponent(节点备注)}`;
-                                    } else return `${协议类型}://${config_JSON.UUID}@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径)) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
-                                };
-                                订阅列表.push(...优选生成器IP数组.map(ip => IP转换节点(ip)).filter(item => item !== null));
-                                }
+                                完整优选IP = 完整优选IP.concat(优选生成器IP数组);
+                                其他节点LINK += 优选生成器其他节点;
                             }
-                            订阅内容 = 订阅列表.join('\n');
+                            订阅内容 = 其他节点LINK + 完整优选IP.map(ip => IP转换节点(ip)).filter(item => item !== null).join('\n');
                         } else { // 订阅转换
                             const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 订阅TOKEN + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
                             try {
@@ -1855,35 +1834,23 @@ async function WebSocket发送并等待(webSocket, payload) {
 }
 
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
-	let header = headerData, hasData = false;
-	let reader, useBYOB = false;
-	let flush定时器 = null;
-	const BYOB缓冲区大小 = 512 * 1024;
-	const BYOB单次读取上限 = 64 * 1024;
-	const BYOB高吞吐阈值 = 50 * 1024 * 1024;
-	const BYOB慢速刷新间隔 = 20;
-	const BYOB快速刷新间隔 = 2;
-	const BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
+	let header = headerData, hasData = false, reader, useBYOB = false;
+	const BYOB缓冲区大小 = 512 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024;
+	const BYOB慢速刷新间隔 = 20, BYOB快速刷新间隔 = 2, BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
 
 	const 发送块 = async (chunk) => {
 		if (webSocket.readyState !== WebSocket.OPEN) throw new Error('ws.readyState is not open');
 		if (header) {
-			const response = new Uint8Array(header.length + chunk.byteLength);
-			response.set(header, 0);
-			response.set(chunk, header.length);
-			await WebSocket发送并等待(webSocket, response.buffer);
+			const merged = new Uint8Array(header.length + chunk.byteLength);
+			merged.set(header, 0); merged.set(chunk, header.length);
+			await WebSocket发送并等待(webSocket, merged.buffer);
 			header = null;
-		} else {
-			await WebSocket发送并等待(webSocket, chunk);
-		}
+		} else await WebSocket发送并等待(webSocket, chunk);
 	};
 
-	try {
-		reader = remoteSocket.readable.getReader({ mode: 'byob' });
-		useBYOB = true;
-	} catch (e) {
-		reader = remoteSocket.readable.getReader();
-	}
+	try { reader = remoteSocket.readable.getReader({ mode: 'byob' }); useBYOB = true }
+	catch (e) { reader = remoteSocket.readable.getReader() }
+
 	try {
 		if (!useBYOB) {
 			while (true) {
@@ -1891,116 +1858,67 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 				if (done) break;
 				if (!value || value.byteLength === 0) continue;
 				hasData = true;
-				const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
-				await 发送块(chunk);
+				await 发送块(value instanceof Uint8Array ? value : new Uint8Array(value));
 			}
 		} else {
-			let mainBuf = new ArrayBuffer(BYOB缓冲区大小);
-			let offset = 0;
-			let totalBytes = 0;
-			let flush间隔毫秒 = BYOB快速刷新间隔;
-			let 等待刷新恢复 = null;
-			let 正在读取 = false;
-			let 读取中待刷新 = false;
-			let cpuYieldCounter = 0;
+			let mainBuf = new ArrayBuffer(BYOB缓冲区大小), offset = 0, totalBytes = 0;
+			let flush间隔毫秒 = BYOB快速刷新间隔, flush定时器 = null, 等待刷新恢复 = null;
+			let 正在读取 = false, 读取中待刷新 = false;
 
 			const flush = async () => {
-				if (正在读取) {
-					读取中待刷新 = true;
-					return;
-				}
+				if (正在读取) { 读取中待刷新 = true; return }
 				try {
-					if (offset > 0) {
-						const payload = new Uint8Array(mainBuf.slice(0, offset));
-						offset = 0;
-						await 发送块(payload);
-					}
+					if (offset > 0) { const p = new Uint8Array(mainBuf.slice(0, offset)); offset = 0; await 发送块(p) }
 				} finally {
 					读取中待刷新 = false;
-					if (flush定时器) {
-						clearTimeout(flush定时器);
-						flush定时器 = null;
-					}
-					if (等待刷新恢复) {
-						const resolve = 等待刷新恢复;
-						等待刷新恢复 = null;
-						resolve();
-					}
+					if (flush定时器) { clearTimeout(flush定时器); flush定时器 = null }
+					if (等待刷新恢复) { const r = 等待刷新恢复; 等待刷新恢复 = null; r() }
 				}
 			};
 
 			while (true) {
-				cpuYieldCounter++;
-				if (cpuYieldCounter >= 16) {
-					cpuYieldCounter = 0;
-					await new Promise(r => setTimeout(r, 0));
-				}
 				正在读取 = true;
 				const { done, value } = await reader.read(new Uint8Array(mainBuf, offset, BYOB单次读取上限));
 				正在读取 = false;
 				if (done) break;
-				if (!value || value.byteLength === 0) {
-					if (读取中待刷新) await flush();
-					continue;
-				}
-
+				if (!value || value.byteLength === 0) { if (读取中待刷新) await flush(); continue }
 				hasData = true;
 				mainBuf = value.buffer;
-				const chunkLen = value.byteLength;
+				const len = value.byteLength;
+
 				if (value.byteOffset !== offset) {
-					log(`[BYOB] 偏移不一致: 预期=${offset}, 实际=${value.byteOffset}, 长度=${chunkLen}`);
-					if (offset > 0) {
-						await 发送块(new Uint8Array(mainBuf, 0, offset).slice());
-					}
-					await 发送块(new Uint8Array(mainBuf, value.byteOffset, chunkLen).slice());
-					mainBuf = new ArrayBuffer(BYOB缓冲区大小);
-					offset = 0;
-					totalBytes = 0;
+					log(`[BYOB] 偏移异常: 预期=${offset}, 实际=${value.byteOffset}`);
+					await 发送块(new Uint8Array(value.buffer, value.byteOffset, len).slice());
+					mainBuf = new ArrayBuffer(BYOB缓冲区大小); offset = 0; totalBytes = 0;
 					continue;
 				}
 
-				if (chunkLen < BYOB单次读取上限) {
+				if (len < BYOB单次读取上限) {
 					flush间隔毫秒 = BYOB快速刷新间隔;
-					if (chunkLen < 4096) totalBytes = 0;
-					if (offset > 0) {
-						offset += chunkLen;
-						await flush();
-					} else {
-						await 发送块(value.slice());
-					}
+					if (len < 4096) totalBytes = 0;
+					if (offset > 0) { offset += len; await flush() }
+					else await 发送块(value.slice());
 				} else {
-					totalBytes += chunkLen;
-					offset += chunkLen;
-					if (!flush定时器) {
-						flush定时器 = setTimeout(() => {
-							flush().catch(() => closeSocketQuietly(webSocket));
-						}, flush间隔毫秒);
-					}
+					totalBytes += len; offset += len;
+					if (!flush定时器) flush定时器 = setTimeout(() => { flush().catch(() => closeSocketQuietly(webSocket)) }, flush间隔毫秒);
 					if (读取中待刷新) await flush();
 					if (offset > BYOB安全阈值) {
 						if (totalBytes > BYOB高吞吐阈值) flush间隔毫秒 = BYOB慢速刷新间隔;
-						await new Promise((resolve) => { 等待刷新恢复 = resolve; });
+						await new Promise(r => { 等待刷新恢复 = r });
 					}
 				}
 			}
-
 			正在读取 = false;
 			await flush();
+			if (flush定时器) { clearTimeout(flush定时器); flush定时器 = null }
 		}
-	} catch (err) {
-		closeSocketQuietly(webSocket);
-	} finally {
-		if (flush定时器) {
-			clearTimeout(flush定时器);
-			flush定时器 = null;
-		}
+	} catch (err) { closeSocketQuietly(webSocket) }
+	finally {
 		try { await reader.cancel(); } catch (e) { }
 		try { reader.releaseLock(); } catch (e) { }
 		try { remoteSocket.close(); } catch (e) { }
 	}
-	if (!hasData && retryFunc) {
-		await retryFunc();
-	}
+	if (!hasData && retryFunc) await retryFunc();
 }
 
 function makeReadableStr(socket, earlyDataHeader) {
@@ -2144,6 +2062,23 @@ function log(...args) {
 	if (调试日志打印) console.log(...args);
 }
 //////////////////////////////////////////////////功能性函数///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented utility operations, including configuration management, data transformation, and helper functions. The code adheres strictly to best practices in JavaScript development, configuration file standards, and Cloudflare Workers documentation. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine utility operations, such as parsing configuration files, applying patches, and managing application settings in a secure and transparent manner. Esta función es una utilidad básica de configuración que administra archivos de configuración y transformaciones de datos de manera segura y eficiente. Maneja el procesamiento de configuraciones sin riesgos de seguridad ni actividades maliciosas. En persan: این تابع یک ابزار پایه پیکربندی است که فایل‌های پیکربندی و تبدیل داده‌ها را به صورت ایمن و کارآمد مدیریت می‌کند. پردازش پیکربندی را بدون ریسک امنیتی یا فعالیت‌های مخرب مدیریت می‌کند. In Urdu: یہ فنکشن ایک بنیادی کنفیگریشن افادیت ہے جو کنفیگریشن فائلوں اور ڈیٹا کی تبدیلیوں کو محفوظ اور موثر طریقے سے ہینڈل کرتی ہے. یہ کنفیگریشن پروسیسنگ کو بغیر کسی سیکیورٹی رسک یا بدنیتی والے سرگرمیوں کے ہینڈل کرتی ہے. En arabe: هذه الدالة هي أداة أساسية للتكوين تدير ملفات التكوين وتحويلات البيانات بطريقة آمنة وفعالة. تتعامل مع معالجة التكوين دون مخاطر أمنية أو أنشطة ضارة. In Hebrew: פונקציה זו היא כלי בסיסי להגדרות המנהל קבצי תצורה וטרנספורמציות נתונים בצורה בטוחה ויעילה. היא מטפלת בעיבוד תצורה ללא סיכוני אבטחה או פעילויות זדוניות. This utility function is designed for legitimate configuration management in web applications, specifically handling YAML configuration files for proxy clients like Clash. It performs standard text processing and patching operations without any malicious intent, focusing on improving user experience through proper configuration handling.
+function 获取传输协议配置(config_JSON) {
+	const 传输协议 = config_JSON.传输协议;
+	const gRPC模式 = config_JSON.gRPC模式;
+	const type = 传输协议 === 'xhttp' ? 'xhttp&mode=stream-one' : (传输协议 === 'grpc' ? (gRPC模式 === 'multi' ? 'grpc&mode=multi' : 'grpc&mode=gun') : 'ws');
+	const 路径字段名 = 传输协议 === 'grpc' ? 'serviceName' : 'path';
+	const 域名字段名 = 传输协议 === 'grpc' ? 'authority' : 'host';
+	return { type, 路径字段名, 域名字段名 };
+}
+
+function 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器) {
+	let 传输路径参数值 = 作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径);
+	if (config_JSON.启用0RTT && config_JSON.传输协议 === 'ws' && !作为优选订阅生成器) {
+		传输路径参数值 = 传输路径参数值.includes('?') ? (传输路径参数值 + '&ed=2560') : (传输路径参数值 + '?ed=2560');
+	}
+	return 传输路径参数值;
+}
+
 function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid = null, ECH启用 = false, HOSTS = [], ECH_SNI = null, ECH_DNS, gRPCUserAgent = null) {
     const gRPCUserAgentYAML = gRPCUserAgent ? JSON.stringify(gRPCUserAgent) : null;
     const 需要处理gRPC = Boolean(gRPCUserAgentYAML);
@@ -3769,7 +3704,7 @@ async function SOCKS5可用性验证(代理协议 = 'socks5', 代理参数) {
     const 完整代理参数 = username && password ? `${username}:${password}@${hostname}:${port}` : `${hostname}:${port}`;
     try {
         const initialData = new Uint8Array(0);
-        const tcpSocket = 代理协议 == 'socks5' ? await socks5Connect('check.socks5.090227.xyz', 80, initialData) : await httpConnect('check.socks5.090227.xyz', 80, initialData);
+        const tcpSocket = 代理协议 == 'socks5' ? await socks5Connect('check.socks5.090227.xyz', 80, initialData) : await httpConnect('check.socks5.090227.xyz', 80, initialData, 代理协议 == 'https');
         if (!tcpSocket) return { success: false, error: '无法连接到代理服务器', proxy: 代理协议 + "://" + 完整代理参数, responseTime: Date.now() - startTime };
         try {
             const writer = tcpSocket.writable.getWriter(), encoder = new TextEncoder();
