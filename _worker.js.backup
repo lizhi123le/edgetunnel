@@ -270,7 +270,7 @@ export default {
                         const 协议类型 = ((url.searchParams.has('surge') || ua.includes('surge')) && config_JSON.协议类型 !== 'ss') ? 'tro' + 'jan' : config_JSON.协议类型;
                         let 订阅内容 = '';
 
-                        if (订阅类型 === 'mixed') {
+                        if (['mixed', 'base64', 'v2ray'].includes(订阅类型)) {
                             const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
                             const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 
@@ -368,7 +368,7 @@ export default {
 
                         if (!ua.includes('subconverter') && !作为优选订阅生成器) 订阅内容 = await 批量替换域名(订阅内容.replace(/00000000-0000-4000-8000-000000000000/g, config_JSON.UUID).replace(/MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAw/g, btoa(config_JSON.UUID)), config_JSON.HOSTS);
 
-                        if (订阅类型 === 'mixed' && (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64'))) 订阅内容 = btoa(订阅内容);
+                        if (['mixed', 'base64', 'v2ray'].includes(订阅类型) && (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64') || ['base64', 'v2ray'].includes(订阅类型))) 订阅内容 = btoa(订阅内容);
 
                         if (订阅类型 === 'singbox') {
                             订阅内容 = await Singbox订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.Fingerprint, config_JSON.ECH, config_JSON.HOSTS, config_JSON.ECHConfig.SNI, config_JSON.ECHConfig.DNS);
