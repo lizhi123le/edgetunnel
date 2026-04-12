@@ -272,15 +272,15 @@ export default {
 
                         if (订阅类型 === 'mixed') {
                             const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
-                            const ECH_SNI = (config_JSON.ECHConfig.SNI && config_JSON.ECHConfig.SNI !== 'auto') ? config_JSON.ECHConfig.SNI : 随机替换通配符(config_JSON.HOSTS[Math.floor(Math.random() * config_JSON.HOSTS.length)]);
-                            const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}` : '';
-
                             const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
+
                             const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
 
                             let 完整优选IP = [], 其他节点LINK = '', 反代IP池 = [];
 
                             const IP转换节点 = (原始地址) => {
+                                const ECH_SNI = (config_JSON.ECHConfig.SNI && config_JSON.ECHConfig.SNI !== 'auto') ? config_JSON.ECHConfig.SNI : 随机替换通配符(config_JSON.HOSTS[Math.floor(Math.random() * config_JSON.HOSTS.length)]);
+                                const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}` : '';
                                 const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
                                 const match = 原始地址.match(regex);
                                 if (!match) return null;
@@ -370,7 +370,7 @@ export default {
                         if (订阅类型 === 'mixed' && (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64'))) 订阅内容 = btoa(订阅内容);
 
                         if (订阅类型 === 'singbox') {
-                            订阅内容 = await Singbox订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.Fingerprint, config_JSON.ECH ? await getECH(config_JSON.ECHConfig.SNI || host) : null);
+                            订阅内容 = await Singbox订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.Fingerprint, config_JSON.ECH, config_JSON.HOSTS, config_JSON.ECHConfig.SNI, config_JSON.ECHConfig.DNS);
                             responseHeaders["content-type"] = 'text/plain; charset=utf-8';
                             responseHeaders["Content-Disposition"] = "inline";
                         } else if (订阅类型 === 'clash') {
@@ -2245,8 +2245,9 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
             const credentialMatch = fullNode.match(credentialPattern);
 
             if (credentialMatch && credentialMatch[1].trim() === uuid.trim()) {
+                const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
                 // 在最后一个}前添加ech-opts
-                fullNode = fullNode.replace(/\}(\s*)$/, `, ech-opts: {enable: true${ECH_SNI ? `, query-server-name: ${ECH_SNI}` : ''}}}$1`);
+                fullNode = fullNode.replace(/\}(\s*)$/, `, ech-opts: {enable: true${nodeSNI ? `, query-server-name: ${nodeSNI}` : ''}}}$1`);
             }
 
             processedLines.push(fullNode);
@@ -2318,12 +2319,13 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
 
                 if (insertIndex >= 0) {
                     const indent = ' '.repeat(topLevelIndent);
+                    const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
                     // 在节点末尾（最后一个属性块之后）插入 ech-opts 属性
                     const echOptsLines = [
                         `${indent}ech-opts:`,
                         `${indent}  enable: true`
                     ];
-                    if (ECH_SNI) echOptsLines.push(`${indent}  query-server-name: ${ECH_SNI}`);
+                    if (nodeSNI) echOptsLines.push(`${indent}  query-server-name: ${nodeSNI}`);
                     nodeLines.splice(insertIndex + 1, 0, ...echOptsLines);
                 }
             }
@@ -2338,7 +2340,7 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     return processedLines.join('\n');
 }
 
-async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uuid = null, fingerprint = "chrome", ech_config = null) {
+async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uuid = null, fingerprint = "chrome", ECH启用 = false, HOSTS = [], ECH_SNI = null, ECH_DNS = null) {
     let patchYieldTime = performance.now();
     const dynamicYield = async () => { if (performance.now() - patchYieldTime > 5) { await new Promise(r => setTimeout(r, 0)); patchYieldTime = performance.now(); } };
     const sb_json_text = SingBox_原始订阅内容.replace('1.1.1.1', '8.8.8.8').replace('1.0.0.1', '8.8.4.4');
@@ -2491,7 +2493,7 @@ async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uu
 
         // --- 4. UUID 匹配节点的 TLS 热补丁 (utls & ech) ---
         if (uuid) {
-            config.outbounds.forEach(outbound => {
+            for (const outbound of config.outbounds) {
                 // 仅处理包含 uuid 或 password 且匹配的节点
                 if ((outbound.uuid && outbound.uuid === uuid) || (outbound.password && outbound.password === uuid)) {
                     // 确保 tls 对象存在
@@ -2507,16 +2509,19 @@ async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uu
                         };
                     }
 
-                    // 如果提供了 ech_config，添加/更新 ech 配置
-                    if (ech_config) {
-                        outbound.tls.ech = {
-                            enabled: true,
-                            //query_server_name: "cloudflare-ech.com",// 等待 1.13.0+ 版本上线
-                            config: `-----BEGIN ECH CONFIGS-----\n${ech_config}\n-----END ECH CONFIGS-----`
-                        };
+                    // 如果提供了 ECH启用，添加/更新 ech 配置
+                    if (ECH启用) {
+                        const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
+                        const nodeEchConfig = await getECH(nodeSNI);
+                        if (nodeEchConfig) {
+                            outbound.tls.ech = {
+                                enabled: true,
+                                config: `-----BEGIN ECH CONFIGS-----\n${nodeEchConfig}\n-----END ECH CONFIGS-----`
+                            };
+                        }
                     }
                 }
-            });
+            }
         }
 
         return JSON.stringify(config, null, 2);
