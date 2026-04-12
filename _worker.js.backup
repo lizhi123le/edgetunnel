@@ -374,8 +374,8 @@ export default {
                             responseHeaders["content-type"] = 'text/plain; charset=utf-8';
                             responseHeaders["Content-Disposition"] = "inline";
                         } else if (订阅类型 === 'clash') {
-                            const clashEchSni = (config_JSON.ECHConfig.SNI && config_JSON.ECHConfig.SNI !== 'auto') ? config_JSON.ECHConfig.SNI : 随机替换通配符(config_JSON.HOSTS[Math.floor(Math.random() * config_JSON.HOSTS.length)]);
-                            订阅内容 = await Clash订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.ECH, config_JSON.HOSTS, clashEchSni, config_JSON.ECHConfig.DNS, config_JSON.gRPCUserAgent);
+                            订阅内容 = await Clash订阅配置文件热补丁(订阅内容, config_JSON.UUID, config_JSON.ECH, config_JSON.HOSTS, config_JSON.ECHConfig.SNI, config_JSON.ECHConfig.DNS, config_JSON.gRPCUserAgent);
+
                             responseHeaders["content-type"] = 'text/plain; charset=utf-8';
                             responseHeaders["Content-Disposition"] = "inline";
                         }
