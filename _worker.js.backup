@@ -1,4 +1,4 @@
-const Version = '2026-04-10 06:03:17 (Local Enhanced)';
+const Version = '2026-04-16 04:47:24 (Local Enhanced + cf30335 + checked)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -575,10 +575,8 @@ function 有效数据长度(data) {
 
 async function 读取XHTTP首包(reader, token) {
     const decoder = new TextDecoder();
-    const 密码哈希 = sha224(token);
-    const 密码哈希字节 = new TextEncoder().encode(密码哈希);
 
-    const 尝试解析VLESS首包 = (data) => {
+    const 尝试解析魏烈思首包 = (data) => {
         const length = data.byteLength;
         if (length < 18) return { 状态: 'need_more' };
         if (formatIdentifier(data.subarray(1, 17)) !== token) return { 状态: 'invalid' };
@@ -635,8 +633,10 @@ async function 读取XHTTP首包(reader, token) {
         };
     };
 
-    const 尝试解析木马首包 = (data) => {
-        const length = data.byteLength;
+const 尝试解析木马首包 = (data) => {
+    const 密码哈希 = sha224(token);
+    const 密码哈希字节 = new TextEncoder().encode(密码哈希);
+    const length = data.byteLength;
         if (length < 58) return { 状态: 'need_more' };
         if (data[56] !== 0x0d || data[57] !== 0x0a) return { 状态: 'invalid' };
         for (let i = 0; i < 56; i++) {
@@ -717,17 +717,17 @@ async function 读取XHTTP首包(reader, token) {
         const 木马结果 = 尝试解析木马首包(当前数据);
         if (木马结果.状态 === 'ok') return { ...木马结果.结果, reader };
 
-        const vless结果 = 尝试解析VLESS首包(当前数据);
-        if (vless结果.状态 === 'ok') return { ...vless结果.结果, reader };
+        const 魏烈思结果 = 尝试解析魏烈思首包(当前数据);
+        if (魏烈思结果.状态 === 'ok') return { ...魏烈思结果.结果, reader };
 
-        if (木马结果.状态 === 'invalid' && vless结果.状态 === 'invalid') return null;
+        if (木马结果.状态 === 'invalid' && 魏烈思结果.状态 === 'invalid') return null;
     }
 
     const 最终数据 = buffer.subarray(0, offset);
     const 最终木马结果 = 尝试解析木马首包(最终数据);
     if (最终木马结果.状态 === 'ok') return { ...最终木马结果.结果, reader };
-    const 最终VLESS结果 = 尝试解析VLESS首包(最终数据);
-    if (最终VLESS结果.状态 === 'ok') return { ...最终VLESS结果.结果, reader };
+    const 最终魏烈思结果 = 尝试解析魏烈思首包(最终数据);
+    if (最终魏烈思结果.状态 === 'ok') return { ...最终魏烈思结果.结果, reader };
     return null;
 }
 ///////////////////////////////////////////////////////////////////////gRPC传输数据///////////////////////////////////////////////
@@ -916,8 +916,9 @@ async function 处理gRPC请求(request, yourUUID) {
                                 if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
                                 await forwardataTCP(hostname, port, rawClientData, grpcBridge, null, remoteConnWrapper, yourUUID);
                             } else {
+                                判断是否是木马 = false;
                                 const 解析结果 = 解析魏烈思请求(首包buffer, yourUUID);
-                                if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid vless request');
+                                if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
                                 const { port, hostname, rawIndex, version, isUDP } = 解析结果;
                                 //console.log(`[gRPC] 魏烈思首包: ${hostname}:${port} | UDP: ${isUDP ? '是' : '否'}`);
                                 if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
@@ -1298,7 +1299,7 @@ async function 处理WS请求(request, yourUUID, url) {
 				await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, yourUUID);
 			} else {
 				const 解析结果 = 解析魏烈思请求(chunk, yourUUID);
-				if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid vless request');
+				if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
 				const { port, hostname, rawIndex, version, isUDP } = 解析结果;
 				if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
 				if (isUDP) {
@@ -1469,6 +1470,100 @@ function SS拼接字节(...chunkList) {
 	return result;
 }
 
+// 上游新增：通用数据转换函数
+function 数据转Uint8Array(data) {
+	if (data instanceof Uint8Array) return data;
+	if (data instanceof ArrayBuffer) return new Uint8Array(data);
+	if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+	return new Uint8Array(data || 0);
+}
+
+// 上游新增：通用字节拼接函数
+function 拼接字节数据(...chunkList) {
+	if (!chunkList || chunkList.length === 0) return new Uint8Array(0);
+	const chunks = chunkList.map(数据转Uint8Array);
+	const total = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+	const result = new Uint8Array(total);
+	let offset = 0;
+	for (const c of chunks) { result.set(c, offset); offset += c.byteLength }
+	return result;
+}
+
+// 上游新增：转发木马UDP数据函数
+async function 转发木马UDP数据(chunk, webSocket, 上下文) {
+	const 当前块 = 数据转Uint8Array(chunk);
+	const 缓存块 = 上下文?.缓存 instanceof Uint8Array ? 上下文.缓存 : new Uint8Array(0);
+	const input = 缓存块.byteLength ? 拼接字节数据(缓存块, 当前块) : 当前块;
+	let cursor = 0;
+
+	while (cursor < input.byteLength) {
+		const packetStart = cursor;
+		const atype = input[cursor];
+		let addrCursor = cursor + 1;
+		let addrLen = 0;
+		if (atype === 1) addrLen = 4;
+		else if (atype === 4) addrLen = 16;
+		else if (atype === 3) {
+			if (input.byteLength < addrCursor + 1) break;
+			addrLen = 1 + input[addrCursor];
+		} else throw new Error(`invalid trojan udp addressType: ${atype}`);
+
+		const portCursor = addrCursor + addrLen;
+		if (input.byteLength < portCursor + 6) break;
+
+		const port = (input[portCursor] << 8) | input[portCursor + 1];
+		const payloadLength = (input[portCursor + 2] << 8) | input[portCursor + 3];
+		if (input[portCursor + 4] !== 0x0d || input[portCursor + 5] !== 0x0a) throw new Error('invalid trojan udp delimiter');
+
+		const payloadStart = portCursor + 6;
+		const payloadEnd = payloadStart + payloadLength;
+		if (input.byteLength < payloadEnd) break;
+
+		const 地址端口头 = input.slice(packetStart, portCursor + 2);
+		const payload = input.slice(payloadStart, payloadEnd);
+		cursor = payloadEnd;
+
+		if (port !== 53) throw new Error('UDP is not supported');
+		if (!payload.byteLength) continue;
+
+		let tcpDNS查询 = payload;
+		if (payload.byteLength < 2 || ((payload[0] << 8) | payload[1]) !== payload.byteLength - 2) {
+			tcpDNS查询 = new Uint8Array(payload.byteLength + 2);
+			tcpDNS查询[0] = (payload.byteLength >>> 8) & 0xff;
+			tcpDNS查询[1] = payload.byteLength & 0xff;
+			tcpDNS查询.set(payload, 2);
+		}
+
+		const dns响应上下文 = { 缓存: new Uint8Array(0) };
+		await forwardataudp(tcpDNS查询, webSocket, null, (dnsRespChunk) => {
+			const 当前响应块 = 数据转Uint8Array(dnsRespChunk);
+			const 响应输入 = dns响应上下文.缓存.byteLength ? 拼接字节数据(dns响应上下文.缓存, 当前响应块) : 当前响应块;
+			const 响应帧列表 = [];
+			let responseCursor = 0;
+			while (responseCursor + 2 <= 响应输入.byteLength) {
+				const dnsLen = (响应输入[responseCursor] << 8) | 响应输入[responseCursor + 1];
+				const dnsStart = responseCursor + 2;
+				const dnsEnd = dnsStart + dnsLen;
+				if (dnsEnd > 响应输入.byteLength) break;
+				const dnsPayload = 响应输入.slice(dnsStart, dnsEnd);
+				const frame = new Uint8Array(地址端口头.byteLength + 4 + dnsPayload.byteLength);
+				frame.set(地址端口头, 0);
+				frame[地址端口头.byteLength] = (dnsPayload.byteLength >>> 8) & 0xff;
+				frame[地址端口头.byteLength + 1] = dnsPayload.byteLength & 0xff;
+				frame[地址端口头.byteLength + 2] = 0x0d;
+				frame[地址端口头.byteLength + 3] = 0x0a;
+				frame.set(dnsPayload, 地址端口头.byteLength + 4);
+				响应帧列表.push(frame);
+				responseCursor = dnsEnd;
+			}
+			dns响应上下文.缓存 = 响应输入.slice(responseCursor);
+			return 响应帧列表.length ? 响应帧列表 : new Uint8Array(0);
+		});
+	}
+
+	if (上下文) 上下文.缓存 = input.slice(cursor);
+}
+
 function SS读取U16BE(data, offset = 0) {
 	return (data[offset] << 8) | data[offset + 1];
 }
@@ -1597,6 +1692,576 @@ function 创建SS入站解密器(config, passwordText) {
 			return plaintextChunks;
 		},
 	};
+}
+
+////////////////////////////////////////////TLSClient by: @Alexandre_Kojeve////////////////////////////////////////////////
+// TLS 常量定义
+const TLS_VERSION_10 = 769, TLS_VERSION_12 = 771, TLS_VERSION_13 = 772;
+const CONTENT_TYPE_CHANGE_CIPHER_SPEC = 20, CONTENT_TYPE_ALERT = 21, CONTENT_TYPE_HANDSHAKE = 22, CONTENT_TYPE_APPLICATION_DATA = 23;
+const HANDSHAKE_TYPE_CLIENT_HELLO = 1, HANDSHAKE_TYPE_SERVER_HELLO = 2, HANDSHAKE_TYPE_NEW_SESSION_TICKET = 4, HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS = 8, HANDSHAKE_TYPE_CERTIFICATE = 11, HANDSHAKE_TYPE_SERVER_KEY_EXCHANGE = 12, HANDSHAKE_TYPE_CERTIFICATE_REQUEST = 13, HANDSHAKE_TYPE_SERVER_HELLO_DONE = 14, HANDSHAKE_TYPE_CERTIFICATE_VERIFY = 15, HANDSHAKE_TYPE_CLIENT_KEY_EXCHANGE = 16, HANDSHAKE_TYPE_FINISHED = 20, HANDSHAKE_TYPE_KEY_UPDATE = 24;
+const EXT_SERVER_NAME = 0, EXT_SUPPORTED_GROUPS = 10, EXT_EC_POINT_FORMATS = 11, EXT_SIGNATURE_ALGORITHMS = 13, EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION = 16, EXT_SUPPORTED_VERSIONS = 43, EXT_PSK_KEY_EXCHANGE_MODES = 45, EXT_KEY_SHARE = 51;
+const ALERT_CLOSE_NOTIFY = 0, ALERT_LEVEL_WARNING = 1, ALERT_UNRECOGNIZED_NAME = 112;
+const shouldIgnoreTlsAlert = fragment => fragment?.[0] === ALERT_LEVEL_WARNING && fragment?.[1] === ALERT_UNRECOGNIZED_NAME;
+const TLS文本编码器 = new TextEncoder();
+const TLS文本解码器 = new TextDecoder();
+const TLS_EMPTY_BYTES = new Uint8Array(0);
+
+// TLS 密码套件定义 (包含 ChaCha20 支持)
+const CIPHER_SUITES_BY_ID = new Map([
+	[4865, { id: 4865, keyLen: 16, ivLen: 12, hash: 'SHA-256', tls13: true }],
+	[4866, { id: 4866, keyLen: 32, ivLen: 12, hash: 'SHA-384', tls13: true }],
+	[4867, { id: 4867, keyLen: 32, ivLen: 12, hash: 'SHA-256', tls13: true, chacha: true }],  // ChaCha20-Poly1305
+	[49199, { id: 49199, keyLen: 16, ivLen: 4, hash: 'SHA-256', kex: 'ECDHE' }],
+	[49200, { id: 49200, keyLen: 32, ivLen: 4, hash: 'SHA-384', kex: 'ECDHE' }],
+	[52392, { id: 52392, keyLen: 32, ivLen: 12, hash: 'SHA-256', kex: 'ECDHE', chacha: true }],  // ChaCha20-Poly1305
+	[49195, { id: 49195, keyLen: 16, ivLen: 4, hash: 'SHA-256', kex: 'ECDHE' }],
+	[49196, { id: 49196, keyLen: 32, ivLen: 4, hash: 'SHA-384', kex: 'ECDHE' }],
+	[52393, { id: 52393, keyLen: 32, ivLen: 12, hash: 'SHA-256', kex: 'ECDHE', chacha: true }]   // ChaCha20-Poly1305
+]);
+const GROUPS_BY_ID = new Map([[29, 'X25519'], [23, 'P-256']]);
+const SUPPORTED_SIGNATURE_ALGORITHMS = [2052, 2053, 2054, 1025, 1281, 1537, 1027, 1283, 1539];
+
+const tlsBytes = (...parts) => {
+	const flattenBytes = values => values.flatMap(value => value instanceof Uint8Array ? [...value] : Array.isArray(value) ? flattenBytes(value) : 'number' == typeof value ? [value] : []);
+	return new Uint8Array(flattenBytes(parts));
+};
+const uint16be = value => [value >> 8 & 255, 255 & value];
+const readUint16 = (buffer, offset) => buffer[offset] << 8 | buffer[offset + 1];
+const readUint24 = (buffer, offset) => buffer[offset] << 16 | buffer[offset + 1] << 8 | buffer[offset + 2];
+const concatBytes = (...chunks) => {
+	const nonEmptyChunks = chunks.filter((chunk => chunk && chunk.length > 0));
+	const length = nonEmptyChunks.reduce(((total, chunk) => total + chunk.length), 0);
+	const result = new Uint8Array(length);
+	let offset = 0;
+	for (const chunk of nonEmptyChunks) result.set(chunk, offset), offset += chunk.length;
+	return result;
+};
+const TLS随机字节 = length => crypto.getRandomValues(new Uint8Array(length));
+const constantTimeEqual = (left, right) => {
+	if (!left || !right || left.length !== right.length) return false;
+	let diff = 0; for (let index = 0; index < left.length; index++) diff |= left[index] ^ right[index];
+	return 0 === diff;
+};
+const TLS哈希长度 = hash => 'SHA-512' === hash ? 64 : 'SHA-384' === hash ? 48 : 32;
+
+async function TLS_HMAC(hash, key, data) {
+	const cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash }, false, ['sign']);
+	return new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, data));
+}
+async function TLS摘要(hash, data) { return new Uint8Array(await crypto.subtle.digest(hash, data)); }
+
+// TLS 1.2 PRF
+async function TLS12PRF(secret, label, seed, length, hash = 'SHA-256') {
+	const labelSeed = concatBytes(TLS文本编码器.encode(label), seed);
+	let output = new Uint8Array(0), currentA = labelSeed;
+	for (; output.length < length;) {
+		currentA = await TLS_HMAC(hash, secret, currentA);
+		const block = await TLS_HMAC(hash, secret, concatBytes(currentA, labelSeed));
+		output = concatBytes(output, block);
+	}
+	return output.slice(0, length);
+}
+
+// HKDF
+async function hkdfExtract(hash, salt, inputKeyMaterial) {
+	return salt && salt.length || (salt = new Uint8Array(TLS哈希长度(hash))), TLS_HMAC(hash, salt, inputKeyMaterial);
+}
+async function hkdfExpandLabel(hash, secret, label, context, length) {
+	const fullLabel = TLS文本编码er.encode('tls13 ' + label);
+	return async function (hash, secret, info, length) {
+		const hashLen = TLS哈希长度(hash), roundCount = Math.ceil(length / hashLen);
+		let output = new Uint8Array(0), previousBlock = new Uint8Array(0);
+		for (let round = 1; round <= roundCount; round++) previousBlock = await TLS_HMAC(hash, secret, concatBytes(previousBlock, info, [round])), output = concatBytes(output, previousBlock);
+		return output.slice(0, length);
+	}(hash, secret, tlsBytes(uint16be(length), fullLabel.length, fullLabel, context.length, context), length);
+}
+
+// 密钥交换
+async function TLS生成KeyShare(group = 'P-256') {
+	const algorithm = 'X25519' === group ? { name: 'X25519' } : { name: 'ECDH', namedCurve: group };
+	const keyPair = await crypto.subtle.generateKey(algorithm, true, ['deriveBits']);
+	const publicKeyRaw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
+	return { keyPair, publicKeyRaw: new Uint8Array(publicKeyRaw) };
+}
+async function TLS派生共享密钥(privateKey, peerPublicKey, group = 'P-256') {
+	const algorithm = 'X25519' === group ? { name: 'X25519' } : { name: 'ECDH', namedCurve: group };
+	const peerKey = await crypto.subtle.importKey('raw', peerPublicKey, algorithm, false, []);
+	const bits = 'P-384' === group ? 384 : 'P-521' === group ? 528 : 256;
+	return new Uint8Array(await crypto.subtle.deriveBits({ name: algorithm.name, public: peerKey }, privateKey, bits));
+}
+
+async function TLS导入AES密钥(key, usages) { return crypto.subtle.importKey('raw', key, { name: 'AES-GCM' }, false, usages); }
+async function TLS_AES_GCM加密(cryptoKey, iv, plaintext, additionalData) {
+	return new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData, tagLength: 128 }, cryptoKey, plaintext));
+}
+async function TLS_AES_GCM解密(cryptoKey, iv, ciphertext, additionalData) {
+	return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData, tagLength: 128 }, cryptoKey, ciphertext));
+}
+
+// ChaCha20 辅助函数
+function rotateLeft32(value, bits) { return (value << bits | value >>> 32 - bits) >>> 0; }
+
+function ChaCha20QuarterRound(state, indexA, indexB, indexC, indexD) {
+	state[indexA] = state[indexA] + state[indexB] >>> 0, state[indexD] = rotateLeft32(state[indexD] ^ state[indexA], 16), state[indexC] = state[indexC] + state[indexD] >>> 0, state[indexB] = rotateLeft32(state[indexB] ^ state[indexC], 12), state[indexA] = state[indexA] + state[indexB] >>> 0, state[indexD] = rotateLeft32(state[indexD] ^ state[indexA], 8), state[indexC] = state[indexC] + state[indexD] >>> 0, state[indexB] = rotateLeft32(state[indexB] ^ state[indexC], 7);
+}
+
+function ChaCha20Block(key, counter, nonce) {
+	const state = new Uint32Array(16);
+	state[0] = 1634760805, state[1] = 857760878, state[2] = 2036477234, state[3] = 1797285236;
+	const keyView = new DataView(key.buffer, key.byteOffset, key.byteLength);
+	for (let wordIndex = 0; wordIndex < 8; wordIndex++) state[4 + wordIndex] = keyView.getUint32(4 * wordIndex, true);
+	state[12] = counter;
+	const nonceView = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
+	state[13] = nonceView.getUint32(0, true), state[14] = nonceView.getUint32(4, true), state[15] = nonceView.getUint32(8, true);
+	const workingState = new Uint32Array(state);
+	for (let round = 0; round < 10; round++) {
+		ChaCha20QuarterRound(workingState, 0, 4, 8, 12), ChaCha20QuarterRound(workingState, 1, 5, 9, 13), ChaCha20QuarterRound(workingState, 2, 6, 10, 14), ChaCha20QuarterRound(workingState, 3, 7, 11, 15);
+		ChaCha20QuarterRound(workingState, 0, 5, 10, 15), ChaCha20QuarterRound(workingState, 1, 6, 11, 12), ChaCha20QuarterRound(workingState, 2, 7, 8, 13), ChaCha20QuarterRound(workingState, 3, 4, 9, 14);
+	}
+	for (let wordIndex = 0; wordIndex < 16; wordIndex++) workingState[wordIndex] = workingState[wordIndex] + state[wordIndex] >>> 0;
+	return new Uint8Array(workingState.buffer.slice(0));
+}
+
+function ChaCha20XOR(key, nonce, data) {
+	const output = new Uint8Array(data.length);
+	let counter = 1;
+	for (let offset = 0; offset < data.length; offset += 64) {
+		const block = ChaCha20Block(key, counter++, nonce);
+		const blockLength = Math.min(64, data.length - offset);
+		for (let index = 0; index < blockLength; index++) output[offset + index] = data[offset + index] ^ block[index];
+	}
+	return output;
+}
+
+// Poly1305 MAC
+function Poly1305Mac(key, message) {
+	const rKey = (() => {
+		const clamped = new Uint8Array(key);
+		return clamped[3] &= 15, clamped[7] &= 15, clamped[11] &= 15, clamped[15] &= 15, clamped[4] &= 252, clamped[8] &= 252, clamped[12] &= 252, clamped;
+	})(key.slice(0, 16)), sKey = key.slice(16, 32);
+	let accumulator = [0n, 0n, 0n, 0n, 0n];
+	const rLimbs = [
+		0x3ffffffn & BigInt(rKey[0] | rKey[1] << 8 | rKey[2] << 16 | rKey[3] << 24),
+		0x3ffffffn & BigInt(rKey[3] >> 2 | rKey[4] << 6 | rKey[5] << 14 | rKey[6] << 22),
+		0x3ffffffn & BigInt(rKey[6] >> 4 | rKey[7] << 4 | rKey[8] << 12 | rKey[9] << 20),
+		0x3ffffffn & BigInt(rKey[9] >> 6 | rKey[10] << 2 | rKey[11] << 10 | rKey[12] << 18),
+		0x3ffffffn & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
+	];
+	for (let offset = 0; offset < message.length; offset += 16) {
+		const chunk = message.slice(offset, offset + 16);
+		const paddedChunk = new Uint8Array(17);
+		paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
+		accumulator[0] += BigInt(paddedChunk[0] | paddedChunk[1] << 8 | paddedChunk[2] << 16 | (3 & paddedChunk[3]) << 24);
+		accumulator[1] += BigInt(paddedChunk[3] >> 2 | paddedChunk[4] << 6 | paddedChunk[5] << 14 | (15 & paddedChunk[6]) << 22);
+		accumulator[2] += BigInt(paddedChunk[6] >> 4 | paddedChunk[7] << 4 | paddedChunk[8] << 12 | (63 & paddedChunk[9]) << 20);
+		accumulator[3] += BigInt(paddedChunk[9] >> 6 | paddedChunk[10] << 2 | paddedChunk[11] << 10 | paddedChunk[12] << 18);
+		accumulator[4] += BigInt(paddedChunk[13] | paddedChunk[14] << 8 | paddedChunk[15] << 16 | paddedChunk[16] << 24);
+		const product = [0n, 0n, 0n, 0n, 0n];
+		for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
+			const limbIndex = accIndex + rIndex;
+			limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
+		}
+		let carry = 0n;
+		for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
+		accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
+	}
+	let tagValue = accumulator[0] | accumulator[1] << 26n | accumulator[2] << 52n | accumulator[3] << 78n | accumulator[4] << 104n;
+	tagValue = tagValue + sKey.reduce(((total, byte, index) => total + (BigInt(byte) << BigInt(8 * index))), 0n) & (1n << 128n) - 1n;
+	const tag = new Uint8Array(16);
+	for (let index = 0; index < 16; index++) tag[index] = Number(tagValue >> BigInt(8 * index) & 0xffn);
+	return tag;
+}
+
+// ChaCha20-Poly1305 加密
+function ChaCha20Poly1305Encrypt(key, nonce, plaintext, additionalData) {
+	const polyKey = ChaCha20Block(key, 0, nonce).slice(0, 32);
+	const ciphertext = ChaCha20XOR(key, nonce, plaintext);
+	const aadPadding = (16 - additionalData.length % 16) % 16;
+	const ciphertextPadding = (16 - ciphertext.length % 16) % 16;
+	const macData = new Uint8Array(additionalData.length + aadPadding + ciphertext.length + ciphertextPadding + 16);
+	macData.set(additionalData, 0), macData.set(ciphertext, additionalData.length + aadPadding);
+	const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + ciphertext.length + ciphertextPadding);
+	lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(ciphertext.length), true);
+	const tag = Poly1305Mac(polyKey, macData);
+	return concatBytes(ciphertext, tag);
+}
+
+// ChaCha20-Poly1305 解密
+function ChaCha20Poly1305Decrypt(key, nonce, ciphertext, additionalData) {
+	if (ciphertext.length < 16) throw new Error('Ciphertext too short');
+	const tag = ciphertext.slice(-16);
+	const encryptedData = ciphertext.slice(0, -16);
+	const polyKey = ChaCha20Block(key, 0, nonce).slice(0, 32);
+	const aadPadding = (16 - additionalData.length % 16) % 16;
+	const ciphertextPadding = (16 - encryptedData.length % 16) % 16;
+	const macData = new Uint8Array(additionalData.length + aadPadding + encryptedData.length + ciphertextPadding + 16);
+	macData.set(additionalData, 0), macData.set(encryptedData, additionalData.length + aadPadding);
+	const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + encryptedData.length + ciphertextPadding);
+	lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(encryptedData.length), true);
+	const expectedTag = Poly1305Mac(polyKey, macData);
+	let diff = 0;
+	for (let i = 0; i < 16; i++) diff |= tag[i] ^ expectedTag[i];
+	if (diff !== 0) throw new Error('ChaCha20-Poly1305 authentication failed');
+	return ChaCha20XOR(key, nonce, encryptedData);
+}
+
+function TLS记录解析器() {
+	this.buffer = new Uint8Array(0);
+	this.feed = function(chunk) {
+		const bytes = 数据转Uint8Array(chunk);
+		this.buffer = this.buffer.length ? concatBytes(this.buffer, bytes) : bytes;
+	};
+	this.next = function() {
+		if (this.buffer.length < 5) return null;
+		const contentType = this.buffer[0];
+		const version = readUint16(this.buffer, 1);
+		const length = readUint16(this.buffer, 3);
+		if (this.buffer.length < 5 + length) return null;
+		const fragment = this.buffer.subarray(5, 5 + length);
+		return this.buffer = this.buffer.subarray(5 + length), { type: contentType, version, fragment };
+	};
+}
+
+function TLS握手解析器() {
+	this.buffer = new Uint8Array(0);
+	this.feed = function(chunk) {
+		const bytes = 数据转Uint8Array(chunk);
+		this.buffer = this.buffer.length ? concatBytes(this.buffer, bytes) : bytes;
+	};
+	this.next = function() {
+		if (this.buffer.length < 4) return null;
+		const handshakeType = this.buffer[0];
+		const length = readUint24(this.buffer, 1);
+		if (this.buffer.length < 4 + length) return null;
+		const body = this.buffer.subarray(4, 4 + length);
+		const raw = this.buffer.subarray(0, 4 + length);
+		return this.buffer = this.buffer.subarray(4 + length), { type: handshakeType, length, body, raw };
+	};
+}
+
+function uint64be(value) { return [(value >> 56) & 255, (value >> 48) & 255, (value >> 40) & 255, (value >> 32) & 255, (value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, 255 & value]; }
+function xorSequenceIntoIv(iv, sequenceNumber) {
+	const nonce = iv.slice();
+	const sequenceBytes = uint64be(sequenceNumber);
+	for (let index = 0; index < 8; index++) nonce[nonce.length - 8 + index] ^= sequenceBytes[index];
+	return nonce;
+}
+
+// TLS 客户端类
+class TlsClient {
+	constructor(socket, options = {}) {
+		this.socket = socket;
+		this.serverName = options.serverName || '';
+		this.supportTls13 = options.supportTls13 !== false;
+		this.supportTls12 = options.supportTls12 !== false;
+		if (!this.supportTls13 && !this.supportTls12) throw new Error('At least one TLS version must be enabled');
+		this.alpnProtocols = Array.isArray(options.alpn) ? options.alpn : options.alpn ? [options.alpn] : null;
+		this.allowChacha = options.allowChacha !== false;  // ChaCha20 支持开关
+		this.timeout = options.timeout ?? 30000;
+		this.clientRandom = TLS随机字节(32);
+		this.serverRandom = null;
+		this.handshakeChunks = [];
+		this.handshakeComplete = false;
+		this.negotiatedAlpn = null;
+		this.cipherSuite = null;
+		this.cipherConfig = null;
+		this.isTls13 = false;
+		this.masterSecret = null;
+		this.handshakeSecret = null;
+		this.clientWriteKey = null;
+		this.serverWriteKey = null;
+		this.clientWriteIv = null;
+		this.serverWriteIv = null;
+		this.clientHandshakeKey = null;
+		this.serverHandshakeKey = null;
+		this.clientHandshakeIv = null;
+		this.serverHandshakeIv = null;
+		this.clientAppKey = null;
+		this.serverAppKey = null;
+		this.clientAppIv = null;
+		this.serverAppIv = null;
+		this.clientWriteCryptoKey = null;
+		this.serverWriteCryptoKey = null;
+		this.clientHandshakeCryptoKey = null;
+		this.serverHandshakeCryptoKey = null;
+		this.clientAppCryptoKey = null;
+		this.serverAppCryptoKey = null;
+		this.clientSeqNum = 0n;
+		this.serverSeqNum = 0n;
+		this.recordParser = new TLS记录解析器();
+		this.handshakeParser = new TLS握手解析器();
+		this.keyPairs = new Map();
+		this.ecdhKeyPair = null;
+		this.sawCert = false;
+	}
+
+	recordHandshake(chunk) { this.handshakeChunks.push(chunk); }
+	transcript() { return this.handshakeChunks.length === 1 ? this.handshakeChunks[0] : concatBytes(...this.handshakeChunks); }
+	getCipherConfig(cipherSuite) { return CIPHER_SUITES_BY_ID.get(cipherSuite) || null; }
+
+	// ChaCha20 相关方法
+	async decryptTls12(ciphertext, contentType) {
+		const sequenceNumber = this.serverSeqNum++;
+		const sequenceBytes = uint64be(sequenceNumber);
+		if (this.cipherConfig.chacha) {
+			const nonce = xorSequenceIntoIv(this.serverWriteIv, sequenceNumber);
+			return ChaCha20Poly1305Decrypt(this.serverWriteKey, nonce, ciphertext, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(ciphertext.length - 16)));
+		}
+		const explicitNonce = ciphertext.subarray(0, 8);
+		const encryptedData = ciphertext.subarray(8);
+		if (!this.serverWriteCryptoKey) this.serverWriteCryptoKey = await TLS导入AES密钥(this.serverWriteKey, ['decrypt']);
+		return TLS_AES_GCM解密(this.serverWriteCryptoKey, concatBytes(this.serverWriteIv, explicitNonce), encryptedData, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(encryptedData.length - 16)));
+	}
+
+	async encryptTls13Handshake(plaintext) {
+		const nonce = xorSequenceIntoIv(this.clientHandshakeIv, this.clientSeqNum++);
+		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(plaintext.length + 16));
+		if (this.cipherConfig.chacha) return ChaCha20Poly1305Encrypt(this.clientHandshakeKey, nonce, plaintext, additionalData);
+		if (!this.clientHandshakeCryptoKey) this.clientHandshakeCryptoKey = await TLS导入AES密钥(this.clientHandshakeKey, ['encrypt']);
+		return TLS_AES_GCM加密(this.clientHandshakeCryptoKey, nonce, plaintext, additionalData);
+	}
+
+	async decryptTls13Handshake(ciphertext) {
+		const nonce = xorSequenceIntoIv(this.serverHandshakeIv, this.serverSeqNum++);
+		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
+		if (this.cipherConfig.chacha) return ChaCha20Poly1305Decrypt(this.serverHandshakeKey, nonce, ciphertext, additionalData);
+		if (!this.serverHandshakeCryptoKey) this.serverHandshakeCryptoKey = await TLS导入AES密钥(this.serverHandshakeKey, ['decrypt']);
+		return TLS_AES_GCM解密(this.serverHandshakeCryptoKey, nonce, ciphertext, additionalData);
+	}
+
+	async encryptTls13(data) {
+		const plaintext = concatBytes(data, [CONTENT_TYPE_APPLICATION_DATA]);
+		const nonce = xorSequenceIntoIv(this.clientAppIv, this.clientSeqNum++);
+		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(plaintext.length + 16));
+		if (this.cipherConfig.chacha) return ChaCha20Poly1305Encrypt(this.clientAppKey, nonce, plaintext, additionalData);
+		if (!this.clientAppCryptoKey) this.clientAppCryptoKey = await TLS导入AES密钥(this.clientAppKey, ['encrypt']);
+		return TLS_AES_GCM加密(this.clientAppCryptoKey, nonce, plaintext, additionalData);
+	}
+
+	async decryptTls13(ciphertext) {
+		const nonce = xorSequenceIntoIv(this.serverAppIv, this.serverSeqNum++);
+		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
+		const plaintext = this.cipherConfig.chacha ? await ChaCha20Poly1305Decrypt(this.serverAppKey, nonce, ciphertext, additionalData) : await TLS_AES_GCM解密(this.serverAppCryptoKey || (this.serverAppCryptoKey = await TLS导入AES密钥(this.serverAppKey, ['decrypt'])), nonce, ciphertext, additionalData);
+		return { data: plaintext.subarray(0, plaintext.length - 1), type: plaintext[plaintext.length - 1] };
+	}
+}
+
+// TLS 辅助函数 - 完整实现
+const TLS_MAX_PLAINTEXT_FRAGMENT = 16 * 1024;
+
+// 构建TLS记录
+function buildTlsRecord(contentType, fragment, version = TLS_VERSION_12) {
+	const data = 数据转Uint8Array(fragment);
+	const record = new Uint8Array(5 + data.byteLength);
+	record[0] = contentType;
+	record[1] = version >> 8 & 255;
+	record[2] = version & 255;
+	record[3] = data.byteLength >> 8 & 255;
+	record[4] = data.byteLength & 255;
+	record.set(data, 5);
+	return record;
+}
+
+// 构建握手消息
+function buildHandshakeMessage(handshakeType, body) {
+	const length = body.length;
+	return tlsBytes(handshakeType, [length >> 16 & 255, length >> 8 & 255, 255 & length], body);
+}
+
+// TLS记录解析器
+function TLS记录解析器() {
+	this.buffer = new Uint8Array(0);
+	this.feed = function(chunk) {
+		const bytes = 数据转Uint8Array(chunk);
+		this.buffer = this.buffer.length ? concatBytes(this.buffer, bytes) : bytes;
+	};
+	this.next = function() {
+		if (this.buffer.length < 5) return null;
+		const contentType = this.buffer[0];
+		const version = readUint16(this.buffer, 1);
+		const length = readUint16(this.buffer, 3);
+		if (this.buffer.length < 5 + length) return null;
+		const fragment = this.buffer.subarray(5, 5 + length);
+		return this.buffer = this.buffer.subarray(5 + length), { type: contentType, version, length, fragment };
+	};
+}
+
+// TLS握手解析器
+function TLS握手解析器() {
+	this.buffer = new Uint8Array(0);
+	this.feed = function(chunk) {
+		const bytes = 数据转Uint8Array(chunk);
+		this.buffer = this.buffer.length ? concatBytes(this.buffer, bytes) : bytes;
+	};
+	this.next = function() {
+		if (this.buffer.length < 4) return null;
+		const handshakeType = this.buffer[0];
+		const length = readUint24(this.buffer, 1);
+		if (this.buffer.length < 4 + length) return null;
+		const body = this.buffer.subarray(4, 4 + length);
+		const raw = this.buffer.subarray(0, 4 + length);
+		return this.buffer = this.buffer.subarray(4 + length), { type: handshakeType, length, body, raw };
+	};
+}
+
+// 解析ServerHello
+function parseServerHello(body) {
+	let offset = 0;
+	const legacyVersion = readUint16(body, offset);
+	offset += 2;
+	const serverRandom = body.slice(offset, offset + 32);
+	offset += 32;
+	const sessionIdLength = body[offset++];
+	const sessionId = body.slice(offset, offset + sessionIdLength);
+	offset += sessionIdLength;
+	const cipherSuite = readUint16(body, offset);
+	offset += 2;
+	const compression = body[offset++];
+	let selectedVersion = legacyVersion;
+	let keyShare = null;
+	let alpn = null;
+	if (offset < body.length) {
+		const extensionsLength = readUint16(body, offset);
+		offset += 2;
+		const extensionsEnd = offset + extensionsLength;
+		for (; offset + 4 <= extensionsEnd;) {
+			const extensionType = readUint16(body, offset);
+			offset += 2;
+			const extensionLength = readUint16(body, offset);
+			offset += 2;
+			const extensionData = body.slice(offset, offset + extensionLength);
+			if (offset += extensionLength, extensionType === EXT_SUPPORTED_VERSIONS && extensionLength >= 2) selectedVersion = readUint16(extensionData, 0);
+			else if (extensionType === EXT_KEY_SHARE && extensionLength >= 4) {
+				const group = readUint16(extensionData, 0);
+				const keyLength = readUint16(extensionData, 2);
+				keyShare = { group, key: extensionData.slice(4, 4 + keyLength) };
+			} else if (extensionType === EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION && extensionLength >= 3) {
+				alpn = TLS文本解码器.decode(extensionData.slice(3, 3 + extensionData[2]));
+			}
+		}
+	}
+	const helloRetryRequestRandom = new Uint8Array([207, 33, 173, 116, 229, 154, 97, 17, 190, 29, 140, 2, 30, 101, 184, 145, 194, 162, 17, 22, 122, 187, 140, 94, 7, 158, 9, 226, 200, 168, 51, 156]);
+	return {
+		version: legacyVersion,
+		serverRandom,
+		sessionId,
+		cipherSuite,
+		compression,
+		selectedVersion,
+		keyShare,
+		alpn,
+		isHRR: constantTimeEqual(serverRandom, helloRetryRequestRandom),
+		isTls13: selectedVersion === TLS_VERSION_13
+	};
+}
+
+// 解析ServerKeyExchange (TLS 1.2)
+function parseServerKeyExchange(body) {
+	let offset = 1;
+	const namedCurve = readUint16(body, offset);
+	offset += 2;
+	const keyLength = body[offset++];
+	return { namedCurve, serverPublicKey: body.slice(offset, offset + keyLength) };
+}
+
+// 提取叶子证书
+function extractLeafCertificate(body, hasContext = 0) {
+	let offset = 0;
+	if (hasContext) {
+		const contextLength = body[offset++];
+		offset += contextLength;
+	}
+	if (offset + 3 > body.length) return null;
+	const certificateListLength = readUint24(body, offset);
+	offset += 3;
+	if (!certificateListLength || offset + 3 > body.length) return null;
+	const certificateLength = readUint24(body, offset);
+	offset += 3;
+	return certificateLength ? body.slice(offset, offset + certificateLength) : null;
+}
+
+// 解析EncryptedExtensions
+function parseEncryptedExtensions(body) {
+	const parsed = { alpn: null };
+	let offset = 2;
+	const extensionsEnd = 2 + readUint16(body, 0);
+	for (; offset + 4 <= extensionsEnd;) {
+		const extensionType = readUint16(body, offset);
+		offset += 2;
+		const extensionLength = readUint16(body, offset);
+		if (offset += 2, extensionType === EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION && extensionLength >= 3) {
+			const protocolLength = body[offset + 2];
+			if (protocolLength > 0 && offset + 3 + protocolLength <= offset + extensionLength) {
+				parsed.alpn = TLS文本解码器.decode(body.slice(offset + 3, offset + 3 + protocolLength));
+			}
+		}
+		offset += extensionLength;
+	}
+	return parsed;
+}
+
+// 构建ClientHello
+function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTls13 = true, tls12: enableTls12 = true, alpn = null, chacha = true } = {}) {
+	const cipherIds = [];
+	if (enableTls13) {
+		cipherIds.push(4865, 4866);
+		if (chacha) cipherIds.push(4867);
+	}
+	if (enableTls12) {
+		cipherIds.push(49199, 49200, 49195, 49196);
+		if (chacha) cipherIds.push(52392, 52393);
+	}
+	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
+	const extensions = [tlsBytes(255, 1, 0, 1, 0)];
+	if (serverName) {
+		const serverNameBytes = TLS文本编码器.encode(serverName);
+		const serverNameList = tlsBytes(0, uint16be(serverNameBytes.length), serverNameBytes);
+		extensions.push(tlsBytes(uint16be(EXT_SERVER_NAME), uint16be(serverNameList.length + 2), uint16be(serverNameList.length), serverNameList));
+	}
+	if (keyShares) {
+		const keyShareEntries = [];
+		const supportedGroupsExt = tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), 4, 0, 1, 0);
+		for (const [groupId, keyShare] of keyShares) {
+			const publicKeyBytes = keyShare.publicKeyRaw;
+			keyShareEntries.push(tlsBytes(uint16be(groupId), uint16be(publicKeyBytes.length), publicKeyBytes));
+		}
+		if (keyShareEntries.length) {
+			const keyShareExt = tlsBytes(0, concatBytes(...keyShareEntries));
+			extensions.push(tlsBytes(uint16be(EXT_KEY_SHARE), uint16be(keyShareExt.length), keyShareExt));
+		}
+		extensions.push(supportedGroupsExt);
+	}
+	const supportedVersions = [];
+	if (enableTls13) supportedVersions.push(TLS_VERSION_13);
+	if (enableTls12) supportedVersions.push(TLS_VERSION_12);
+	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
+	if (alpn) {
+		const alpnBytes = TLS文本编码器.encode(alpn);
+		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), tlsBytes(alpnBytes.length + 1, alpnBytes.length, alpnBytes)));
+	}
+	if (chacha) {
+		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), 2, 1, 0));
+	}
+	const clientHello = tlsBytes(
+		TLS_VERSION_12,
+		clientRandom,
+		tlsBytes(0),
+		cipherBytes,
+		tlsBytes(1, 0),
+		tlsBytes(uint16be(concatBytes(...extensions).length), ...extensions)
+	);
+	return buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_HELLO, clientHello);
+}
+
+function uint64be(value) {
+	return [(value >> 56) & 255, (value >> 48) & 255, (value >> 40) & 255, (value >> 32) & 255, (value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, 255 & value];
+}
+
+function xorSequenceIntoIv(iv, sequenceNumber) {
+	const nonce = iv.slice();
+	const sequenceBytes = uint64be(sequenceNumber);
+	for (let index = 0; index < 8; index++) nonce[nonce.length - 8 + index] ^= sequenceBytes[index];
+	return nonce;
 }
 
 async function 创建SS出站加密器(config, passwordText) {
@@ -1803,30 +2468,43 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
     }
 }
 
-async function forwardataudp(udpChunk, webSocket, respHeader) {
+async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = null) {
+    const 请求数据 = 数据转Uint8Array(udpChunk);
+    const 请求字节数 = 请求数据?.byteLength ?? 请求数据?.length ?? 0;
+    log(`[UDP-DNS] 收到 DNS 请求: ${请求字节数}B -> 8.8.4.4:53`);
     try {
         const tcpSocket = connect({ hostname: '8.8.4.4', port: 53 });
-        let vlessHeader = respHeader;
+        let 魏烈思Header = respHeader;
         const writer = tcpSocket.writable.getWriter();
-        await writer.write(udpChunk);
+        await writer.write(请求数据);
+        log(`[UDP-DNS] DNS 请求已写入上游: ${请求字节数}B`);
         writer.releaseLock();
         await tcpSocket.readable.pipeTo(new WritableStream({
             async write(chunk) {
+                const 原始响应 = 数据转Uint8Array(chunk);
+                log(`[UDP-DNS] 收到 DNS 响应: ${原始响应.byteLength}B`);
+                const 封装结果 = 响应封装器 ? await 响应封装器(原始响应) : 原始响应;
+                const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
+                if (!发送片段列表.length) return;
                 if (webSocket.readyState === WebSocket.OPEN) {
-                    if (vlessHeader) {
-                        const response = new Uint8Array(vlessHeader.length + chunk.byteLength);
-                        response.set(vlessHeader, 0);
-                        response.set(chunk, vlessHeader.length);
-                        await WebSocket发送并等待(webSocket, response.buffer);
-                        vlessHeader = null;
-                    } else {
-                        await WebSocket发送并等待(webSocket, chunk);
+                    for (const fragment of 发送片段列表) {
+                        const 转发响应 = 数据转Uint8Array(fragment);
+                        if (!转发响应.byteLength) continue;
+                        if (魏烈思Header) {
+                            const response = new Uint8Array(魏烈思Header.length + 转发响应.byteLength);
+                            response.set(魏烈思Header, 0);
+                            response.set(转发响应, 魏烈思Header.length);
+                            await WebSocket发送并等待(webSocket, response.buffer);
+                            魏烈思Header = null;
+                        } else {
+                            await WebSocket发送并等待(webSocket, 转发响应);
+                        }
                     }
                 }
             },
         }));
     } catch (error) {
-        // console.error('UDP forward error:', error);
+        log(`[UDP-DNS] DNS 转发失败: ${error?.message || error}`);
     }
 }
 
@@ -2968,6 +3646,10 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
                     全局: "http://" + 占位符,
                     标准: "http=" + 占位符
                 },
+                HTTPS: {
+                    全局: "https://" + 占位符,
+                    标准: "https=" + 占位符
+                },
             },
         },
         TG: {
@@ -3026,8 +3708,13 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
                 全局: "http://" + 占位符,
                 标准: "http=" + 占位符
             },
+            HTTPS: {
+                全局: "https://" + 占位符,
+                标准: "https=" + 占位符
+            },
         };
     }
+    if (!config_JSON.反代.路径模板.HTTPS) config_JSON.反代.路径模板.HTTPS = { 全局: "https://" + 占位符, 标准: "https=" + 占位符 };
 
     const 代理配置 = config_JSON.反代.路径模板[config_JSON.反代.SOCKS5.启用?.toUpperCase()];
 
