@@ -1,4 +1,4 @@
-const Version = '2026-04-16 04:47:24 (Local Enhanced)';
+const Version = '2026-04-16 04:47:24 (Local Enhanced + b36e7e5 + 566d709 + 普通流聚合阈值 + 7dff821)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -1779,7 +1779,9 @@ async function hkdfExpandLabel(hash, secret, label, context, length) {
 // 密钥交换
 async function TLS生成KeyShare(group = 'P-256') {
 	const algorithm = 'X25519' === group ? { name: 'X25519' } : { name: 'ECDH', namedCurve: group };
+	/** @type {CryptoKeyPair} */
 	const keyPair = await crypto.subtle.generateKey(algorithm, true, ['deriveBits']);
+	/** @type {ArrayBuffer} */
 	const publicKeyRaw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
 	return { keyPair, publicKeyRaw: new Uint8Array(publicKeyRaw) };
 }
@@ -1787,7 +1789,7 @@ async function TLS派生共享密钥(privateKey, peerPublicKey, group = 'P-256')
 	const algorithm = 'X25519' === group ? { name: 'X25519' } : { name: 'ECDH', namedCurve: group };
 	const peerKey = await crypto.subtle.importKey('raw', peerPublicKey, algorithm, false, []);
 	const bits = 'P-384' === group ? 384 : 'P-521' === group ? 528 : 256;
-	return new Uint8Array(await crypto.subtle.deriveBits({ name: algorithm.name, public: peerKey }, privateKey, bits));
+	return new Uint8Array(await crypto.subtle.deriveBits(/** @type {any} */ ({ name: algorithm.name, public: peerKey }), privateKey, bits));
 }
 
 async function TLS导入AES密钥(key, usages) { return crypto.subtle.importKey('raw', key, { name: 'AES-GCM' }, false, usages); }
