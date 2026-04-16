@@ -2645,109 +2645,400 @@ class TlsClient {
 			derivedSecret = await hkdfExpandLabel(hashName, earlySecret, "derived", await digestBytes(hashName, EMPTY_BYTES), hashLen);
 		this.handshakeSecret = await hkdfExtract(hashName, derivedSecret, sharedSecret);
 		const transcriptHash = await digestBytes(hashName, this.transcript()),
-			clientHandshakeTrafficSecret = await hkdfExpandLasync function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON = {}) {
-    const uuid = config_JSON?.UUID || null;
-    const ECH启用 = Boolean(config_JSON?.ECH);
-    const HOSTS = Array.isArray(config_JSON?.HOSTS) ? [...config_JSON.HOSTS] : [];
-    const ECH_SNI = (config_JSON?.ECHConfig?.SNI && config_JSON?.ECHConfig?.SNI !== 'auto') ? config_JSON?.ECHConfig?.SNI : config_JSON?.HOST || null;
-    const ECH_DNS = config_JSON?.ECHConfig?.DNS;
-    const gRPCUserAgent = config_JSON?.gRPCUserAgent || null;
-
-    const gRPCUserAgentYAML = gRPCUserAgent ? JSON.stringify(gRPCUserAgent) : null;
-    const 需要处理gRPC = Boolean(gRPCUserAgentYAML);
-    let patchYieldTime = performance.now();
-    const dynamicYield = async () => { if (performance.now() - patchYieldTime > 5) { await new Promise(r => setTimeout(r, 0)); patchYieldTime = performance.now(); } };
+			clientHandshakeTrafficSecret = await hkdfExpandLabel(hashName, this.handshakeSecret, "c hs traffic", transcriptHash, hashLen),
+			serverHandshakeTrafficSecret = await hkdfExpandLabel(hashName, this.handshakeSecret, "s hs traffic", transcriptHash, hashLen);
+		[this.clientHandshakeKey, this.clientHandshakeIv] = await deriveTrafficKeys(hashName, clientHandshakeTrafficSecret, keyLen, ivLen), [this.serverHandshakeKey, this.serverHandshakeIv] = await deriveTrafficKeys(hashName, serverHandshakeTrafficSecret, keyLen, ivLen);
+		if (!this.cipherConfig.chacha) [this.clientHandshakeCryptoKey, this.serverHandshakeCryptoKey] = await Promise.all([importAesGcmKey(this.clientHandshakeKey, ["encrypt"]), importAesGcmKey(this.serverHandshakeKey, ["decrypt"])]);
+		const serverFinishedKey = await hkdfExpandLabel(hashName, serverHandshakeTrafficSecret, "finished", EMPTY_BYTES, hashLen);
+		let serverFinishedReceived = !1;
+		const handleHandshakeMessage = async message => {
+			switch (message.type) {
+				case HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS: {
+					const encryptedExtensions = parseEncryptedExtensions(message.body);
+					encryptedExtensions.alpn && (this.negotiatedAlpn = encryptedExtensions.alpn), this.recordHandshake(message.raw);
+					break
+				}
+				case HANDSHAKE_TYPE_CERTIFICATE: {
+					const certificate = extractLeafCertificate(message.body);
+					if (!certificate) throw new Error("Missing TLS 1.3 certificate");
+					await this.acceptCertificate(certificate), this.recordHandshake(message.raw);
+					break
+				}
+				case HANDSHAKE_TYPE_CERTIFICATE_REQUEST:
+					throw new Error("Client certificate is not supported");
+				case HANDSHAKE_TYPE_CERTIFICATE_VERIFY:
+					this.recordHandshake(message.raw);
+					break;
+				case HANDSHAKE_TYPE_FINISHED: {
+					const expectedVerifyData = await hmac(hashName, serverFinishedKey, await digestBytes(hashName, this.transcript()));
+					if (!constantTimeEqual(expectedVerifyData, message.body)) throw new Error("TLS 1.3 server Finished verify failed");
+					this.recordHandshake(message.raw), serverFinishedReceived = !0;
+					break
+				}
+				default:
+					this.recordHandshake(message.raw)
+			}
+		};
+		await this.readRecordsUntil(reader, (async record => {
+			if (record.type === CONTENT_TYPE_CHANGE_CIPHER_SPEC || record.type === CONTENT_TYPE_HANDSHAKE) return;
+			if (record.type === CONTENT_TYPE_ALERT) {
+				if (shouldIgnoreTlsAlert(record.fragment)) return;
+				throw new Error(`TLS Alert: ${record.fragment[1]}`);
+			}
+			if (record.type !== CONTENT_TYPE_APPLICATION_DATA) return;
+			const decrypted = await this.decryptTls13Handshake(record.fragment),
+				innerType = decrypted[decrypted.length - 1],
+				plaintext = decrypted.slice(0, -1);
+			if (innerType === CONTENT_TYPE_HANDSHAKE) {
+				this.handshakeParser.feed(plaintext);
+				for (let message; message = this.handshakeParser.next();)
+					if (await handleHandshakeMessage(message), serverFinishedReceived) return 1
+			}
+		}), "Connection closed during TLS 1.3 handshake");
+		const applicationTranscriptHash = await digestBytes(hashName, this.transcript()),
+			masterDerivedSecret = await hkdfExpandLabel(hashName, this.handshakeSecret, "derived", await digestBytes(hashName, EMPTY_BYTES), hashLen),
+			masterSecret = await hkdfExtract(hashName, masterDerivedSecret, new Uint8Array(hashLen)),
+			clientAppTrafficSecret = await hkdfExpandLabel(hashName, masterSecret, "c ap traffic", applicationTranscriptHash, hashLen),
+			serverAppTrafficSecret = await hkdfExpandLabel(hashName, masterSecret, "s ap traffic", applicationTranscriptHash, hashLen);
+		[this.clientAppKey, this.clientAppIv] = await deriveTrafficKeys(hashName, clientAppTrafficSecret, keyLen, ivLen), [this.serverAppKey, this.serverAppIv] = await deriveTrafficKeys(hashName, serverAppTrafficSecret, keyLen, ivLen);
+		if (!this.cipherConfig.chacha) [this.clientAppCryptoKey, this.serverAppCryptoKey] = await Promise.all([importAesGcmKey(this.clientAppKey, ["encrypt"]), importAesGcmKey(this.serverAppKey, ["decrypt"])]);
+		const clientFinishedKey = await hkdfExpandLabel(hashName, clientHandshakeTrafficSecret, "finished", EMPTY_BYTES, hashLen),
+			clientFinishedVerifyData = await hmac(hashName, clientFinishedKey, await digestBytes(hashName, this.transcript())),
+			clientFinishedMessage = buildHandshakeMessage(HANDSHAKE_TYPE_FINISHED, clientFinishedVerifyData);
+		this.recordHandshake(clientFinishedMessage), await writer.write(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, await this.encryptTls13Handshake(concatBytes(clientFinishedMessage, [CONTENT_TYPE_HANDSHAKE])))), this.clientSeqNum = 0n, this.serverSeqNum = 0n
+	}
+    async function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON = {}) {
+        const uuid = config_JSON?.UUID || null;
+        const ECH启用 = Boolean(config_JSON?.ECH);
+        const HOSTS = Array.isArray(config_JSON?.HOSTS) ? [...config_JSON.HOSTS] : [];
+        const ECH_SNI = (config_JSON?.ECHConfig?.SNI && config_JSON?.ECHConfig?.SNI !== 'auto')
+            ? config_JSON?.ECHConfig?.SNI
+            : config_JSON?.HOST || null;
+        const ECH_DNS = config_JSON?.ECHConfig?.DNS;
+        const gRPCUserAgent = config_JSON?.gRPCUserAgent || null;
     
-    const 添加InlineGrpcUserAgent = (text) => text.replace(/grpc-opts:\s*\{([\s\S]*?)\}/i, (all, inner) => {
-        if (/grpc-user-agent\s*:/i.test(inner)) return all;
-        let content = inner.trim();
-        if (content.endsWith(',')) content = content.slice(0, -1).trim();
-        const patchedContent = content ? `${content}, grpc-user-agent: ${gRPCUserAgentYAML}` : `grpc-user-agent: ${gRPCUserAgentYAML}`;
-        return `grpc-opts: {${patchedContent}}`;
-    });
-    const 匹配到gRPC网络 = (text) => /(?:^|[,{])\s*network:\s*(?:"grpc"|'grpc'|grpc)(?=\s*(?:[,}\n#]|$))/mi.test(text);
+        const gRPCUserAgentYAML = gRPCUserAgent ? JSON.stringify(gRPCUserAgent) : null;
+        const 需要处理gRPC = Boolean(gRPCUserAgentYAML);
     
-    const 添加Flow格式gRPCUserAgent = (nodeText) => {
-        if (!需要处理gRPC || !匹配到gRPC网络(nodeText) || /grpc-user-agent\s*:/i.test(nodeText)) return nodeText;
-        if (/grpc-opts:\s*\{/i.test(nodeText)) return 添加InlineGrpcUserAgent(nodeText);
-        return nodeText.replace(/\}(\s*)$/, `, grpc-opts: {grpc-user-agent: ${gRPCUserAgentYAML}}}$1`);
-    };
+        let patchYieldTime = performance.now();
+        const dynamicYield = async () => {
+            if (performance.now() - patchYieldTime > 5) {
+                await new Promise(r => setTimeout(r, 0));
+                patchYieldTime = performance.now();
+            }
+        };
     
-    let clash_yaml = Clash_原始订阅内容.replace(/mode:\s*Rule\b/g, 'mode: rule');
-
-    const baseDnsBlock = `dns:
-  enable: true
-  default-nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
-    - 114.114.114.114
-  use-hosts: true
-  nameserver:
-    - https://sm2.doh.pub/dns-query
-    - https://dns.alidns.com/dns-query
-  fallback:
-    - 8.8.4.4
-    - 208.67.220.220
-  fallback-filter:
-    geoip: true
-    geoip-code: CN
-    ipcidr:
-      - 240.0.0.0/4
-      - 127.0.0.1/32
-      - 0.0.0.0/32
-    domain:
-      - '+.google.com'
-      - '+.facebook.com'
-      - '+.youtube.com'
-`;
-
-    const hasDns = /^dns:\s*(?:\n|$)/m.test(clash_yaml);
-    if (!hasDns) {
-        clash_yaml = baseDnsBlock + clash_yaml;
+        const 添加InlineGrpcUserAgent = (text) => text.replace(
+            /grpc-opts:\s*\{([\s\S]*?)\}/i,
+            (all, inner) => {
+                if (/grpc-user-agent\s*:/i.test(inner)) return all;
+                let content = inner.trim();
+                if (content.endsWith(',')) content = content.slice(0, -1).trim();
+                const patchedContent = content
+                    ? `${content}, grpc-user-agent: ${gRPCUserAgentYAML}`
+                    : `grpc-user-agent: ${gRPCUserAgentYAML}`;
+                return `grpc-opts: {${patchedContent}}`;
+            }
+        );
+    
+        const 匹配到gRPC网络 = (text) => /(?:^|[,{])\s*network:\s*(?:"grpc"|'grpc'|grpc)(?=\s*(?:[,}\n#]|$))/mi.test(text);
+    
+        const 添加Flow格式gRPCUserAgent = (nodeText) => {
+            if (!需要处理gRPC || !匹配到gRPC网络(nodeText) || /grpc-user-agent\s*:/i.test(nodeText)) {
+                return nodeText;
+            }
+            if (/grpc-opts:\s*\{/i.test(nodeText)) return 添加InlineGrpcUserAgent(nodeText);
+            return nodeText.replace(/\}(\s*)$/, `, grpc-opts: {grpc-user-agent: ${gRPCUserAgentYAML}}}$1`);
+        };
+    
+        let clash_yaml = Clash_原始订阅内容.replace(/mode:\s*Rule\b/g, 'mode: rule');
+    
+        const baseDnsBlock = `dns:
+      enable: true
+      default-nameserver:
+        - 223.5.5.5
+        - 119.29.29.29
+        - 114.114.114.114
+      use-hosts: true
+      nameserver:
+        - https://sm2.doh.pub/dns-query
+        - https://dns.alidns.com/dns-query
+      fallback:
+        - 8.8.4.4
+        - 208.67.220.220
+      fallback-filter:
+        geoip: true
+        geoip-code: CN
+        ipcidr:
+          - 240.0.0.0/4
+          - 127.0.0.1/32
+          - 0.0.0.0/32
+        domain:
+          - '+.google.com'
+          - '+.facebook.com'
+          - '+.youtube.com'
+    `;
+    
+        const hasDns = /^dns:\s*(?:\n|$)/m.test(clash_yaml);
+        if (!hasDns) {
+            clash_yaml = baseDnsBlock + clash_yaml;
+        }
+        await dynamicYield();
+    
+        if (ECH_SNI && !HOSTS.includes(ECH_SNI)) HOSTS.push(ECH_SNI);
+    
+        if (ECH启用 && HOSTS.length > 0) {
+            const hostsEntries = HOSTS.map(
+                host => `    "${host}":${ECH_DNS ? `\n      - ${ECH_DNS}` : ''}\n      - https://doh.cm.edu.kg/CMLiussss`
+            ).join('\n');
+            await dynamicYield();
+    
+            const hasNameserverPolicy = /^\s{2}nameserver-policy:\s*(?:\n|$)/m.test(clash_yaml);
+    
+            if (hasNameserverPolicy) {
+                clash_yaml = clash_yaml.replace(
+                    /^(\s{2}nameserver-policy:\s*\n)/m,
+                    `$1${hostsEntries}\n`
+                );
+            } else {
+                const lines = clash_yaml.split('\n');
+                let dnsBlockEndIndex = -1;
+                let inDnsBlock = false;
+    
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    if (/^dns:\s*$/.test(line)) {
+                        inDnsBlock = true;
+                        continue;
+                    }
+                    if (inDnsBlock) {
+                        if (/^[a-zA-Z]/.test(line)) {
+                            dnsBlockEndIndex = i;
+                            break;
+                        }
+                    }
+                }
+    
+                const nameserverPolicyBlock = `  nameserver-policy:\n${hostsEntries}`;
+                if (dnsBlockEndIndex !== -1) {
+                    lines.splice(dnsBlockEndIndex, 0, nameserverPolicyBlock);
+                } else {
+                    lines.push(nameserverPolicyBlock);
+                }
+                clash_yaml = lines.join('\n');
+            }
+        }
+        await dynamicYield();
+    
+        const lines = clash_yaml.split('\n');
+        const processedLines = [];
+        let i = 0;
+    
+        while (i < lines.length) {
+            const line = lines[i];
+            const trimmedLine = line.trim();
+    
+            if (trimmedLine.startsWith('- {')) {
+                let fullNode = line;
+                let braceCount = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+    
+                while (braceCount > 0 && i + 1 < lines.length) {
+                    i++;
+                    fullNode += '\n' + lines[i];
+                    braceCount += (lines[i].match(/\{/g) || []).length - (lines[i].match(/\}/g) || []).length;
+                }
+    
+                if (需要处理gRPC) fullNode = 添加Flow格式gRPCUserAgent(fullNode);
+    
+                const typeMatch = fullNode.match(/type:\s*(\w+)/);
+                const proxyType = typeMatch ? typeMatch[1] : 'vless';
+                let credentialField = 'uuid';
+                if (proxyType === 'trojan') credentialField = 'password';
+                const credentialPattern = new RegExp(`${credentialField}:\\s*([^,}\\n]+)`);
+                const credentialMatch = fullNode.match(credentialPattern);
+    
+                if (ECH启用 && credentialMatch && credentialMatch[1].trim() === uuid.trim()) {
+                    const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto')
+                        ? ECH_SNI
+                        : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
+                    fullNode = fullNode.replace(
+                        /\}(\s*)$/,
+                        `, ech-opts: {enable: true${nodeSNI ? `, query-server-name: ${nodeSNI}` : ''}}}$1`
+                    );
+                }
+    
+                processedLines.push(fullNode);
+                i++;
+            } else if (trimmedLine.startsWith('- name:')) {
+                let nodeLines = [line];
+                let baseIndent = line.search(/\S/);
+                let topLevelIndent = baseIndent + 2;
+                i++;
+    
+                while (i < lines.length) {
+                    const nextLine = lines[i];
+                    const nextTrimmed = nextLine.trim();
+                    if (!nextTrimmed) {
+                        nodeLines.push(nextLine);
+                        i++;
+                        break;
+                    }
+                    const nextIndent = nextLine.search(/\S/);
+                    if (nextIndent <= baseIndent && nextTrimmed.startsWith('- ')) break;
+                    if (nextIndent < baseIndent && nextTrimmed) break;
+                    nodeLines.push(nextLine);
+                    i++;
+                }
+    
+                const nodeText = nodeLines.join('\n');
+                const typeMatch = nodeText.match(/type:\s*(\w+)/);
+                const proxyType = typeMatch ? typeMatch[1] : 'vless';
+    
+                let credentialField = 'uuid';
+                if (proxyType === 'trojan') credentialField = 'password';
+    
+                const credentialPattern = new RegExp(`${credentialField}:\\s*([^\\n]+)`);
+                const credentialMatch = nodeText.match(credentialPattern);
+    
+                if (credentialMatch && credentialMatch[1].trim() === uuid.trim()) {
+                    let insertIndex = -1;
+                    for (let j = nodeLines.length - 1; j >= 0; j--) {
+                        if (nodeLines[j].trim()) {
+                            insertIndex = j;
+                            break;
+                        }
+                    }
+    
+                    if (insertIndex >= 0) {
+                        const indent = ' '.repeat(topLevelIndent);
+                        const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto')
+                            ? ECH_SNI
+                            : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
+                        const echOptsLines = [
+                            `${indent}ech-opts:`,
+                            `${indent}  enable: true`
+                        ];
+                        if (nodeSNI) echOptsLines.push(`${indent}  query-server-name: ${nodeSNI}`);
+                        nodeLines.splice(insertIndex + 1, 0, ...echOptsLines);
+                    }
+                }
+    
+                processedLines.push(...nodeLines);
+            } else {
+                processedLines.push(line);
+                i++;
+            }
+            await dynamicYield();
+        }
+    
+        return processedLines.join('\n');
     }
     await dynamicYield();
 
-    if (ECH_SNI && !HOSTS.includes(ECH_SNI)) HOSTS.push(ECH_SNI);
+    const lines = clash_yaml.split('\n');
+    const processedLines = [];
+    let i = 0;
 
-    if (ECH启用 && HOSTS.length > 0) {
-        const hostsEntries = HOSTS.map(host => `    "${host}":${ECH_DNS ? `\n      - ${ECH_DNS}` : ''}\n      - https://doh.cm.edu.kg/CMLiussss`).join('\n');
-        await dynamicYield();
+    while (i < lines.length) {
+        const line = lines[i];
+        const trimmedLine = line.trim();
 
-        const hasNameserverPolicy = /^\s{2}nameserver-policy:\s*(?:\n|$)/m.test(clash_yaml);
+        if (trimmedLine.startsWith('- {')) {
+            let fullNode = line;
+            let braceCount = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
 
-        if (hasNameserverPolicy) {
-            clash_yaml = clash_yaml.replace(
-                /^(\s{2}nameserver-policy:\s*\n)/m,
-                `$1${hostsEntries}\n`
-            );
-        } else {
-            const lines = clash_yaml.split('\n');
-            let dnsBlockEndIndex = -1;
-            let inDnsBlock = false;
+            while (braceCount > 0 && i + 1 < lines.length) {
+                i++;
+                fullNode += '\n' + lines[i];
+                braceCount += (lines[i].match(/\{/g) || []).length - (lines[i].match(/\}/g) || []).length;
+            }
 
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (/^dns:\s*$/.test(line)) {
-                    inDnsBlock = true;
-                    continue;
+            if (需要处理gRPC) fullNode = 添加Flow格式gRPCUserAgent(fullNode);
+
+            const typeMatch = fullNode.match(/type:\s*(\w+)/);
+            const proxyType = typeMatch ? typeMatch[1] : 'vless';
+            let credentialField = 'uuid';
+            if (proxyType === 'trojan') credentialField = 'password';
+            const credentialPattern = new RegExp(`${credentialField}:\\s*([^,}\\n]+)`);
+            const credentialMatch = fullNode.match(credentialPattern);
+
+            if (ECH启用 && credentialMatch && credentialMatch[1].trim() === uuid.trim()) {
+                const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto')
+                    ? ECH_SNI
+                    : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
+                fullNode = fullNode.replace(
+                    /\}(\s*)$/,
+                    `, ech-opts: {enable: true${nodeSNI ? `, query-server-name: ${nodeSNI}` : ''}}}$1`
+                );
+            }
+
+            processedLines.push(fullNode);
+            i++;
+        } else if (trimmedLine.startsWith('- name:')) {
+            let nodeLines = [line];
+            let baseIndent = line.search(/\S/);
+            let topLevelIndent = baseIndent + 2;
+            i++;
+
+            while (i < lines.length) {
+                const nextLine = lines[i];
+                const nextTrimmed = nextLine.trim();
+                if (!nextTrimmed) {
+                    nodeLines.push(nextLine);
+                    i++;
+                    break;
                 }
-                if (inDnsBlock) {
-                    if (/^[a-zA-Z]/.test(line)) {
-                        dnsBlockEndIndex = i;
+                const nextIndent = nextLine.search(/\S/);
+                if (nextIndent <= baseIndent && nextTrimmed.startsWith('- ')) break;
+                if (nextIndent < baseIndent && nextTrimmed) break;
+                nodeLines.push(nextLine);
+                i++;
+            }
+
+            const nodeText = nodeLines.join('\n');
+            const typeMatch = nodeText.match(/type:\s*(\w+)/);
+            const proxyType = typeMatch ? typeMatch[1] : 'vless';
+
+            let credentialField = 'uuid';
+            if (proxyType === 'trojan') credentialField = 'password';
+
+            const credentialPattern = new RegExp(`${credentialField}:\\s*([^\\n]+)`);
+            const credentialMatch = nodeText.match(credentialPattern);
+
+            if (credentialMatch && credentialMatch[1].trim() === uuid.trim()) {
+                let insertIndex = -1;
+                for (let j = nodeLines.length - 1; j >= 0; j--) {
+                    if (nodeLines[j].trim()) {
+                        insertIndex = j;
                         break;
                     }
                 }
+
+                if (insertIndex >= 0) {
+                    const indent = ' '.repeat(topLevelIndent);
+                    const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto')
+                        ? ECH_SNI
+                        : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
+                    const echOptsLines = [
+                        `${indent}ech-opts:`,
+                        `${indent}  enable: true`
+                    ];
+                    if (nodeSNI) echOptsLines.push(`${indent}  query-server-name: ${nodeSNI}`);
+                    nodeLines.splice(insertIndex + 1, 0, ...echOptsLines);
+                }
             }
 
-            const nameserverPolicyBlock = `  nameserver-policy:\n${hostsEntries}`;
-            if (dnsBlockEndIndex !== -1) {
-                lines.splice(dnsBlockEndIndex, 0, nameserverPolicyBlock);
-            } else {
-                lines.push(nameserverPolicyBlock);
-            }
-            clash_yaml = lines.join('\n');
+            processedLines.push(...nodeLines);
+        } else {
+            processedLines.push(line);
+            i++;
         }
+        await dynamicYield();
     }
+
+    return processedLines.join('\n');
+}
+
     await dynamicYield();
 
     const lines = clash_yaml.split('\n');
