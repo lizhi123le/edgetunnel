@@ -420,8 +420,22 @@ export default {
 							订阅内容 = await Clash订阅配置文件热补丁(订阅内容, config_JSON);
 							responseHeaders["content-type"] = 'application/x-yaml; charset=utf-8';
 						}
-						return new Response(订阅内容, { status: 200, headers: responseHeaders });
-					}
+						
+                        const 加密密码 = 管理员密码 || 加密秘钥;
+                        const envAF = env.AF || env.af;
+                        const queryAF = url.searchParams.get('AF') || url.searchParams.get('af');
+                        const skipEncryption = envAF && queryAF && envAF === queryAF;
+                        
+                        if (加密密码 && !isSubConverterRequest && !skipEncryption) {
+                            const 加密后内容 = await AESEncrypt(订阅内容, 加密密码);
+                            if (加密后内容) {
+                                订阅内容 = 加密后内容;
+                                responseHeaders['subscription-encryption'] = 'true';
+                            }
+                        }
+
+                        return new Response(订阅内容, { status: 200, headers: responseHeaders });
+                    }
 				} else if (访问路径 === 'locations') {//反代locations列表
 					const cookies = request.headers.get('Cookie') || '';
 					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
