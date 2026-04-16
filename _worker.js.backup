@@ -1,4 +1,4 @@
-const Version = '2026-04-16 04:47:24 (Local Enhanced + b36e7e5 + 566d709 + 普通流聚合阈值 + 7dff821)';
+const Version = '2026-04-16 04:47:24 (Local Enhanced + b36e7e5 + 566d709 + 普通流聚合阈值 + 7dff821 + shouldIgnoreTlsAlert 集成)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -2005,6 +2005,253 @@ class TlsClient {
 		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
 		const plaintext = this.cipherConfig.chacha ? await ChaCha20Poly1305Decrypt(this.serverAppKey, nonce, ciphertext, additionalData) : await TLS_AES_GCM解密(this.serverAppCryptoKey || (this.serverAppCryptoKey = await TLS导入AES密钥(this.serverAppKey, ['decrypt'])), nonce, ciphertext, additionalData);
 		return { data: plaintext.subarray(0, plaintext.length - 1), type: plaintext[plaintext.length - 1] };
+	}
+
+	// 读取数据块（带超时）
+	async readChunk(reader) {
+		return this.timeout ? Promise.race([
+			reader.read(),
+			new Promise((resolve, reject) => setTimeout(() => reject(new Error('TLS read timeout')), this.timeout))
+		]) : reader.read();
+	}
+
+	// 读取记录直到满足条件
+	async readRecordsUntil(reader, predicate, closedError) {
+		while (true) {
+			let record;
+			while (record = this.recordParser.next()) {
+				if (await predicate(record)) return;
+			}
+			const { value, done } = await this.readChunk(reader);
+			if (done) throw new Error(closedError);
+			this.recordParser.feed(value);
+		}
+	}
+
+	// 读取握手直到满足条件（含 TLS Alert 处理）
+	async readHandshakeUntil(reader, predicate, closedError) {
+		let message;
+		while (message = this.handshakeParser.next()) {
+			if (await predicate(message)) return;
+		}
+		return this.readRecordsUntil(reader, async (record) => {
+			if (record.type === CONTENT_TYPE_ALERT) {
+				// 使用 shouldIgnoreTlsAlert 忽略无害的 alerts
+				if (shouldIgnoreTlsAlert(record.fragment)) return;
+				throw new Error(`TLS Alert: ${record.fragment[1]}`);
+			}
+			if (record.type === CONTENT_TYPE_HANDSHAKE) {
+				this.handshakeParser.feed(record.fragment);
+				for (let message; message = this.handshakeParser.next();) {
+					if (await predicate(message)) return true;
+				}
+			}
+		}, closedError);
+	}
+
+	// TLS 握手
+	async handshake() {
+		const [p256Share, x25519Share] = await Promise.all([
+			TLS生成KeyShare('P-256'),
+			TLS生成KeyShare('X25519')
+		]);
+		this.keyPairs = new Map([[23, p256Share], [29, x25519Share]]);
+		this.ecdhKeyPair = p256Share.keyPair;
+		const reader = this.socket.readable.getReader();
+		const writer = this.socket.writable.getWriter();
+		try {
+			const clientHello = buildClientHello(this.clientRandom, this.serverName, { x25519: x25519Share.publicKeyRaw, p256: p256Share.publicKeyRaw }, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
+			this.recordHandshake(clientHello);
+			await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientHello, TLS_VERSION_10));
+			const serverHello = await this.receiveServerHello(reader);
+			if (serverHello.isHRR) throw new Error('HelloRetryRequest is not supported');
+			if (serverHello.keyShare?.group && this.keyPairs.has(serverHello.keyShare.group)) {
+				const selectedKeyPair = this.keyPairs.get(serverHello.keyShare.group);
+				this.ecdhKeyPair = selectedKeyPair.keyPair;
+			}
+			if (serverHello.isTls13) {
+				await this.handshakeTls13(reader, writer, serverHello);
+			} else {
+				await this.handshakeTls12(reader, writer);
+			}
+			this.handshakeComplete = true;
+		} finally {
+			reader.releaseLock();
+			writer.releaseLock();
+		}
+	}
+
+	// 接收 ServerHello（含 TLS Alert 处理）
+	async receiveServerHello(reader) {
+		while (true) {
+			const { value, done } = await this.readChunk(reader);
+			if (done) throw new Error('Connection closed waiting for ServerHello');
+			let record;
+			for (this.recordParser.feed(value); record = this.recordParser.next();) {
+				if (record.type === CONTENT_TYPE_ALERT) {
+					// 使用 shouldIgnoreTlsAlert 忽略无害的 alerts
+					if (shouldIgnoreTlsAlert(record.fragment)) continue;
+					throw new Error(`TLS Alert: level=${record.fragment[0]}, desc=${record.fragment[1]}`);
+				}
+				if (record.type !== CONTENT_TYPE_HANDSHAKE) continue;
+				let message;
+				for (this.handshakeParser.feed(record.fragment); message = this.handshakeParser.next();) {
+					if (message.type !== HANDSHAKE_TYPE_SERVER_HELLO) continue;
+					this.recordHandshake(message.raw);
+					const serverHello = parseServerHello(message.body);
+					this.serverRandom = serverHello.serverRandom;
+					this.cipherSuite = serverHello.cipherSuite;
+					this.cipherConfig = this.getCipherConfig(serverHello.cipherSuite);
+					this.isTls13 = serverHello.isTls13;
+					this.negotiatedAlpn = serverHello.alpn || null;
+					if (!this.cipherConfig) throw new Error(`Unsupported cipher suite: 0x${serverHello.cipherSuite.toString(16)}`);
+					return serverHello;
+				}
+			}
+		}
+	}
+
+	// TLS 1.2 握手
+	async handshakeTls12(reader, writer) {
+		let serverKeyExchange = null;
+		let sawServerHelloDone = false;
+		await this.readHandshakeUntil(reader, async (message) => {
+			switch (message.type) {
+				case HANDSHAKE_TYPE_CERTIFICATE:
+					this.recordHandshake(message.raw);
+					const certificate = extractLeafCertificate(message.body, 1);
+					if (!certificate) throw new Error('Missing TLS 1.2 certificate');
+					await this.acceptCertificate(certificate);
+					break;
+				case HANDSHAKE_TYPE_SERVER_KEY_EXCHANGE:
+					this.recordHandshake(message.raw);
+					serverKeyExchange = parseServerKeyExchange(message.body);
+					break;
+				case HANDSHAKE_TYPE_SERVER_HELLO_DONE:
+					this.recordHandshake(message.raw);
+					sawServerHelloDone = true;
+					return true;
+				case HANDSHAKE_TYPE_CERTIFICATE_REQUEST:
+					throw new Error('Client certificate is not supported');
+				default:
+					this.recordHandshake(message.raw);
+			}
+		}, 'Connection closed during TLS 1.2 handshake');
+		if (!this.sawCert) throw new Error('Missing TLS 1.2 leaf certificate');
+		const serverKeyExchangeData = serverKeyExchange;
+		if (!serverKeyExchangeData) throw new Error('Missing TLS 1.2 ServerKeyExchange');
+		const curveName = GROUPS_BY_ID.get(serverKeyExchangeData.namedCurve);
+		if (!curveName) throw new Error(`Unsupported named curve: 0x${serverKeyExchangeData.namedCurve.toString(16)}`);
+		const keyShare = this.keyPairs.get(serverKeyExchangeData.namedCurve);
+		if (!keyShare) throw new Error(`Missing key pair for curve: 0x${serverKeyExchangeData.namedCurve.toString(16)}`);
+		const preMasterSecret = await TLS派生共享密钥(keyShare.keyPair.privateKey, serverKeyExchangeData.serverPublicKey, curveName);
+		const clientKeyExchange = buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_KEY_EXCHANGE, tlsBytes(keyShare.publicKeyRaw.length, keyShare.publicKeyRaw));
+		this.recordHandshake(clientKeyExchange);
+		await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientKeyExchange));
+		const finished = await this.buildTls12Finished(preMasterSecret, this.transcript());
+		await writer.write(finished);
+		await writer.write(buildTlsRecord(CONTENT_TYPE_CHANGE_CIPHER_SPEC));
+		const [clientWriteKey, clientWriteIv, serverWriteKey, serverWriteIv] = await Promise.all([
+			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'client application traffic', 16, 12),
+			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'client application traffic', 12, 12),
+			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'server application traffic', 16, 12),
+			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'server application traffic', 12, 12)
+		]);
+		this.clientWriteKey = clientWriteKey;
+		this.clientWriteIv = clientWriteIv;
+		this.serverWriteKey = serverWriteKey;
+		this.serverWriteIv = serverWriteIv;
+	}
+
+	// TLS 1.3 握手
+	async handshakeTls13(reader, writer, serverHello) {
+		await this.readHandshakeUntil(reader, async (message) => {
+			switch (message.type) {
+				case HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS:
+					this.recordHandshake(message.raw);
+					const parsed = parseEncryptedExtensions(message.body);
+					if (parsed.alpn) this.negotiatedAlpn = parsed.alpn;
+					break;
+				case HANDSHAKE_TYPE_CERTIFICATE:
+					this.recordHandshake(message.raw);
+					await this.acceptCertificate(extractLeafCertificate(message.body));
+					break;
+				case HANDSHAKE_TYPE_FINISHED:
+					return true;
+				default:
+					this.recordHandshake(message.raw);
+			}
+		}, 'Connection closed during TLS 1.3 handshake');
+		const emptyHash = await TLS摘要('SHA-256');
+		const [earlySecret, handshakeSecret, masterSecret] = await Promise.all([
+			hkdfExtract('SHA-256', emptyHash),
+			hkdfExtract('SHA-256', emptyHash, this.clientHandshakeKey),
+			hkdfExpandLabel('SHA-256', this.handshakeSecret, 'derived', emptyHash)
+		]);
+		await hkdfExtract('SHA-256', masterSecret);
+		const [clientAppKey, clientAppIv, serverAppKey, serverAppIv] = await Promise.all([
+			this.deriveTrafficKeys('SHA-256', this.clientAppKey, 'client application traffic', 32, 12),
+			this.deriveTrafficKeys('SHA-256', this.clientAppKey, 'client application traffic', 12, 12),
+			this.deriveTrafficKeys('SHA-256', this.serverAppKey, 'server application traffic', 32, 12),
+			this.deriveTrafficKeys('SHA-256', this.serverAppKey, 'server application traffic', 12, 12)
+		]);
+		this.clientAppKey = clientAppKey;
+		this.clientAppIv = clientAppIv;
+		this.serverAppKey = serverAppKey;
+		this.serverAppIv = serverAppIv;
+		this.isTls13 = true;
+	}
+
+	// 证书接受
+	async acceptCertificate(certificate) {
+		if (!certificate?.length) throw new Error('Empty certificate');
+		this.sawCert = true;
+	}
+
+	// 派生流量密钥
+	async deriveTrafficKeys(hash, secret, purpose, keyLen, ivLen) {
+		const key = await hkdfExpandLabel(hash, secret, purpose, new Uint8Array(0), keyLen);
+		const iv = await hkdfExpandLabel(hash, secret, purpose, new Uint8Array(0), ivLen);
+		return { key, iv: new Uint8Array(iv) };
+	}
+
+	// 构建 TLS 1.2 Finished
+	async buildTls12Finished(secret, transcript) {
+		const verifyData = await TLS12PRF(secret, 'client finished', transcript, 12);
+		return buildTlsRecord(CONTENT_TYPE_HANDSHAKE, buildHandshakeMessage(HANDSHAKE_TYPE_FINISHED, verifyData));
+	}
+
+	// 写入数据
+	async write(data) {
+		const chunk = 数据转Uint8Array(data);
+		if (!this.handshakeComplete) throw new Error('Handshake not complete');
+		if (this.isTls13) {
+			const encrypted = await this.encryptTls13(chunk);
+			return this.socket.writable.getWriter().write(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, encrypted, TLS_VERSION_13));
+		} else {
+			const encrypted = await this.encryptTls12(chunk, CONTENT_TYPE_APPLICATION_DATA);
+			return this.socket.writable.getWriter().write(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, encrypted));
+		}
+	}
+
+	// 读取数据
+	async read() {
+		if (!this.handshakeComplete) throw new Error('Handshake not complete');
+		while (true) {
+			const { value, done } = await this.readChunk(this.socket.readable.getReader());
+			if (done || !value || !value.byteLength) return value;
+			this.recordParser.feed(value);
+			let record;
+			while (record = this.recordParser.next()) {
+				if (record.type === CONTENT_TYPE_ALERT) {
+					if (shouldIgnoreTlsAlert(record.fragment)) continue;
+					throw new Error(`TLS Alert: level=${record.fragment[0]}, desc=${record.fragment[1]}`);
+				}
+				if (record.type !== CONTENT_TYPE_APPLICATION_DATA) continue;
+				const plaintext = this.isTls13 ? await this.decryptTls13(record.fragment) : await this.decryptTls12(record.fragment, record.type);
+				return plaintext;
+			}
+		}
 	}
 }
 
