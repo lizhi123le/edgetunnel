@@ -1,4 +1,4 @@
-const Version = '2026-04-16 04:47:24 (Local Enhanced + cf30335 + checked)';
+const Version = '2026-04-16 04:47:24 (Local Enhanced)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -2529,6 +2529,7 @@ async function WebSocket发送并等待(webSocket, payload) {
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 	let header = headerData, hasData = false, reader, useBYOB = false;
 	const BYOB缓冲区大小 = 512 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024;
+	const 普通流聚合阈值 = 128 * 1024, 普通流刷新间隔 = 2;
 	const BYOB慢速刷新间隔 = 20, BYOB快速刷新间隔 = 2, BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
 
 	const 发送块 = async (chunk) => {
@@ -2546,13 +2547,39 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 
 	try {
 		if (!useBYOB) {
+			let pendingChunks = [], pendingBytes = 0, flush定时器 = null, flush任务 = null;
+			const flush = async () => {
+				if (flush任务) return flush任务;
+				flush任务 = (async () => {
+					if (flush定时器) { clearTimeout(flush定时器); flush定时器 = null }
+					if (pendingBytes <= 0) return;
+					const chunks = pendingChunks, bytes = pendingBytes;
+					pendingChunks = []; pendingBytes = 0;
+					const payload = chunks.length === 1 ? chunks[0] : 拼接字节数据(...chunks);
+					if (payload.byteLength || bytes > 0) await 发送块(payload);
+				})().finally(() => { flush任务 = null });
+				return flush任务;
+			};
+			const 推送普通流块 = async (chunk) => {
+				const bytes = 数据转Uint8Array(chunk);
+				if (!bytes.byteLength) return;
+				pendingChunks.push(bytes);
+				pendingBytes += bytes.byteLength;
+				if (pendingBytes >= 普通流聚合阈值) {
+					await flush();
+					if (pendingBytes >= 普通流聚合阈值) await flush();
+				} else if (!flush定时器) {
+					flush定时器 = setTimeout(() => { flush().catch(() => closeSocketQuietly(webSocket)) }, 普通流刷新间隔);
+				}
+			};
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) break;
 				if (!value || value.byteLength === 0) continue;
 				hasData = true;
-				await 发送块(value instanceof Uint8Array ? value : new Uint8Array(value));
+				await 推送普通流块(value);
 			}
+			await flush();
 		} else {
 			let mainBuf = new ArrayBuffer(BYOB缓冲区大小), offset = 0, totalBytes = 0;
 			let flush间隔毫秒 = BYOB快速刷新间隔, flush定时器 = null, 等待刷新恢复 = null;
