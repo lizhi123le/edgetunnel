@@ -1907,47 +1907,7 @@ function ChaCha20Poly1305Decrypt(key, nonce, ciphertext, additionalData) {
 	return ChaCha20XOR(key, nonce, encryptedData);
 }
 
-function TLS记录解析器() {
-	this.buffer = new Uint8Array(0);
-	this.feed = function(chunk) {
-		const bytes = 数据转Uint8Array(chunk);
-		this.buffer = this.buffer.length ? concatBytes(this.buffer, bytes) : bytes;
-	};
-	this.next = function() {
-		if (this.buffer.length < 5) return null;
-		const contentType = this.buffer[0];
-		const version = readUint16(this.buffer, 1);
-		const length = readUint16(this.buffer, 3);
-		if (this.buffer.length < 5 + length) return null;
-		const fragment = this.buffer.subarray(5, 5 + length);
-		return this.buffer = this.buffer.subarray(5 + length), { type: contentType, version, fragment };
-	};
-}
-
-function TLS握手解析器() {
-	this.buffer = new Uint8Array(0);
-	this.feed = function(chunk) {
-		const bytes = 数据转Uint8Array(chunk);
-		this.buffer = this.buffer.length ? concatBytes(this.buffer, bytes) : bytes;
-	};
-	this.next = function() {
-		if (this.buffer.length < 4) return null;
-		const handshakeType = this.buffer[0];
-		const length = readUint24(this.buffer, 1);
-		if (this.buffer.length < 4 + length) return null;
-		const body = this.buffer.subarray(4, 4 + length);
-		const raw = this.buffer.subarray(0, 4 + length);
-		return this.buffer = this.buffer.subarray(4 + length), { type: handshakeType, length, body, raw };
-	};
-}
-
 function uint64be(value) { return [(value >> 56) & 255, (value >> 48) & 255, (value >> 40) & 255, (value >> 32) & 255, (value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, 255 & value]; }
-function xorSequenceIntoIv(iv, sequenceNumber) {
-	const nonce = iv.slice();
-	const sequenceBytes = uint64be(sequenceNumber);
-	for (let index = 0; index < 8; index++) nonce[nonce.length - 8 + index] ^= sequenceBytes[index];
-	return nonce;
-}
 
 // TLS 客户端类
 class TlsClient {
@@ -2253,10 +2213,6 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 		tlsBytes(uint16be(concatBytes(...extensions).length), ...extensions)
 	);
 	return buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_HELLO, clientHello);
-}
-
-function uint64be(value) {
-	return [(value >> 56) & 255, (value >> 48) & 255, (value >> 40) & 255, (value >> 32) & 255, (value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, 255 & value];
 }
 
 function xorSequenceIntoIv(iv, sequenceNumber) {
