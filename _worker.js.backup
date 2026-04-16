@@ -2707,7 +2707,9 @@ class TlsClient {
 			clientFinishedMessage = buildHandshakeMessage(HANDSHAKE_TYPE_FINISHED, clientFinishedVerifyData);
 		this.recordHandshake(clientFinishedMessage), await writer.write(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, await this.encryptTls13Handshake(concatBytes(clientFinishedMessage, [CONTENT_TYPE_HANDSHAKE])))), this.clientSeqNum = 0n, this.serverSeqNum = 0n
 	}
-    async function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON = {}) {
+};
+
+async function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON = {}) {
         const uuid = config_JSON?.UUID || null;
         const ECH启用 = Boolean(config_JSON?.ECH);
         const HOSTS = Array.isArray(config_JSON?.HOSTS) ? [...config_JSON.HOSTS] : [];
@@ -2830,9 +2832,9 @@ class TlsClient {
         }
         await dynamicYield();
     
-        const lines = clash_yaml.split('\n');
-        const processedLines = [];
-        let i = 0;
+        var lines = clash_yaml.split('\n');
+        var processedLines = [];
+        var i = 0;
     
         while (i < lines.length) {
             const line = lines[i];
@@ -2931,16 +2933,15 @@ class TlsClient {
             await dynamicYield();
         }
     
-        return processedLines.join('\n');
-    }
-    await dynamicYield();
+        await dynamicYield();
 
-    const lines = clash_yaml.split('\n');
-    const processedLines = [];
-    let i = 0;
+    // Second pass for remaining nodes
+    const lines2 = clash_yaml.split('\n');
+    const processedLines2 = [];
+    let j = 0;
 
-    while (i < lines.length) {
-        const line = lines[i];
+    while (j < lines2.length) {
+        const line = lines2[j];
         const trimmedLine = line.trim();
 
         if (trimmedLine.startsWith('- {')) {
@@ -3036,17 +3037,14 @@ class TlsClient {
         await dynamicYield();
     }
 
-    return processedLines.join('\n');
-}
-
     await dynamicYield();
 
-    const lines = clash_yaml.split('\n');
-    const processedLines = [];
-    let i = 0;
+    var lines = clash_yaml.split('\n');
+    var processedLines = [];
+    var i = 0;
 
     while (i < lines.length) {
-        const line = lines[i];
+        var line = lines[i];
         const trimmedLine = line.trim();
 
         if (trimmedLine.startsWith('- {')) {
@@ -3345,10 +3343,8 @@ async function Surge订阅配置文件热补丁(content, url, config_JSON) {
     }
 
     输出内容 = `#!MANAGED-CONFIG ${url} interval=${config_JSON.优选订阅生成.SUBUpdateTime * 60 * 60} strict=false` + 输出内容.substring(输出内容.indexOf('\n'));
-    return 输出内容;
-}return nodeText.match(pattern)?.[1]?.trim() || null;
-	};
-	const 插入NameserverPolicy = (yaml, hostsEntries) => {
+
+const 插入NameserverPolicy = (yaml, hostsEntries) => {
 		if (/^\s{2}nameserver-policy:\s*(?:\n|$)/m.test(yaml)) {
 			return yaml.replace(/^(\s{2}nameserver-policy:\s*\n)/m, `$1${hostsEntries}\n`);
 		}
