@@ -4244,7 +4244,7 @@ async function 整理成数组(内容) {
 	if (替换后的内容.charAt(替换后的内容.length - 1) == ',') 替换后的内容 = 替换后的内容.slice(0, 替换后的内容.length - 1);
 	const 地址数组 = 替换后的内容.split(',');
 	return 地址数组;
-}
+};
 
 async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
 	let 优选IP = [], 其他节点LINK = '', 格式化HOST = 优选订阅生成器HOST.replace(/^sub:\/\//i, 'https://').split('#')[0].split('?')[0];
