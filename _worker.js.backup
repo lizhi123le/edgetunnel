@@ -1767,7 +1767,7 @@ async function hkdfExtract(hash, salt, inputKeyMaterial) {
 	return salt && salt.length || (salt = new Uint8Array(TLS哈希长度(hash))), TLS_HMAC(hash, salt, inputKeyMaterial);
 }
 async function hkdfExpandLabel(hash, secret, label, context, length) {
-	const fullLabel = TLS文本编码er.encode('tls13 ' + label);
+	const fullLabel = TLS文本编码器.encode('tls13 ' + label);
 	return async function (hash, secret, info, length) {
 		const hashLen = TLS哈希长度(hash), roundCount = Math.ceil(length / hashLen);
 		let output = new Uint8Array(0), previousBlock = new Uint8Array(0);
