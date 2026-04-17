@@ -2273,56 +2273,36 @@ class TlsClient {
 
 	// 写入数据
 	async write(data) {
-		if (!this.handshakeComplete) throw new Error("Handshake not complete");
-		const plaintext = 数据转Uint8Array(data);
-		if (!plaintext.byteLength) return;
-		const writer = this.socket.writable.getWriter();
-		try {
-			const records = [];
-			for (let offset = 0; offset < plaintext.byteLength; offset += TLS_MAX_PLAINTEXT_FRAGMENT) {
-				const chunk = plaintext.subarray(offset, Math.min(offset + TLS_MAX_PLAINTEXT_FRAGMENT, plaintext.byteLength));
-				const encrypted = this.isTls13 ? await this.encryptTls13(chunk) : await this.encryptTls12(chunk, CONTENT_TYPE_APPLICATION_DATA);
-				records.push(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, encrypted));
-			}
-			await writer.write(records.length === 1 ? records[0] : concatBytes(...records))
-		} finally {
-			writer.releaseLock()
+		const chunk = 数据转Uint8Array(data);
+		if (!this.handshakeComplete) throw new Error('Handshake not complete');
+		if (this.isTls13) {
+			const encrypted = await this.encryptTls13(chunk);
+			return this.socket.writable.getWriter().write(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, encrypted, TLS_VERSION_13));
+		} else {
+			const encrypted = await this.encryptTls12(chunk, CONTENT_TYPE_APPLICATION_DATA);
+			return this.socket.writable.getWriter().write(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, encrypted));
 		}
 	}
 
 	// 读取数据
 	async read() {
-		for (; ;) {
+		if (!this.handshakeComplete) throw new Error('Handshake not complete');
+		while (true) {
+			const { value, done } = await this.readChunk(this.socket.readable.getReader());
+			if (done || !value || !value.byteLength) return value;
+			this.recordParser.feed(value);
 			let record;
-			for (; record = this.recordParser.next();) {
+			while (record = this.recordParser.next()) {
 				if (record.type === CONTENT_TYPE_ALERT) {
-					if (record.fragment[1] === ALERT_CLOSE_NOTIFY) return null;
-					throw new Error(`TLS Alert: ${record.fragment[1]}`)
+					if (shouldIgnoreTlsAlert(record.fragment)) continue;
+					throw new Error(`TLS Alert: level=${record.fragment[0]}, desc=${record.fragment[1]}`);
 				}
 				if (record.type !== CONTENT_TYPE_APPLICATION_DATA) continue;
-				if (!this.isTls13) return this.decryptTls12(record.fragment, CONTENT_TYPE_APPLICATION_DATA);
-				const { data, type } = await this.decryptTls13(record.fragment);
-				if (type === CONTENT_TYPE_APPLICATION_DATA) return data;
-				if (type === CONTENT_TYPE_ALERT) {
-					if (data[1] === ALERT_CLOSE_NOTIFY) return null;
-					throw new Error(`TLS Alert: ${data[1]}`)
-				}
-				if (type !== CONTENT_TYPE_HANDSHAKE) continue;
-				let message;
-				for (this.handshakeParser.feed(data); message = this.handshakeParser.next();)
-					if (message.type !== HANDSHAKE_TYPE_NEW_SESSION_TICKET && message.type === HANDSHAKE_TYPE_KEY_UPDATE) throw new Error("TLS 1.3 KeyUpdate is not supported by TLSClientMini")
-			}
-			const reader = this.socket.readable.getReader();
-			try {
-				const { value, done } = await this.readChunk(reader);
-				if (done) return null;
-				this.recordParser.feed(value)
-			} finally {
-				reader.releaseLock()
+				const plaintext = this.isTls13 ? await this.decryptTls13(record.fragment) : await this.decryptTls12(record.fragment, record.type);
+				return plaintext;
 			}
 		}
 	}
-	close() { this.socket.close() }
 }
 
 // TLS 辅助函数 - 完整实现
