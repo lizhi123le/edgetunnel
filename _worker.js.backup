@@ -2025,29 +2025,20 @@ class TlsClient {
 	}
 
 	async decryptTls13Handshake(ciphertext) {
-		const nonce = xorSequenceIntoIv(this.serverHandshakeIv, this.serverSeqNum++),
-			additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
-		const decrypted = this.cipherConfig.chacha ? await chacha20Poly1305Decrypt(this.serverHandshakeKey, nonce, ciphertext, additionalData) : await aesGcmDecryptWithKey(this.serverHandshakeCryptoKey || (this.serverHandshakeCryptoKey = await importAesGcmKey(this.serverHandshakeKey, ["decrypt"])), nonce, ciphertext, additionalData);
-		let innerTypeIndex = decrypted.length - 1;
-		for (; innerTypeIndex >= 0 && !decrypted[innerTypeIndex];) innerTypeIndex--;
-		return innerTypeIndex < 0 ? EMPTY_BYTES : decrypted.slice(0, innerTypeIndex + 1)
+		const nonce = xorSequenceIntoIv(this.serverHandshakeIv, this.serverSeqNum++);
+		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
+		if (this.cipherConfig.chacha) return ChaCha20Poly1305Decrypt(this.serverHandshakeKey, nonce, ciphertext, additionalData);
+		if (!this.serverHandshakeCryptoKey) this.serverHandshakeCryptoKey = await TLS导入AES密钥(this.serverHandshakeKey, ['decrypt']);
+		return TLS_AES_GCM解密(this.serverHandshakeCryptoKey, nonce, ciphertext, additionalData);
 	}
 
-    async encryptTls13(data) {
-		const plaintext = concatBytes(data, [CONTENT_TYPE_APPLICATION_DATA]),
-		const nonce = xorSequenceIntoIv(this.serverAppIv, this.serverSeqNum++),
-			additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length)),
-			plaintext = this.cipherConfig.chacha ? await chacha20Poly1305Decrypt(this.serverAppKey, nonce, ciphertext, additionalData) : await aesGcmDecryptWithKey(this.serverAppCryptoKey || (this.serverAppCryptoKey = await importAesGcmKey(this.serverAppKey, ["decrypt"])), nonce, ciphertext, additionalData);
-		let innerTypeIndex = plaintext.length - 1;
-		for (; innerTypeIndex >= 0 && !plaintext[innerTypeIndex];) innerTypeIndex--;
-		if (innerTypeIndex < 0) return {
-			data: EMPTY_BYTES,
-			type: 0
-		};
-		return {
-			data: plaintext.slice(0, innerTypeIndex),
-			type: plaintext[innerTypeIndex]
-		}
+	async encryptTls13(data) {
+		const plaintext = concatBytes(data, [CONTENT_TYPE_APPLICATION_DATA]);
+		const nonce = xorSequenceIntoIv(this.clientAppIv, this.clientSeqNum++);
+		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(plaintext.length + 16));
+		if (this.cipherConfig.chacha) return ChaCha20Poly1305Encrypt(this.clientAppKey, nonce, plaintext, additionalData);
+		if (!this.clientAppCryptoKey) this.clientAppCryptoKey = await TLS导入AES密钥(this.clientAppKey, ['encrypt']);
+		return TLS_AES_GCM加密(this.clientAppCryptoKey, nonce, plaintext, additionalData);
 	}
 
 	async decryptTls13(ciphertext) {
