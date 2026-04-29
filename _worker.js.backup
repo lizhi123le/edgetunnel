@@ -3337,7 +3337,7 @@ async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uu
                     }
 
                     if (ECH启用) {
-                        const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length]);
+                        const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
                         outbound.tls.ech = {
                             enabled: true,
                             query_server_name: nodeSNI
