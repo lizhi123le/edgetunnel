@@ -486,7 +486,9 @@ export default {
             新请求头.set('Referer', 反代URL.origin);
             新请求头.set('Origin', 反代URL.origin);
             if (!新请求头.has('User-Agent') && UA && UA !== 'null') 新请求头.set('User-Agent', UA);
-            const 反代响应 = await fetch(反代URL.origin + url.pathname + url.search, { method: request.method, headers: 新请求头, body: request.body, cf: request.cf });
+            const fetchPromise = fetch(反代URL.origin + url.pathname + url.search, { method: request.method, headers: 新请求头, body: request.body, cf: request.cf });
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('伪装页获取超时')), 5000));
+            const 反代响应 = await Promise.race([fetchPromise, timeoutPromise]);
             const 内容类型 = 反代响应.headers.get('content-type') || '';
             // 只处理文本类型的响应
             if (/text|javascript|json|xml/.test(内容类型)) {
@@ -494,7 +496,9 @@ export default {
                 return new Response(响应内容, { status: 反代响应.status, headers: { ...Object.fromEntries(反代响应.headers), 'Cache-Control': 'no-store' } });
             }
             return 反代响应;
-        } catch (error) { }
+        } catch (error) {
+            console.error('伪装页获取失败:', error.message);
+        }
         return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
     }
 };
