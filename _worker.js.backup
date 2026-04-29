@@ -1864,105 +1864,109 @@ function ChaCha20QuarterRound(state, indexA, indexB, indexC, indexD) {
 	state[indexA] = state[indexA] + state[indexB] >>> 0, state[indexD] = rotateLeft32(state[indexD] ^ state[indexA], 16), state[indexC] = state[indexC] + state[indexD] >>> 0, state[indexB] = rotateLeft32(state[indexB] ^ state[indexC], 12), state[indexA] = state[indexA] + state[indexB] >>> 0, state[indexD] = rotateLeft32(state[indexD] ^ state[indexA], 8), state[indexC] = state[indexC] + state[indexD] >>> 0, state[indexB] = rotateLeft32(state[indexB] ^ state[indexC], 7);
 }
 
-function ChaCha20Block(key, counter, nonce) {
-	const state = new Uint32Array(16);
-	state[0] = 1634760805, state[1] = 857760878, state[2] = 2036477234, state[3] = 1797285236;
-	const keyView = new DataView(key.buffer, key.byteOffset, key.byteLength);
-	for (let wordIndex = 0; wordIndex < 8; wordIndex++) state[4 + wordIndex] = keyView.getUint32(4 * wordIndex, true);
-	state[12] = counter;
-	const nonceView = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
-	state[13] = nonceView.getUint32(0, true), state[14] = nonceView.getUint32(4, true), state[15] = nonceView.getUint32(8, true);
-	const workingState = new Uint32Array(state);
-	for (let round = 0; round < 10; round++) {
-		ChaCha20QuarterRound(workingState, 0, 4, 8, 12), ChaCha20QuarterRound(workingState, 1, 5, 9, 13), ChaCha20QuarterRound(workingState, 2, 6, 10, 14), ChaCha20QuarterRound(workingState, 3, 7, 11, 15);
-		ChaCha20QuarterRound(workingState, 0, 5, 10, 15), ChaCha20QuarterRound(workingState, 1, 6, 11, 12), ChaCha20QuarterRound(workingState, 2, 7, 8, 13), ChaCha20QuarterRound(workingState, 3, 4, 9, 14);
-	}
-	for (let wordIndex = 0; wordIndex < 16; wordIndex++) workingState[wordIndex] = workingState[wordIndex] + state[wordIndex] >>> 0;
-	return new Uint8Array(workingState.buffer.slice(0));
-}
+async function ChaCha20Block(key, counter, nonce) {
+        const state = new Uint32Array(16);
+        state[0] = 1634760805, state[1] = 857760878, state[2] = 2036477234, state[3] = 1797285236;
+        const keyView = new DataView(key.buffer, key.byteOffset, key.byteLength);
+        for (let wordIndex = 0; wordIndex < 8; wordIndex++) state[4 + wordIndex] = keyView.getUint32(4 * wordIndex, true);
+        state[12] = counter;
+        const nonceView = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
+        state[13] = nonceView.getUint32(0, true), state[14] = nonceView.getUint32(4, true), state[15] = nonceView.getUint32(8, true);
+        const workingState = new Uint32Array(state);
+        for (let round = 0; round < 10; round++) {
+            ChaCha20QuarterRound(workingState, 0, 4, 8, 12), ChaCha20QuarterRound(workingState, 1, 5, 9, 13), ChaCha20QuarterRound(workingState, 2, 6, 10, 14), ChaCha20QuarterRound(workingState, 3, 7, 11, 15);
+            ChaCha20QuarterRound(workingState, 0, 5, 10, 15), ChaCha20QuarterRound(workingState, 1, 6, 11, 12), ChaCha20QuarterRound(workingState, 2, 7, 8, 13), ChaCha20QuarterRound(workingState, 3, 4, 9, 14);
+            if (round % 5 === 4) await new Promise(r => setTimeout(r, 0));
+        }
+        for (let wordIndex = 0; wordIndex < 16; wordIndex++) workingState[wordIndex] = workingState[wordIndex] + state[wordIndex] >>> 0;
+        return new Uint8Array(workingState.buffer.slice(0));
+    }
 
-function ChaCha20XOR(key, nonce, data) {
-	const output = new Uint8Array(data.length);
-	let counter = 1;
-	for (let offset = 0; offset < data.length; offset += 64) {
-		const block = ChaCha20Block(key, counter++, nonce);
-		const blockLength = Math.min(64, data.length - offset);
-		for (let index = 0; index < blockLength; index++) output[offset + index] = data[offset + index] ^ block[index];
-	}
-	return output;
-}
+async function ChaCha20XOR(key, nonce, data) {
+            const output = new Uint8Array(data.length);
+            let counter = 1;
+            for (let offset = 0; offset < data.length; offset += 64) {
+                if (offset > 0 && offset % 64000 === 0) await new Promise(r => setTimeout(r, 0));
+                const block = await ChaCha20Block(key, counter++, nonce);
+                const blockLength = Math.min(64, data.length - offset);
+                for (let index = 0; index < blockLength; index++) output[offset + index] = data[offset + index] ^ block[index];
+            }
+            return output;
+        }
 
 // Poly1305 MAC
-function Poly1305Mac(key, message) {
-	const rKey = (() => {
-		const clamped = new Uint8Array(key);
-		return clamped[3] &= 15, clamped[7] &= 15, clamped[11] &= 15, clamped[15] &= 15, clamped[4] &= 252, clamped[8] &= 252, clamped[12] &= 252, clamped;
-	})(key.slice(0, 16)), sKey = key.slice(16, 32);
-	let accumulator = [0n, 0n, 0n, 0n, 0n];
-	const rLimbs = [
-		0x3ffffffn & BigInt(rKey[0] | rKey[1] << 8 | rKey[2] << 16 | rKey[3] << 24),
-		0x3ffffffn & BigInt(rKey[3] >> 2 | rKey[4] << 6 | rKey[5] << 14 | rKey[6] << 22),
-		0x3ffffffn & BigInt(rKey[6] >> 4 | rKey[7] << 4 | rKey[8] << 12 | rKey[9] << 20),
-		0x3ffffffn & BigInt(rKey[9] >> 6 | rKey[10] << 2 | rKey[11] << 10 | rKey[12] << 18),
-		0x3ffffffn & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
-	];
-	for (let offset = 0; offset < message.length; offset += 16) {
-		const chunk = message.slice(offset, offset + 16);
-		const paddedChunk = new Uint8Array(17);
-		paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
-		accumulator[0] += BigInt(paddedChunk[0] | paddedChunk[1] << 8 | paddedChunk[2] << 16 | (3 & paddedChunk[3]) << 24);
-		accumulator[1] += BigInt(paddedChunk[3] >> 2 | paddedChunk[4] << 6 | paddedChunk[5] << 14 | (15 & paddedChunk[6]) << 22);
-		accumulator[2] += BigInt(paddedChunk[6] >> 4 | paddedChunk[7] << 4 | paddedChunk[8] << 12 | (63 & paddedChunk[9]) << 20);
-		accumulator[3] += BigInt(paddedChunk[9] >> 6 | paddedChunk[10] << 2 | paddedChunk[11] << 10 | paddedChunk[12] << 18);
-		accumulator[4] += BigInt(paddedChunk[13] | paddedChunk[14] << 8 | paddedChunk[15] << 16 | paddedChunk[16] << 24);
-		const product = [0n, 0n, 0n, 0n, 0n];
-		for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
-			const limbIndex = accIndex + rIndex;
-			limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
-		}
-		let carry = 0n;
-		for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
-		accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
-	}
-	let tagValue = accumulator[0] | accumulator[1] << 26n | accumulator[2] << 52n | accumulator[3] << 78n | accumulator[4] << 104n;
-	tagValue = tagValue + sKey.reduce(((total, byte, index) => total + (BigInt(byte) << BigInt(8 * index))), 0n) & (1n << 128n) - 1n;
-	const tag = new Uint8Array(16);
-	for (let index = 0; index < 16; index++) tag[index] = Number(tagValue >> BigInt(8 * index) & 0xffn);
-	return tag;
-}
+        async function Poly1305Mac(key, message) {
+            const rKey = (() => {
+                const clamped = new Uint8Array(key);
+                return clamped[3] &= 15, clamped[7] &= 15, clamped[11] &= 15, clamped[15] &= 15, clamped[4] &= 252, clamped[8] &= 252, clamped[12] &= 252, clamped;
+            })(key.slice(0, 16)), sKey = key.slice(16, 32);
+            let accumulator = [0n, 0n, 0n, 0n, 0n];
+            const rLimbs = [
+                0x3ffffffn & BigInt(rKey[0] | rKey[1] << 8 | rKey[2] << 16 | rKey[3] << 24),
+                0x3ffffffn & BigInt(rKey[3] >> 2 | rKey[4] << 6 | rKey[5] << 14 | rKey[6] << 22),
+                0x3ffffffn & BigInt(rKey[6] >> 4 | rKey[7] << 4 | rKey[8] << 12 | rKey[9] << 20),
+                0x3ffffffn & BigInt(rKey[9] >> 6 | rKey[10] << 2 | rKey[11] << 10 | rKey[12] << 18),
+                0x3ffffffn & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
+            ];
+            let blockCount = 0;
+            for (let offset = 0; offset < message.length; offset += 16) {
+                if (++blockCount % 10 === 0) await new Promise(r => setTimeout(r, 0));
+                const chunk = message.slice(offset, offset + 16);
+                const paddedChunk = new Uint8Array(17);
+                paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
+                accumulator[0] += BigInt(paddedChunk[0] | paddedChunk[1] << 8 | paddedChunk[2] << 16 | (3 & paddedChunk[3]) << 24);
+                accumulator[1] += BigInt(paddedChunk[3] >> 2 | paddedChunk[4] << 6 | paddedChunk[5] << 14 | (15 & paddedChunk[6]) << 22);
+                accumulator[2] += BigInt(paddedChunk[6] >> 4 | paddedChunk[7] << 4 | paddedChunk[8] << 12 | (63 & paddedChunk[9]) << 20);
+                accumulator[3] += BigInt(paddedChunk[9] >> 6 | paddedChunk[10] << 2 | paddedChunk[11] << 10 | paddedChunk[12] << 18);
+                accumulator[4] += BigInt(paddedChunk[13] | paddedChunk[14] << 8 | paddedChunk[15] << 16 | paddedChunk[16] << 24);
+                const product = [0n, 0n, 0n, 0n, 0n];
+                for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
+                    const limbIndex = accIndex + rIndex;
+                    limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
+                }
+                let carry = 0n;
+                for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
+                accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
+            }
+            let tagValue = accumulator[0] | accumulator[1] << 26n | accumulator[2] << 52n | accumulator[3] << 78n | accumulator[4] << 104n;
+            tagValue = tagValue + sKey.reduce(((total, byte, index) => total + (BigInt(byte) << BigInt(8 * index))), 0n) & (1n << 128n) - 1n;
+            const tag = new Uint8Array(16);
+            for (let index = 0; index < 16; index++) tag[index] = Number(tagValue >> BigInt(8 * index) & 0xffn);
+            return tag;
+        }
 
 // ChaCha20-Poly1305 加密
-function ChaCha20Poly1305Encrypt(key, nonce, plaintext, additionalData) {
-	const polyKey = ChaCha20Block(key, 0, nonce).slice(0, 32);
-	const ciphertext = ChaCha20XOR(key, nonce, plaintext);
-	const aadPadding = (16 - additionalData.length % 16) % 16;
-	const ciphertextPadding = (16 - ciphertext.length % 16) % 16;
-	const macData = new Uint8Array(additionalData.length + aadPadding + ciphertext.length + ciphertextPadding + 16);
-	macData.set(additionalData, 0), macData.set(ciphertext, additionalData.length + aadPadding);
-	const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + ciphertext.length + ciphertextPadding);
-	lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(ciphertext.length), true);
-	const tag = Poly1305Mac(polyKey, macData);
-	return concatBytes(ciphertext, tag);
-}
+        async function ChaCha20Poly1305Encrypt(key, nonce, plaintext, additionalData) {
+            const polyKey = (await ChaCha20Block(key, 0, nonce)).slice(0, 32);
+            const ciphertext = await ChaCha20XOR(key, nonce, plaintext);
+            const aadPadding = (16 - additionalData.length % 16) % 16;
+            const ciphertextPadding = (16 - ciphertext.length % 16) % 16;
+            const macData = new Uint8Array(additionalData.length + aadPadding + ciphertext.length + ciphertextPadding + 16);
+            macData.set(additionalData, 0), macData.set(ciphertext, additionalData.length + aadPadding);
+            const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + ciphertext.length + ciphertextPadding);
+            lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(ciphertext.length), true);
+            const tag = await Poly1305Mac(polyKey, macData);
+            return concatBytes(ciphertext, tag);
+        }
 
 // ChaCha20-Poly1305 解密
-function ChaCha20Poly1305Decrypt(key, nonce, ciphertext, additionalData) {
-	if (ciphertext.length < 16) throw new Error('Ciphertext too short');
-	const tag = ciphertext.slice(-16);
-	const encryptedData = ciphertext.slice(0, -16);
-	const polyKey = ChaCha20Block(key, 0, nonce).slice(0, 32);
-	const aadPadding = (16 - additionalData.length % 16) % 16;
-	const ciphertextPadding = (16 - encryptedData.length % 16) % 16;
-	const macData = new Uint8Array(additionalData.length + aadPadding + encryptedData.length + ciphertextPadding + 16);
-	macData.set(additionalData, 0), macData.set(encryptedData, additionalData.length + aadPadding);
-	const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + encryptedData.length + ciphertextPadding);
-	lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(encryptedData.length), true);
-	const expectedTag = Poly1305Mac(polyKey, macData);
-	let diff = 0;
-	for (let i = 0; i < 16; i++) diff |= tag[i] ^ expectedTag[i];
-	if (diff !== 0) throw new Error('ChaCha20-Poly1305 authentication failed');
-	return ChaCha20XOR(key, nonce, encryptedData);
-}
+        async function ChaCha20Poly1305Decrypt(key, nonce, ciphertext, additionalData) {
+            if (ciphertext.length < 16) throw new Error('Ciphertext too short');
+            const tag = ciphertext.slice(-16);
+            const encryptedData = ciphertext.slice(0, -16);
+            const polyKey = (await ChaCha20Block(key, 0, nonce)).slice(0, 32);
+            const aadPadding = (16 - additionalData.length % 16) % 16;
+            const ciphertextPadding = (16 - encryptedData.length % 16) % 16;
+            const macData = new Uint8Array(additionalData.length + aadPadding + encryptedData.length + ciphertextPadding + 16);
+            macData.set(additionalData, 0), macData.set(encryptedData, additionalData.length + aadPadding);
+            const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + encryptedData.length + ciphertextPadding);
+            lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(encryptedData.length), true);
+            const expectedTag = await Poly1305Mac(polyKey, macData);
+            let diff = 0;
+            for (let i = 0; i < 16; i++) diff |= tag[i] ^ expectedTag[i];
+            if (diff !== 0) throw new Error('ChaCha20-Poly1305 authentication failed');
+            return await ChaCha20XOR(key, nonce, encryptedData);
+        }
 
 function uint64be(value) { return [(value >> 56) & 255, (value >> 48) & 255, (value >> 40) & 255, (value >> 32) & 255, (value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, 255 & value]; }
 
@@ -2009,23 +2013,52 @@ class TlsClient {
 		this.serverSeqNum = 0n;
 		this.recordParser = new TLS记录解析器();
 		this.handshakeParser = new TLS握手解析器();
-		this.keyPairs = new Map();
-		this.ecdhKeyPair = null;
-		this.sawCert = false;
-	}
+        this.keyPairs = new Map();
+        this.ecdhKeyPair = null;
+        this.cpuYieldCounter = 0;
+        this.yieldThresholds = {
+            handshake: 10000,
+            transmission: 50000
+        };
+        this.currentStage = 'handshake';
+        this.sawCert = false;
+    }
+
+    setStage(stage) {
+        if (this.currentStage !== stage) {
+            this.currentStage = stage;
+            this.cpuYieldCounter = 0;
+        }
+    }
+
+    shouldYield() {
+        const threshold = this.yieldThresholds[this.currentStage] || 50000;
+        if (++this.cpuYieldCounter >= threshold) {
+            this.cpuYieldCounter = 0;
+            return true;
+        }
+        return false;
+    }
+
+    async yieldIfNeeded() {
+        if (this.shouldYield()) {
+            await new Promise(r => setTimeout(r, 0));
+        }
+    }
 
 	recordHandshake(chunk) { this.handshakeChunks.push(chunk); }
 	transcript() { return this.handshakeChunks.length === 1 ? this.handshakeChunks[0] : concatBytes(...this.handshakeChunks); }
 	getCipherConfig(cipherSuite) { return CIPHER_SUITES_BY_ID.get(cipherSuite) || null; }
 
-	// ChaCha20 相关方法
-	async decryptTls12(ciphertext, contentType) {
-		const sequenceNumber = this.serverSeqNum++;
-		const sequenceBytes = uint64be(sequenceNumber);
-		if (this.cipherConfig.chacha) {
-			const nonce = xorSequenceIntoIv(this.serverWriteIv, sequenceNumber);
-			return ChaCha20Poly1305Decrypt(this.serverWriteKey, nonce, ciphertext, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(ciphertext.length - 16)));
-		}
+        // ChaCha20 相关方法
+        async decryptTls12(ciphertext, contentType) {
+            await this.yieldIfNeeded();
+            const sequenceNumber = this.serverSeqNum++;
+            const sequenceBytes = uint64be(sequenceNumber);
+            if (this.cipherConfig.chacha) {
+                const nonce = xorSequenceIntoIv(this.serverWriteIv, sequenceNumber);
+                return await ChaCha20Poly1305Decrypt(this.serverWriteKey, nonce, ciphertext, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(ciphertext.length - 16)));
+            }
 		const explicitNonce = ciphertext.subarray(0, 8);
 		const encryptedData = ciphertext.subarray(8);
 		if (!this.serverWriteCryptoKey) this.serverWriteCryptoKey = await TLS导入AES密钥(this.serverWriteKey, ['decrypt']);
@@ -2033,6 +2066,7 @@ class TlsClient {
 	}
 
 	async encryptTls13Handshake(plaintext) {
+		await this.yieldIfNeeded();
 		const nonce = xorSequenceIntoIv(this.clientHandshakeIv, this.clientSeqNum++);
 		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(plaintext.length + 16));
 		if (this.cipherConfig.chacha) return ChaCha20Poly1305Encrypt(this.clientHandshakeKey, nonce, plaintext, additionalData);
@@ -2040,8 +2074,9 @@ class TlsClient {
 		return TLS_AES_GCM加密(this.clientHandshakeCryptoKey, nonce, plaintext, additionalData);
 	}
 
-	async decryptTls13Handshake(ciphertext) {
-		const nonce = xorSequenceIntoIv(this.serverHandshakeIv, this.serverSeqNum++);
+        async decryptTls13Handshake(ciphertext) {
+            await this.yieldIfNeeded();
+            const nonce = xorSequenceIntoIv(this.serverHandshakeIv, this.serverSeqNum++);
 		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
 		const decrypted = this.cipherConfig.chacha ? await ChaCha20Poly1305Decrypt(this.serverHandshakeKey, nonce, ciphertext, additionalData) : await TLS_AES_GCM解密(this.serverHandshakeCryptoKey || (this.serverHandshakeCryptoKey = await TLS导入AES密钥(this.serverHandshakeKey, ['decrypt'])), nonce, ciphertext, additionalData);
 		let innerTypeIndex = decrypted.length - 1;
@@ -2049,17 +2084,19 @@ class TlsClient {
 		return innerTypeIndex < 0 ? EMPTY_BYTES : decrypted.slice(0, innerTypeIndex + 1);
 	}
 
-	async encryptTls13(data) {
-		const plaintext = concatBytes(data, [CONTENT_TYPE_APPLICATION_DATA]);
-		const nonce = xorSequenceIntoIv(this.clientAppIv, this.clientSeqNum++);
-		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(plaintext.length + 16));
-		if (this.cipherConfig.chacha) return ChaCha20Poly1305Encrypt(this.clientAppKey, nonce, plaintext, additionalData);
-		if (!this.clientAppCryptoKey) this.clientAppCryptoKey = await TLS导入AES密钥(this.clientAppKey, ['encrypt']);
-		return TLS_AES_GCM加密(this.clientAppCryptoKey, nonce, plaintext, additionalData);
-	}
+        async encryptTls13(data) {
+            const plaintext = concatBytes(data, [CONTENT_TYPE_APPLICATION_DATA]);
+            const nonce = xorSequenceIntoIv(this.clientAppIv, this.clientSeqNum++);
+            const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(plaintext.length + 16));
+            await this.yieldIfNeeded();
+            if (this.cipherConfig.chacha) return ChaCha20Poly1305Encrypt(this.clientAppKey, nonce, plaintext, additionalData);
+            if (!this.clientAppCryptoKey) this.clientAppCryptoKey = await TLS导入AES密钥(this.clientAppKey, ['encrypt']);
+            return TLS_AES_GCM加密(this.clientAppCryptoKey, nonce, plaintext, additionalData);
+        }
 
-	async decryptTls13(ciphertext) {
-		const nonce = xorSequenceIntoIv(this.serverAppIv, this.serverSeqNum++);
+        async decryptTls13(ciphertext) {
+            await this.yieldIfNeeded();
+            const nonce = xorSequenceIntoIv(this.serverAppIv, this.serverSeqNum++);
 		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
 		const plaintext = this.cipherConfig.chacha ? await ChaCha20Poly1305Decrypt(this.serverAppKey, nonce, ciphertext, additionalData) : await TLS_AES_GCM解密(this.serverAppCryptoKey || (this.serverAppCryptoKey = await TLS导入AES密钥(this.serverAppKey, ['decrypt'])), nonce, ciphertext, additionalData);
 		let innerTypeIndex = plaintext.length - 1;
@@ -2095,30 +2132,32 @@ class TlsClient {
 		}
 	}
 
-	// 读取握手直到满足条件（含 TLS Alert 处理）
-	async readHandshakeUntil(reader, predicate, closedError) {
-		let message;
-		while (message = this.handshakeParser.next()) {
-			if (await predicate(message)) return;
-		}
-		return this.readRecordsUntil(reader, async (record) => {
-			if (record.type === CONTENT_TYPE_ALERT) {
-				// 使用 shouldIgnoreTlsAlert 忽略无害的 alerts
-				if (shouldIgnoreTlsAlert(record.fragment)) return;
-				throw new Error(`TLS Alert: ${record.fragment[1]}`);
-			}
-			if (record.type === CONTENT_TYPE_HANDSHAKE) {
-				this.handshakeParser.feed(record.fragment);
-				for (let message; message = this.handshakeParser.next();) {
-					if (await predicate(message)) return true;
-				}
-			}
-		}, closedError);
-	}
+        // 读取握手直到满足条件（含 TLS Alert 处理）
+        async readHandshakeUntil(reader, predicate, closedError) {
+            let message;
+            while (message = this.handshakeParser.next()) {
+                if (await predicate(message)) return;
+            }
+            return this.readRecordsUntil(reader, async (record) => {
+                await this.yieldIfNeeded();
+                if (record.type === CONTENT_TYPE_ALERT) {
+                    // 使用 shouldIgnoreTlsAlert 忽略无害的 alerts
+                    if (shouldIgnoreTlsAlert(record.fragment)) return;
+                    throw new Error(`TLS Alert: ${record.fragment[1]}`);
+                }
+                if (record.type === CONTENT_TYPE_HANDSHAKE) {
+                    this.handshakeParser.feed(record.fragment);
+                    for (let message; message = this.handshakeParser.next();) {
+                        if (await predicate(message)) return true;
+                    }
+                }
+            }, closedError);
+        }
 
-	// TLS 握手
-	async handshake() {
-		const [p256Share, x25519Share] = await Promise.all([
+        // TLS 握手
+        async handshake() {
+            await this.yieldIfNeeded();
+            const [p256Share, x25519Share] = await Promise.all([
 			TLS生成KeyShare('P-256'),
 			TLS生成KeyShare('X25519')
 		]);
@@ -2126,23 +2165,25 @@ class TlsClient {
 		this.ecdhKeyPair = p256Share.keyPair;
 		const reader = this.socket.readable.getReader();
 		const writer = this.socket.writable.getWriter();
-		try {
-			const clientHello = buildClientHello(this.clientRandom, this.serverName, { x25519: x25519Share.publicKeyRaw, p256: p256Share.publicKeyRaw }, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
-			this.recordHandshake(clientHello);
-			await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientHello, TLS_VERSION_10));
-			const serverHello = await this.receiveServerHello(reader);
-			if (serverHello.isHRR) throw new Error('HelloRetryRequest is not supported');
-			if (serverHello.keyShare?.group && this.keyPairs.has(serverHello.keyShare.group)) {
-				const selectedKeyPair = this.keyPairs.get(serverHello.keyShare.group);
-				this.ecdhKeyPair = selectedKeyPair.keyPair;
-			}
-			if (serverHello.isTls13) {
-				await this.handshakeTls13(reader, writer, serverHello);
-			} else {
-				await this.handshakeTls12(reader, writer);
-			}
-			this.handshakeComplete = true;
-		} finally {
+        try {
+            this.setStage('handshake');
+            const clientHello = buildClientHello(this.clientRandom, this.serverName, { x25519: x25519Share.publicKeyRaw, p256: p256Share.publicKeyRaw }, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
+            this.recordHandshake(clientHello);
+            await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientHello, TLS_VERSION_10));
+            const serverHello = await this.receiveServerHello(reader);
+            if (serverHello.isHRR) throw new Error('HelloRetryRequest is not supported');
+            if (serverHello.keyShare?.group && this.keyPairs.has(serverHello.keyShare.group)) {
+                const selectedKeyPair = this.keyPairs.get(serverHello.keyShare.group);
+                this.ecdhKeyPair = selectedKeyPair.keyPair;
+            }
+            if (serverHello.isTls13) {
+                await this.handshakeTls13(reader, writer, serverHello);
+            } else {
+                await this.handshakeTls12(reader, writer);
+            }
+            this.handshakeComplete = true;
+            this.setStage('transmission');
+        } finally {
 			reader.releaseLock();
 			writer.releaseLock();
 		}
@@ -2178,9 +2219,10 @@ class TlsClient {
 		}
 	}
 
-	// TLS 1.2 握手
-	async handshakeTls12(reader, writer) {
-		let serverKeyExchange = null;
+        // TLS 1.2 握手
+        async handshakeTls12(reader, writer) {
+            await this.yieldIfNeeded();
+            let serverKeyExchange = null;
 		let sawServerHelloDone = false;
 		await this.readHandshakeUntil(reader, async (message) => {
 			switch (message.type) {
@@ -2230,9 +2272,10 @@ class TlsClient {
 		this.serverWriteIv = serverWriteIv;
 	}
 
-	// TLS 1.3 握手
-	async handshakeTls13(reader, writer, serverHello) {
-		await this.readHandshakeUntil(reader, async (message) => {
+        // TLS 1.3 握手
+        async handshakeTls13(reader, writer, serverHello) {
+            await this.yieldIfNeeded();
+            await this.readHandshakeUntil(reader, async (message) => {
 			switch (message.type) {
 				case HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS:
 					this.recordHandshake(message.raw);
