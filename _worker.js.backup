@@ -2118,6 +2118,19 @@ class TlsClient {
 	getCipherConfig(cipherSuite) { return CIPHER_SUITES_BY_ID.get(cipherSuite) || null; }
 
         // ChaCha20 相关方法
+		async encryptTls12(plaintext, contentType) {
+			const sequenceNumber = this.clientSeqNum++,
+				sequenceBytes = uint64be(sequenceNumber),
+				additionalData = concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(plaintext.length));
+			if (this.cipherConfig.chacha) {
+				const nonce = xorSequenceIntoIv(this.clientWriteIv, sequenceNumber);
+				return chacha20Poly1305Encrypt(this.clientWriteKey, nonce, plaintext, additionalData)
+			}
+			const explicitNonce = randomBytes(8);
+			if (!this.clientWriteCryptoKey) this.clientWriteCryptoKey = await importAesGcmKey(this.clientWriteKey, ["encrypt"]);
+			return concatBytes(explicitNonce, await aesGcmEncryptWithKey(this.clientWriteCryptoKey, concatBytes(this.clientWriteIv, explicitNonce), plaintext, additionalData))
+		}
+
         async decryptTls12(ciphertext, contentType) {
             await this.yieldIfNeeded();
             const sequenceNumber = this.serverSeqNum++;
