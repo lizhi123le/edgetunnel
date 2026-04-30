@@ -2253,21 +2253,6 @@ class TlsClient {
                 }
             }, closedError);
         }
-            return this.readRecordsUntil(reader, async (record) => {
-                await this.yieldIfNeeded();
-                if (record.type === CONTENT_TYPE_ALERT) {
-                    // 使用 shouldIgnoreTlsAlert 忽略无害的 alerts
-                    if (shouldIgnoreTlsAlert(record.fragment)) return;
-                    throw new Error(`TLS Alert: ${record.fragment[1]}`);
-                }
-                if (record.type === CONTENT_TYPE_HANDSHAKE) {
-                    this.handshakeParser.feed(record.fragment);
-                    for (let message; message = this.handshakeParser.next();) {
-                        if (await predicate(message)) return true;
-                    }
-                }
-            }, closedError);
-        }
 
         // TLS 握手
         async handshake() {
