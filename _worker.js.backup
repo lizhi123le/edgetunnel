@@ -54,7 +54,7 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 600000; // 改为 10 分钟缓存（原1分钟导致KV击穿）
+const CONFIG_CACHE_TTL = 12 * 60 * 1000; // 12 分钟缓存
 let configJSONCacheTime = 0;
 
 // KV 操作超时包装器 - 防止无限等待导致 loadShed
