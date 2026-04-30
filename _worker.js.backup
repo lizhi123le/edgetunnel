@@ -43,7 +43,7 @@ let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org',
 // 性能优化2: 预编译SOCKS5白名单正则（避免每次创建新RegExp）
 let SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
 // 性能优化3: 预分配更大缓冲区（减少扩容）
-const 预分配缓冲区大小 = 2048;
+const 预分配缓冲区大小 = 1024;
 const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 
 // 全局日志函数（兼容旧代码）
