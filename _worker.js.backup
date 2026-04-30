@@ -480,22 +480,36 @@ export default {
             try { const u = new URL(伪装页URL); 伪装页URL = u.protocol + '//' + u.host; } catch (e) { 伪装页URL = 'nginx'; }
         }
         if (伪装页URL === '1101') return new Response(await html1101(url.host, 访问IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+        // 如果伪装页 URL 无效，直接返回 nginx 默认页，避免 fetch 挂起
+        if (伪装页URL === 'nginx') return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
         try {
             const 反代URL = new URL(伪装页URL), 新请求头 = new Headers(request.headers);
             新请求头.set('Host', 反代URL.host);
             新请求头.set('Referer', 反代URL.origin);
             新请求头.set('Origin', 反代URL.origin);
             if (!新请求头.has('User-Agent') && UA && UA !== 'null') 新请求头.set('User-Agent', UA);
-            const fetchPromise = fetch(反代URL.origin + url.pathname + url.search, { method: request.method, headers: 新请求头, body: request.body, cf: request.cf || {} });
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('伪装页获取超时')), 5000));
-            const 反代响应 = await Promise.race([fetchPromise, timeoutPromise]);
-            const 内容类型 = 反代响应.headers.get('content-type') || '';
-            // 只处理文本类型的响应
-            if (/text|javascript|json|xml/.test(内容类型)) {
-                const 响应内容 = (await 反代响应.text()).replaceAll(反代URL.host, url.host);
-                return new Response(响应内容, { status: 反代响应.status, headers: { ...Object.fromEntries(反代响应.headers), 'Cache-Control': 'no-store' } });
+            const abortController = new AbortController();
+            const fetchOptions = { method: request.method, headers: 新请求头, cf: request.cf || {}, signal: abortController.signal };
+            // GET 请求不应传入 body，否则 fetch 可能挂起
+            if (request.method !== 'GET' && request.body) fetchOptions.body = request.body;
+            const timeoutId = setTimeout(() => abortController.abort(), 5000);
+            try {
+                const 反代响应 = await fetch(反代URL.origin + url.pathname + url.search, fetchOptions);
+                clearTimeout(timeoutId);
+                const 内容类型 = 反代响应.headers.get('content-type') || '';
+                // 只处理文本类型的响应
+                if (/text|javascript|json|xml/.test(内容类型)) {
+                    const 响应内容 = (await 反代响应.text()).replaceAll(反代URL.host, url.host);
+                    return new Response(响应内容, { status: 反代响应.status, headers: { ...Object.fromEntries(反代响应.headers), 'Cache-Control': 'no-store' } });
+                }
+                return 反代响应;
+            } catch (fetchError) {
+                clearTimeout(timeoutId);
+                console.error('伪装页获取失败:', fetchError.message);
+                if (fetchError.name === 'AbortError') {
+                    console.error('伪装页获取超时，返回默认nginx页');
+                }
             }
-            return 反代响应;
         } catch (error) {
             console.error('伪装页获取失败:', error.message);
         }
