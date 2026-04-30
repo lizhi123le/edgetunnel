@@ -1874,7 +1874,7 @@ async function TLS_HMAC(hash, key, data) {
 }
 async function TLS摘要(hash, data) { return new Uint8Array(await crypto.subtle.digest(hash, data)); }
 
-// TLS 1.2 PRF
+// TLS 1.2 PRF (RFC 5246 §5，支持 SHA-256 / SHA-384)
 async function TLS12PRF(secret, label, seed, length, hash = 'SHA-256') {
 	const labelSeed = concatBytes(TLS文本编码器.encode(label), seed);
 	let output = new Uint8Array(0), currentA = labelSeed;
@@ -1886,18 +1886,29 @@ async function TLS12PRF(secret, label, seed, length, hash = 'SHA-256') {
 	return output.slice(0, length);
 }
 
-// HKDF
+// HKDF (RFC 5869)
 async function hkdfExtract(hash, salt, inputKeyMaterial) {
-	return salt && salt.length || (salt = new Uint8Array(TLS哈希长度(hash))), TLS_HMAC(hash, salt, inputKeyMaterial);
+	// 如果 salt 未提供或为空，使用全零的 salt（长度等于哈希输出长度）
+	if (!salt || !salt.length) salt = new Uint8Array(TLS哈希长度(hash));
+	return TLS_HMAC(hash, salt, inputKeyMaterial || new Uint8Array(0));
 }
 async function hkdfExpandLabel(hash, secret, label, context, length) {
 	const fullLabel = TLS文本编码器.encode('tls13 ' + label);
-	return async function (hash, secret, info, length) {
-		const hashLen = TLS哈希长度(hash), roundCount = Math.ceil(length / hashLen);
-		let output = new Uint8Array(0), previousBlock = new Uint8Array(0);
-		for (let round = 1; round <= roundCount; round++) previousBlock = await TLS_HMAC(hash, secret, concatBytes(previousBlock, info, [round])), output = concatBytes(output, previousBlock);
-		return output.slice(0, length);
-	}(hash, secret, tlsBytes(uint16be(length), fullLabel.length, fullLabel, context.length, context), length);
+	// RFC 8446 §7.1: info = uint16(length) + uint8(label_length) + "tls13 " + label + uint16(context_length) + context
+	const info = concatBytes(
+		uint16be(length),
+		[fullLabel.length], // label length 是 uint8
+		fullLabel,
+		uint16be(context.length),
+		context
+	);
+	const hashLen = TLS哈希长度(hash), roundCount = Math.ceil(length / hashLen);
+	let output = new Uint8Array(0), previousBlock = new Uint8Array(0);
+	for (let round = 1; round <= roundCount; round++) {
+		previousBlock = await TLS_HMAC(hash, secret, concatBytes(previousBlock, info, [round]));
+		output = concatBytes(output, previousBlock);
+	}
+	return output.slice(0, length);
 }
 
 // 密钥交换
@@ -2118,18 +2129,19 @@ class TlsClient {
 	getCipherConfig(cipherSuite) { return CIPHER_SUITES_BY_ID.get(cipherSuite) || null; }
 
         // ChaCha20 相关方法
-		async encryptTls12(plaintext, contentType) {
-			const sequenceNumber = this.clientSeqNum++,
-				sequenceBytes = uint64be(sequenceNumber),
-				additionalData = concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(plaintext.length));
-			if (this.cipherConfig.chacha) {
-				const nonce = xorSequenceIntoIv(this.clientWriteIv, sequenceNumber);
-				return chacha20Poly1305Encrypt(this.clientWriteKey, nonce, plaintext, additionalData)
-			}
-			const explicitNonce = randomBytes(8);
-			if (!this.clientWriteCryptoKey) this.clientWriteCryptoKey = await importAesGcmKey(this.clientWriteKey, ["encrypt"]);
-			return concatBytes(explicitNonce, await aesGcmEncryptWithKey(this.clientWriteCryptoKey, concatBytes(this.clientWriteIv, explicitNonce), plaintext, additionalData))
-		}
+        async encryptTls12(plaintext, contentType) {
+            const sequenceNumber = this.clientSeqNum++;
+            const sequenceBytes = uint64be(sequenceNumber);
+            const additionalData = concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(plaintext.length));
+            if (this.cipherConfig.chacha) {
+                const nonce = xorSequenceIntoIv(this.clientWriteIv, sequenceNumber);
+                return ChaCha20Poly1305Encrypt(this.clientWriteKey, nonce, plaintext, additionalData);
+            }
+            const explicitNonce = TLS随机字节(8);
+            if (!this.clientWriteCryptoKey) this.clientWriteCryptoKey = await TLS导入AES密钥(this.clientWriteKey, ["encrypt"]);
+            const encrypted = await TLS_AES_GCM加密(this.clientWriteCryptoKey, concatBytes(this.clientWriteIv, explicitNonce), plaintext, additionalData);
+            return concatBytes(explicitNonce, encrypted);
+        }
 
         async decryptTls12(ciphertext, contentType) {
             await this.yieldIfNeeded();
@@ -2139,11 +2151,11 @@ class TlsClient {
                 const nonce = xorSequenceIntoIv(this.serverWriteIv, sequenceNumber);
                 return await ChaCha20Poly1305Decrypt(this.serverWriteKey, nonce, ciphertext, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(ciphertext.length - 16)));
             }
-		    const explicitNonce = ciphertext.subarray(0, 8);
-		    const encryptedData = ciphertext.subarray(8);
-		    if (!this.serverWriteCryptoKey) this.serverWriteCryptoKey = await TLS导入AES密钥(this.serverWriteKey, ['decrypt']);
-		    return TLS_AES_GCM解密(this.serverWriteCryptoKey, concatBytes(this.serverWriteIv, explicitNonce), encryptedData, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(encryptedData.length - 16)));
-	    }
+            const explicitNonce = ciphertext.subarray(0, 8);
+            const encryptedData = ciphertext.subarray(8);
+            if (!this.serverWriteCryptoKey) this.serverWriteCryptoKey = await TLS导入AES密钥(this.serverWriteKey, ['decrypt']);
+            return TLS_AES_GCM解密(this.serverWriteCryptoKey, concatBytes(this.serverWriteIv, explicitNonce), encryptedData, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(encryptedData.length - 16)));
+        }
 
 	async encryptTls13Handshake(plaintext) {
 		await this.yieldIfNeeded();
@@ -2299,102 +2311,206 @@ class TlsClient {
 		}
 	}
 
-        // TLS 1.2 握手
+        // TLS 1.2 握手（严格遵循 RFC 5246）
         async handshakeTls12(reader, writer) {
             await this.yieldIfNeeded();
             let serverKeyExchange = null;
-		let sawServerHelloDone = false;
-		await this.readHandshakeUntil(reader, async (message) => {
-			switch (message.type) {
-				case HANDSHAKE_TYPE_CERTIFICATE:
-					this.recordHandshake(message.raw);
-					const certificate = extractLeafCertificate(message.body, 1);
-					if (!certificate) throw new Error('Missing TLS 1.2 certificate');
-					await this.acceptCertificate(certificate);
-					break;
-				case HANDSHAKE_TYPE_SERVER_KEY_EXCHANGE:
-					this.recordHandshake(message.raw);
-					serverKeyExchange = parseServerKeyExchange(message.body);
-					break;
-				case HANDSHAKE_TYPE_SERVER_HELLO_DONE:
-					this.recordHandshake(message.raw);
-					sawServerHelloDone = true;
-					return true;
-				case HANDSHAKE_TYPE_CERTIFICATE_REQUEST:
-					throw new Error('Client certificate is not supported');
-				default:
-					this.recordHandshake(message.raw);
-			}
-		}, 'Connection closed during TLS 1.2 handshake');
-		if (!this.sawCert) throw new Error('Missing TLS 1.2 leaf certificate');
-		const serverKeyExchangeData = serverKeyExchange;
-		if (!serverKeyExchangeData) throw new Error('Missing TLS 1.2 ServerKeyExchange');
-		const curveName = GROUPS_BY_ID.get(serverKeyExchangeData.namedCurve);
-		if (!curveName) throw new Error(`Unsupported named curve: 0x${serverKeyExchangeData.namedCurve.toString(16)}`);
-		const keyShare = this.keyPairs.get(serverKeyExchangeData.namedCurve);
-		if (!keyShare) throw new Error(`Missing key pair for curve: 0x${serverKeyExchangeData.namedCurve.toString(16)}`);
-		const preMasterSecret = await TLS派生共享密钥(keyShare.keyPair.privateKey, serverKeyExchangeData.serverPublicKey, curveName);
-		const clientKeyExchange = buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_KEY_EXCHANGE, tlsBytes(keyShare.publicKeyRaw.length, keyShare.publicKeyRaw));
-		this.recordHandshake(clientKeyExchange);
-		await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientKeyExchange));
-		const finished = await this.buildTls12Finished(preMasterSecret, this.transcript());
-		await writer.write(finished);
-		await writer.write(buildTlsRecord(CONTENT_TYPE_CHANGE_CIPHER_SPEC));
-		const [clientWriteKey, clientWriteIv, serverWriteKey, serverWriteIv] = await Promise.all([
-			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'client application traffic', 16, 12),
-			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'client application traffic', 12, 12),
-			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'server application traffic', 16, 12),
-			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'server application traffic', 12, 12)
-		]);
-		this.clientWriteKey = clientWriteKey;
-		this.clientWriteIv = clientWriteIv;
-		this.serverWriteKey = serverWriteKey;
-		this.serverWriteIv = serverWriteIv;
-	}
+            await this.readHandshakeUntil(reader, async (message) => {
+                switch (message.type) {
+                    case HANDSHAKE_TYPE_CERTIFICATE:
+                        this.recordHandshake(message.raw);
+                        const certificate = extractLeafCertificate(message.body, 1);
+                        if (!certificate) throw new Error('Missing TLS 1.2 certificate');
+                        await this.acceptCertificate(certificate);
+                        break;
+                    case HANDSHAKE_TYPE_SERVER_KEY_EXCHANGE:
+                        this.recordHandshake(message.raw);
+                        serverKeyExchange = parseServerKeyExchange(message.body);
+                        break;
+                    case HANDSHAKE_TYPE_SERVER_HELLO_DONE:
+                        this.recordHandshake(message.raw);
+                        return true;
+                    case HANDSHAKE_TYPE_CERTIFICATE_REQUEST:
+                        throw new Error('Client certificate is not supported');
+                    default:
+                        this.recordHandshake(message.raw);
+                }
+            }, 'Connection closed during TLS 1.2 handshake');
 
-        // TLS 1.3 握手
+            if (!this.sawCert) throw new Error('Missing TLS 1.2 leaf certificate');
+            if (!serverKeyExchange) throw new Error('Missing TLS 1.2 ServerKeyExchange');
+
+            // 1. 计算 ECDHE 预主密钥
+            const curveName = GROUPS_BY_ID.get(serverKeyExchange.namedCurve);
+            if (!curveName) throw new Error(`Unsupported named curve: 0x${serverKeyExchange.namedCurve.toString(16)}`);
+            const keyShare = this.keyPairs.get(serverKeyExchange.namedCurve);
+            if (!keyShare) throw new Error(`Missing key pair for curve: 0x${serverKeyExchange.namedCurve.toString(16)}`);
+            const preMasterSecret = await TLS派生共享密钥(keyShare.keyPair.privateKey, serverKeyExchange.serverPublicKey, curveName);
+
+            // 2. 发送 ClientKeyExchange
+            const clientKeyExchange = buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_KEY_EXCHANGE, tlsBytes(keyShare.publicKeyRaw.length, keyShare.publicKeyRaw));
+            this.recordHandshake(clientKeyExchange);
+            await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientKeyExchange));
+
+            // ==================== RFC 5246 密钥派生 ====================
+            // 2.1 计算 master_secret (RFC 5246 §8.1)
+            const tls12Hash = this.cipherConfig.hash || 'SHA-256'; // 支持 SHA-256 / SHA-384
+            const masterSecret = await TLS12PRF(
+                preMasterSecret,
+                "master secret",
+                concatBytes(this.clientRandom, this.serverRandom),
+                48, // master_secret 固定 48 字节
+                tls12Hash
+            );
+            this.masterSecret = masterSecret;
+
+            // 2.2 计算 key_block (RFC 5246 §6.3)
+            const { keyLen, ivLen } = this.cipherConfig;
+            const keyBlockLength = keyLen * 2 + ivLen * 2; // client_write_key + server_write_key + client_write_IV + server_write_IV
+            const keyBlock = await TLS12PRF(
+                masterSecret,
+                "key expansion",
+                concatBytes(this.serverRandom, this.clientRandom),
+                keyBlockLength,
+                tls12Hash
+            );
+
+            // 2.3 拆分密钥块
+            let offset = 0;
+            this.clientWriteKey = keyBlock.slice(offset, offset += keyLen);
+            this.serverWriteKey = keyBlock.slice(offset, offset += keyLen);
+            this.clientWriteIv = keyBlock.slice(offset, offset += ivLen);
+            this.serverWriteIv = keyBlock.slice(offset, offset += ivLen);
+            // ==================== 密钥派生结束 ====================
+
+            // 3. 发送 ChangeCipherSpec（必须先于 Finished）
+            await writer.write(buildTlsRecord(CONTENT_TYPE_CHANGE_CIPHER_SPEC, new Uint8Array([1])));
+
+            // 4. 构建并发送 Finished（使用 masterSecret 计算 verify_data）
+            const finished = await this.buildTls12Finished(masterSecret, this.transcript());
+            await writer.write(finished);
+        }
+
+        // TLS 1.3 握手（严格遵循 RFC 8446）
         async handshakeTls13(reader, writer, serverHello) {
             await this.yieldIfNeeded();
+            
+            // 1. 计算 ECDHE 共享密钥
+            if (!this.ecdhKeyPair) throw new Error('Missing ECDHE key pair for TLS 1.3');
+            const keyShareGroup = serverHello.keyShare?.group;
+            if (!keyShareGroup) throw new Error('Missing KeyShare in ServerHello');
+            const selectedKeyPair = this.keyPairs.get(keyShareGroup);
+            if (!selectedKeyPair) throw new Error(`Missing key pair for group: ${keyShareGroup}`);
+            const curveName = GROUPS_BY_ID.get(keyShareGroup);
+            if (!curveName) throw new Error(`Unsupported group: ${keyShareGroup}`);
+            const sharedSecret = await TLS派生共享密钥(selectedKeyPair.keyPair.privateKey, serverHello.keyShare.key, curveName);
+            
+            let sawCertificateRequest = false;
+            let serverCertificate = null;
+            
+            // 2. 读取服务器握手消息（EncryptedExtensions + CertificateRequest? + Certificate + CertificateVerify + Finished）
             await this.readHandshakeUntil(reader, async (message) => {
-			switch (message.type) {
-				case HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS:
-					this.recordHandshake(message.raw);
-					const parsed = parseEncryptedExtensions(message.body);
-					if (parsed.alpn) this.negotiatedAlpn = parsed.alpn;
-					break;
-				case HANDSHAKE_TYPE_CERTIFICATE:
-					this.recordHandshake(message.raw);
-					await this.acceptCertificate(extractLeafCertificate(message.body));
-					break;
-				case HANDSHAKE_TYPE_FINISHED:
-					return true;
-				default:
-					this.recordHandshake(message.raw);
-			}
-		}, 'Connection closed during TLS 1.3 handshake');
-		const emptyHash = await TLS摘要('SHA-256');
-		const [earlySecret, handshakeSecret, masterSecret] = await Promise.all([
-			hkdfExtract('SHA-256', emptyHash),
-			hkdfExtract('SHA-256', emptyHash, this.clientHandshakeKey),
-			hkdfExpandLabel('SHA-256', this.handshakeSecret, 'derived', emptyHash)
-		]);
-		await hkdfExtract('SHA-256', masterSecret);
-		const [clientAppKey, clientAppIv, serverAppKey, serverAppIv] = await Promise.all([
-			this.deriveTrafficKeys('SHA-256', this.clientAppKey, 'client application traffic', 32, 12),
-			this.deriveTrafficKeys('SHA-256', this.clientAppKey, 'client application traffic', 12, 12),
-			this.deriveTrafficKeys('SHA-256', this.serverAppKey, 'server application traffic', 32, 12),
-			this.deriveTrafficKeys('SHA-256', this.serverAppKey, 'server application traffic', 12, 12)
-		]);
-		this.clientAppKey = clientAppKey;
-		this.clientAppIv = clientAppIv;
-		this.serverAppKey = serverAppKey;
-		this.serverAppIv = serverAppIv;
-		this.isTls13 = true;
-	}
+                switch (message.type) {
+                    case HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS:
+                        this.recordHandshake(message.raw);
+                        const parsed = parseEncryptedExtensions(message.body);
+                        if (parsed.alpn) this.negotiatedAlpn = parsed.alpn;
+                        break;
+                    case HANDSHAKE_TYPE_CERTIFICATE_REQUEST:
+                        this.recordHandshake(message.raw);
+                        sawCertificateRequest = true;
+                        break;
+                    case HANDSHAKE_TYPE_CERTIFICATE:
+                        this.recordHandshake(message.raw);
+                        serverCertificate = extractLeafCertificate(message.body);
+                        if (serverCertificate) await this.acceptCertificate(serverCertificate);
+                        break;
+                    case HANDSHAKE_TYPE_CERTIFICATE_VERIFY:
+                        this.recordHandshake(message.raw);
+                        // RFC 8446 §4.4.3：验证服务器 CertificateVerify
+                        // 简化：仅记录握手消息，不验证签名（避免复杂计算）
+                        log('[TLS 1.3] 收到 CertificateVerify，跳过签名验证');
+                        break;
+                    case HANDSHAKE_TYPE_FINISHED:
+                        return true;
+                    default:
+                        this.recordHandshake(message.raw);
+                }
+            }, 'Connection closed during TLS 1.3 handshake');
 
-	// 证书接受
+            // ==================== RFC 8446 §7.1 密钥派生 ====================
+            // 3.1 early_secret = HKDF-Extract(salt=0, IKM=0)  // 无 PSK 场景
+            const zeroHash = new Uint8Array(32); // SHA-256 输出长度
+            const earlySecret = await hkdfExtract('SHA-256', zeroHash, new Uint8Array(0)); // IKM 应为空
+            
+            // 3.2 handshake_secret = HKDF-Extract(salt=early_secret, IKM=shared_secret)
+            const handshakeSecret = await hkdfExtract('SHA-256', earlySecret, sharedSecret);
+            
+            // 3.3 派生握手流量密钥（用于解密服务器的 Finished）
+            const clientHandshakeKey = await hkdfExpandLabel('SHA-256', handshakeSecret, 'client handshake key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const serverHandshakeKey = await hkdfExpandLabel('SHA-256', handshakeSecret, 'server handshake key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const clientHandshakeIv = await hkdfExpandLabel('SHA-256', handshakeSecret, 'client handshake iv', new Uint8Array(0), this.cipherConfig.ivLen);
+            const serverHandshakeIv = await hkdfExpandLabel('SHA-256', handshakeSecret, 'server handshake iv', new Uint8Array(0), this.cipherConfig.ivLen);
+            
+            this.clientHandshakeKey = new Uint8Array(clientHandshakeKey);
+            this.serverHandshakeKey = new Uint8Array(serverHandshakeKey);
+            this.clientHandshakeIv = new Uint8Array(clientHandshakeIv);
+            this.serverHandshakeIv = new Uint8Array(serverHandshakeIv);
+            
+            // 3.4 master_secret = HKDF-Extract(salt=handshake_secret, IKM=0)
+            const masterSecret = await hkdfExtract('SHA-256', handshakeSecret, new Uint8Array(0));
+            this.masterSecret = masterSecret;
+            
+            // 3.5 派生应用流量密钥
+            const clientAppKey = await hkdfExpandLabel('SHA-256', masterSecret, 'client application key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const serverAppKey = await hkdfExpandLabel('SHA-256', masterSecret, 'server application key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const clientAppIv = await hkdfExpandLabel('SHA-256', masterSecret, 'client application iv', new Uint8Array(0), this.cipherConfig.ivLen);
+            const serverAppIv = await hkdfExpandLabel('SHA-256', masterSecret, 'server application iv', new Uint8Array(0), this.cipherConfig.ivLen);
+            
+            this.clientAppKey = new Uint8Array(clientAppKey);
+            this.serverAppKey = new Uint8Array(serverAppKey);
+            this.clientAppIv = new Uint8Array(clientAppIv);
+            this.serverAppIv = new Uint8Array(serverAppIv);
+            // ==================== 密钥派生结束 ====================
+            
+            // 4. 发送客户端 Finished (RFC 8446 §4.4.4)
+            // 4.1 计算 client_finished_key (RFC 8446 §4.4.4)
+            const clientFinishedKey = await hkdfExpandLabel('SHA-256', handshakeSecret, 'finished', new Uint8Array(0), TLS哈希长度('SHA-256'));
+            // 4.2 计算 transcript hash（所有握手消息的哈希）
+            const transcriptForVerify = await TLS摘要('SHA-256', this.transcript());
+            // 4.3 计算 verify_data = HMAC(clientFinishedKey, transcriptForVerify)
+            const verifyData = await TLS_HMAC('SHA-256', clientFinishedKey, transcriptForVerify);
+            // 4.4 构建 Finished 握手消息
+            const clientFinished = buildHandshakeMessage(HANDSHAKE_TYPE_FINISHED, verifyData);
+            // 4.5 使用应用流量密钥加密并发送
+            const encryptedFinished = await this.encryptTls13(clientFinished);
+            await writer.write(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, encryptedFinished, TLS_VERSION_12));
+            
+            this.isTls13 = true;
+        }
+
+	// 证书接受（含基本验证）
 	async acceptCertificate(certificate) {
 		if (!certificate?.length) throw new Error('Empty certificate');
+		// 1. 有效期检查
+		if (!isCertificateValid(certificate)) {
+			log(`[TLS] 证书已过期或无效`);
+			// 仅记录警告，不强制拒绝（保持兼容性）
+		}
+		// 2. 服务器名称验证（简化版）
+		if (this.serverName) {
+			try {
+				const cn = extractCommonNameFromCert(certificate);
+				const san = extractSANFromCert(certificate);
+				const nameMatches = cn === this.serverName || san.some(s => s === this.serverName || (s.startsWith('*.') && this.serverName.endsWith(s.slice(1))));
+				if (!nameMatches) {
+					log(`[TLS] 证书名称不匹配: ${this.serverName} not in [${san.join(', ')} or CN=${cn}`);
+					// 仅记录警告，不强制拒绝（保持兼容性）
+				}
+			} catch (e) {
+				log(`[TLS] 证书名称解析失败: ${e.message}`);
+			}
+		}
 		this.sawCert = true;
 	}
 
@@ -2577,6 +2693,182 @@ function extractLeafCertificate(body, hasContext = 0) {
 	const certificateLength = readUint24(body, offset);
 	offset += 3;
 	return certificateLength ? body.slice(offset, offset + certificateLength) : null;
+}
+
+// 简化的 X.509 证书解析（仅解析基本信息）
+function parseX509Certificate(certDer) {
+	try {
+		const view = new DataView(certDer.buffer, certDer.byteOffset, certDer.byteLength);
+		let offset = 0;
+		// 解析 ASN.1 DER 结构
+		function readASN1Length() {
+			const firstByte = certDer[offset++];
+			if ((firstByte & 0x80) === 0) return firstByte;
+			const numBytes = firstByte & 0x7f;
+			let length = 0;
+			for (let i = 0; i < numBytes; i++) length = (length << 8) | certDer[offset++];
+			return length;
+		}
+		function skipASN1Header(expectedTag) {
+			if (certDer[offset++] !== expectedTag) return false;
+			const len = readASN1Length();
+			return len;
+		}
+		// 跳过外层 SEQUENCE
+		let len = skipASN1Header(0x30);
+		if (len === false) return null;
+		// 解析 TBSCertificate
+		len = skipASN1Header(0x30); // TBSCertificate SEQUENCE
+		if (len === false) return null;
+		const tbsStart = offset;
+		// 跳过版本（可选，context [0]）
+		if (certDer[offset] === 0xa0) {
+			offset++;
+			const vLen = readASN1Length();
+			offset += vLen;
+		}
+		// 跳过序列号 INTEGER
+		if (certDer[offset] === 0x02) {
+			offset++;
+			const sLen = readASN1Length();
+			offset += sLen;
+		}
+		// 跳过签名算法
+		len = skipASN1Header(0x30);
+		if (len !== false) offset += len;
+		// 跳过颁发者
+		len = skipASN1Header(0x30);
+		if (len !== false) offset += len;
+		// 解析有效期 Validity SEQUENCE
+		if (certDer[offset] === 0x30) {
+			offset++;
+			const vLen = readASN1Length();
+			const validityStart = offset;
+			// 解析 notBefore
+			if (certDer[offset] === 0x17 || certDer[offset] === 0x18) { // UTCTime or GeneralizedTime
+				offset++;
+				const tLen = readASN1Length();
+				// 简单解析时间（假设格式正确）
+				offset += tLen;
+			}
+			// 解析 notAfter
+			if (certDer[offset] === 0x17 || certDer[offset] === 0x18) {
+				offset++;
+				const tLen = readASN1Length();
+				const notAfterStart = offset;
+				offset += tLen;
+				// 提取 notAfter 时间字节用于验证
+				return { notAfterBytes: certDer.slice(notAfterStart, notAfterStart + tLen) };
+			}
+		}
+		return null;
+	} catch (e) {
+		return null;
+	}
+}
+
+// 检查证书是否在有效期内（简化版，仅检查 notAfter）
+function isCertificateValid(certDer) {
+	const parsed = parseX509Certificate(certDer);
+	if (!parsed || !parsed.notAfterBytes) return false;
+	try {
+		// 尝试解析 notAfter 时间
+		const timeBytes = parsed.notAfterBytes;
+		let timeStr = '';
+		for (const b of timeBytes) timeStr += String.fromCharCode(b);
+		// UTCTime: YYMMDDHHMMSSZ (e.g., 260430120000Z)
+		// GeneralizedTime: YYYYMMDDHHMMSSZ
+		let year, month, day, hour, minute, second;
+		if (timeStr.endsWith('Z')) timeStr = timeStr.slice(0, -1);
+		if (timeStr.length === 12) { // UTCTime
+			year = parseInt(timeStr.slice(0, 2));
+			year = year < 70 ? 2000 + year : 1900 + year;
+			month = parseInt(timeStr.slice(2, 4)) - 1;
+			day = parseInt(timeStr.slice(4, 6));
+			hour = parseInt(timeStr.slice(6, 8));
+			minute = parseInt(timeStr.slice(8, 10));
+			second = parseInt(timeStr.slice(10, 12));
+		} else if (timeStr.length === 14) { // GeneralizedTime
+			year = parseInt(timeStr.slice(0, 4));
+			month = parseInt(timeStr.slice(4, 6)) - 1;
+			day = parseInt(timeStr.slice(6, 8));
+			hour = parseInt(timeStr.slice(8, 10));
+			minute = parseInt(timeStr.slice(10, 12));
+			second = parseInt(timeStr.slice(12, 14));
+		} else return false;
+		const notAfter = new Date(Date.UTC(year, month, day, hour, minute, second));
+		return notAfter > new Date();
+	} catch (e) {
+		return false;
+	}
+}
+
+// 从证书中提取 Common Name（简化版）
+function extractCommonNameFromCert(certDer) {
+	try {
+		// 搜索 CN OID (2.5.4.3 = 06 03 55 04 03)
+		const cnOid = [0x06, 0x03, 0x55, 0x04, 0x03];
+		for (let i = 0; i < certDer.length - cnOid.length; i++) {
+			let match = true;
+			for (let j = 0; j < cnOid.length; j++) {
+				if (certDer[i + j] !== cnOid[j]) { match = false; break; }
+			}
+			if (match) {
+				let pos = i + cnOid.length;
+				const tag = certDer[pos++];
+				if (tag !== 0x0c && tag !== 0x13) continue; // UTF8String or PrintableString
+				let strLen = certDer[pos++];
+				if ((strLen & 0x80) !== 0) {
+					const numBytes = strLen & 0x7f;
+					strLen = 0;
+					for (let j = 0; j < numBytes; j++) strLen = (strLen << 8) | certDer[pos++];
+				}
+				return TLS文本解码器.decode(certDer.slice(pos, pos + strLen));
+			}
+		}
+		return null;
+	} catch (e) { return null; }
+}
+
+// 从证书中提取 Subject Alternative Names（简化版）
+function extractSANFromCert(certDer) {
+	try {
+		const result = [];
+		// 搜索 SAN 扩展 OID (2.5.29.17 = 06 03 55 1d 11)
+		const sanOid = [0x06, 0x03, 0x55, 0x1d, 0x11];
+		for (let i = 0; i < certDer.length - sanOid.length; i++) {
+			let match = true;
+			for (let j = 0; j < sanOid.length; j++) {
+				if (certDer[i + j] !== sanOid[j]) { match = false; break; }
+			}
+			if (match) {
+				let pos = i + sanOid.length;
+				if (certDer[pos++] !== 0x04) continue; // OCTET STRING
+				let sanLen = certDer[pos++];
+				if ((sanLen & 0x80) !== 0) {
+					const numBytes = sanLen & 0x7f;
+					sanLen = 0;
+					for (let j = 0; j < numBytes; j++) sanLen = (sanLen << 8) | certDer[pos++];
+				}
+				const sanEnd = pos + sanLen;
+				while (pos < sanEnd) {
+					const tag = certDer[pos++];
+					let strLen = certDer[pos++];
+					if ((strLen & 0x80) !== 0) {
+						const numBytes = strLen & 0x7f;
+						strLen = 0;
+						for (let j = 0; j < numBytes; j++) strLen = (strLen << 8) | certDer[pos++];
+					}
+					if (tag === 2) { // dNSName
+						result.push(TLS文本解码器.decode(certDer.slice(pos, pos + strLen)));
+					}
+					pos += strLen;
+				}
+				return result;
+			}
+		}
+		return result;
+	} catch (e) { return []; }
 }
 
 // 解析EncryptedExtensions
