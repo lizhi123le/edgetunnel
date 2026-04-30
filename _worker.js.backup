@@ -3557,9 +3557,6 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     };
     
     let clash_yaml = Clash_原始订阅内容.replace(/mode:\s*Rule\b/g, 'mode: rule');
-    let patchYieldTime = performance.now();
-    const dynamicYield = async () => { if (performance.now() - patchYieldTime > 5) { await new Promise(r => setTimeout(r, 0)); patchYieldTime = performance.now(); } };
-    
     // 基础 DNS 配置块（不含 nameserver-policy）
     const baseDnsBlock = `dns:
   enable: true
