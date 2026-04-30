@@ -419,8 +419,12 @@ export default {
                                 }
                                 const 优选API = [], 优选IP = [], 其他节点 = [];
                                 let lastYieldTime = performance.now();
+                                let ipCount = 0;
                                 for (const 元素 of 完整优选列表) {
-                                    if (performance.now() - lastYieldTime > 5) { await new Promise(r => setTimeout(r, 0)); lastYieldTime = performance.now(); }
+                                    if (++ipCount % 100 === 0 || performance.now() - lastYieldTime > 5) {
+                                        await new Promise(r => setTimeout(r, 0));
+                                        lastYieldTime = performance.now();
+                                    }
                                     if (元素.toLowerCase().startsWith('sub://')) {
                                         优选API.push(元素);
                                     } else {
@@ -1241,32 +1245,37 @@ async function 处理WS请求(request, yourUUID, url) {
 							const 初始化成功 = await 初始化入站解密状态();
 							if (!初始化成功) return [];
 						}
-						const plaintextChunks = [];
-						while (true) {
-							if (入站状态.waitPayloadLength === null) {
-								const lengthCipherTotalLength = 2 + SSAEAD标签长度;
-								if (入站状态.buffer.byteLength < lengthCipherTotalLength) break;
-								const lengthCipher = 入站状态.buffer.subarray(0, lengthCipherTotalLength);
-								入站状态.buffer = 入站状态.buffer.subarray(lengthCipherTotalLength);
-								const lengthPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, lengthCipher);
-								if (lengthPlain.byteLength !== 2) throw new Error('SS length decrypt failed');
-								const payloadLength = (lengthPlain[0] << 8) | lengthPlain[1];
-								if (payloadLength < 0 || payloadLength > 入站状态.加密配置.maxChunk) throw new Error(`SS payload length invalid: ${payloadLength}`);
-								入站状态.waitPayloadLength = payloadLength;
-							}
-							const payloadCipherTotalLength = 入站状态.waitPayloadLength + SSAEAD标签长度;
-							if (入站状态.buffer.byteLength < payloadCipherTotalLength) break;
-							const payloadCipher = 入站状态.buffer.subarray(0, payloadCipherTotalLength);
-							入站状态.buffer = 入站状态.buffer.subarray(payloadCipherTotalLength);
-							const payloadPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, payloadCipher);
-							plaintextChunks.push(payloadPlain); 入站状态.waitPayloadLength = null;
-
-							入站状态.cpuYieldByteCounter += payloadCipherTotalLength;
-							if (入站状态.cpuYieldByteCounter >= 131072) {
-								入站状态.cpuYieldByteCounter = 0;
-								await new Promise(r => setTimeout(r, 0));
-							}
+					const plaintextChunks = [];
+					let packetCount = 0;
+					while (true) {
+						if (入站状态.waitPayloadLength === null) {
+							const lengthCipherTotalLength = 2 + SSAEAD标签长度;
+							if (入站状态.buffer.byteLength < lengthCipherTotalLength) break;
+							const lengthCipher = 入站状态.buffer.subarray(0, lengthCipherTotalLength);
+							入站状态.buffer = 入站状态.buffer.subarray(lengthCipherTotalLength);
+							const lengthPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, lengthCipher);
+							if (lengthPlain.byteLength !== 2) throw new Error('SS length decrypt failed');
+							const payloadLength = (lengthPlain[0] << 8) | lengthPlain[1];
+							if (payloadLength < 0 || payloadLength > 入站状态.加密配置.maxChunk) throw new Error(`SS payload length invalid: ${payloadLength}`);
+							入站状态.waitPayloadLength = payloadLength;
 						}
+						const payloadCipherTotalLength = 入站状态.waitPayloadLength + SSAEAD标签长度;
+						if (入站状态.buffer.byteLength < payloadCipherTotalLength) break;
+						const payloadCipher = 入站状态.buffer.subarray(0, payloadCipherTotalLength);
+						入站状态.buffer = 入站状态.buffer.subarray(payloadCipherTotalLength);
+						const payloadPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, payloadCipher);
+						plaintextChunks.push(payloadPlain); 入站状态.waitPayloadLength = null;
+						
+						入站状态.cpuYieldByteCounter += payloadCipherTotalLength;
+						packetCount++;
+						
+						// 动态让出：每10个小包 或 累计128KB
+						if (packetCount % 10 === 0 || 入站状态.cpuYieldByteCounter >= 131072) {
+							await new Promise(r => setTimeout(r, 0));
+							入站状态.cpuYieldByteCounter = 0;
+							packetCount = 0;
+						}
+					}
 						return plaintextChunks;
 					},
 				};
@@ -1951,10 +1960,14 @@ async function ChaCha20Block(key, counter, nonce) {
         const nonceView = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
         state[13] = nonceView.getUint32(0, true), state[14] = nonceView.getUint32(4, true), state[15] = nonceView.getUint32(8, true);
         const workingState = new Uint32Array(state);
+        let lastChaChaYield = performance.now();
         for (let round = 0; round < 10; round++) {
             ChaCha20QuarterRound(workingState, 0, 4, 8, 12), ChaCha20QuarterRound(workingState, 1, 5, 9, 13), ChaCha20QuarterRound(workingState, 2, 6, 10, 14), ChaCha20QuarterRound(workingState, 3, 7, 11, 15);
             ChaCha20QuarterRound(workingState, 0, 5, 10, 15), ChaCha20QuarterRound(workingState, 1, 6, 11, 12), ChaCha20QuarterRound(workingState, 2, 7, 8, 13), ChaCha20QuarterRound(workingState, 3, 4, 9, 14);
-            if (round % 5 === 4) await new Promise(r => setTimeout(r, 0));
+            if (performance.now() - lastChaChaYield > 2) {
+                await new Promise(r => setTimeout(r, 0));
+                lastChaChaYield = performance.now();
+            }
         }
         for (let wordIndex = 0; wordIndex < 16; wordIndex++) workingState[wordIndex] = workingState[wordIndex] + state[wordIndex] >>> 0;
         return new Uint8Array(workingState.buffer.slice(0));
@@ -1986,26 +1999,30 @@ async function ChaCha20XOR(key, nonce, data) {
                 0x3ffffffn & BigInt(rKey[9] >> 6 | rKey[10] << 2 | rKey[11] << 10 | rKey[12] << 18),
                 0x3ffffffn & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
             ];
-            let blockCount = 0;
-            for (let offset = 0; offset < message.length; offset += 16) {
-                if (++blockCount % 10 === 0) await new Promise(r => setTimeout(r, 0));
-                const chunk = message.slice(offset, offset + 16);
-                const paddedChunk = new Uint8Array(17);
-                paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
-                accumulator[0] += BigInt(paddedChunk[0] | paddedChunk[1] << 8 | paddedChunk[2] << 16 | (3 & paddedChunk[3]) << 24);
-                accumulator[1] += BigInt(paddedChunk[3] >> 2 | paddedChunk[4] << 6 | paddedChunk[5] << 14 | (15 & paddedChunk[6]) << 22);
-                accumulator[2] += BigInt(paddedChunk[6] >> 4 | paddedChunk[7] << 4 | paddedChunk[8] << 12 | (63 & paddedChunk[9]) << 20);
-                accumulator[3] += BigInt(paddedChunk[9] >> 6 | paddedChunk[10] << 2 | paddedChunk[11] << 10 | paddedChunk[12] << 18);
-                accumulator[4] += BigInt(paddedChunk[13] | paddedChunk[14] << 8 | paddedChunk[15] << 16 | paddedChunk[16] << 24);
-                const product = [0n, 0n, 0n, 0n, 0n];
-                for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
-                    const limbIndex = accIndex + rIndex;
-                    limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
-                }
-                let carry = 0n;
-                for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
-                accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
-            }
+let blockCount = 0;
+let lastYieldTime = performance.now();
+for (let offset = 0; offset < message.length; offset += 16) {
+    if (++blockCount % 2 === 0 || performance.now() - lastYieldTime > 5) {
+        await new Promise(r => setTimeout(r, 0));
+        lastYieldTime = performance.now();
+    }
+    const chunk = message.slice(offset, offset + 16);
+    const paddedChunk = new Uint8Array(17);
+    paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
+    accumulator[0] += BigInt(paddedChunk[0] | paddedChunk[1] << 8 | paddedChunk[2] << 16 | (3 & paddedChunk[3]) << 24);
+    accumulator[1] += BigInt(paddedChunk[3] >> 2 | paddedChunk[4] << 6 | paddedChunk[5] << 14 | (15 & paddedChunk[6]) << 22);
+    accumulator[2] += BigInt(paddedChunk[6] >> 4 | paddedChunk[7] << 4 | paddedChunk[8] << 12 | (63 & paddedChunk[9]) << 20);
+    accumulator[3] += BigInt(paddedChunk[9] >> 6 | paddedChunk[10] << 2 | paddedChunk[11] << 10 | paddedChunk[12] << 18);
+    accumulator[4] += BigInt(paddedChunk[13] | paddedChunk[14] << 8 | paddedChunk[15] << 16 | paddedChunk[16] << 24);
+    const product = [0n, 0n, 0n, 0n, 0n];
+    for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
+        const limbIndex = accIndex + rIndex;
+        limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
+    }
+    let carry = 0n;
+    for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
+    accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
+}
             let tagValue = accumulator[0] | accumulator[1] << 26n | accumulator[2] << 52n | accumulator[3] << 78n | accumulator[4] << 104n;
             tagValue = tagValue + sKey.reduce(((total, byte, index) => total + (BigInt(byte) << BigInt(8 * index))), 0n) & (1n << 128n) - 1n;
             const tag = new Uint8Array(16);
@@ -3540,7 +3557,9 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     };
     
     let clash_yaml = Clash_原始订阅内容.replace(/mode:\s*Rule\b/g, 'mode: rule');
-
+    let patchYieldTime = performance.now();
+    const dynamicYield = async () => { if (performance.now() - patchYieldTime > 5) { await new Promise(r => setTimeout(r, 0)); patchYieldTime = performance.now(); } };
+    
     // 基础 DNS 配置块（不含 nameserver-policy）
     const baseDnsBlock = `dns:
   enable: true
@@ -3639,6 +3658,9 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     while (i < lines.length) {
         const line = lines[i];
         const trimmedLine = line.trim();
+        
+        // 动态让出CPU
+        await dynamicYield();
 
         // 处理行格式（Flow）：- {name: ..., uuid: ..., ...}
         if (trimmedLine.startsWith('- {') && (trimmedLine.includes('uuid:') || trimmedLine.includes('password:'))) {
