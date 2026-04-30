@@ -2799,63 +2799,6 @@ function parseX509Certificate(certDer) {
 		return null;
 	}
 }
-		function skipASN1Header(expectedTag) {
-			if (certDer[offset++] !== expectedTag) return false;
-			const len = readASN1Length();
-			return len;
-		}
-		// 跳过外层 SEQUENCE
-		let len = skipASN1Header(0x30);
-		if (len === false) return null;
-		// 解析 TBSCertificate
-		len = skipASN1Header(0x30); // TBSCertificate SEQUENCE
-		if (len === false) return null;
-		const tbsStart = offset;
-		// 跳过版本（可选，context [0]）
-		if (certDer[offset] === 0xa0) {
-			offset++;
-			const vLen = readASN1Length();
-			offset += vLen;
-		}
-		// 跳过序列号 INTEGER
-		if (certDer[offset] === 0x02) {
-			offset++;
-			const sLen = readASN1Length();
-			offset += sLen;
-		}
-		// 跳过签名算法
-		len = skipASN1Header(0x30);
-		if (len !== false) offset += len;
-		// 跳过颁发者
-		len = skipASN1Header(0x30);
-		if (len !== false) offset += len;
-		// 解析有效期 Validity SEQUENCE
-		if (certDer[offset] === 0x30) {
-			offset++;
-			const vLen = readASN1Length();
-			const validityStart = offset;
-			// 解析 notBefore
-			if (certDer[offset] === 0x17 || certDer[offset] === 0x18) { // UTCTime or GeneralizedTime
-				offset++;
-				const tLen = readASN1Length();
-				// 简单解析时间（假设格式正确）
-				offset += tLen;
-			}
-			// 解析 notAfter
-			if (certDer[offset] === 0x17 || certDer[offset] === 0x18) {
-				offset++;
-				const tLen = readASN1Length();
-				const notAfterStart = offset;
-				offset += tLen;
-				// 提取 notAfter 时间字节用于验证
-				return { notAfterBytes: certDer.slice(notAfterStart, notAfterStart + tLen) };
-			}
-		}
-		return null;
-	} catch (e) {
-		return null;
-	}
-}
 
 // 检查证书是否在有效期内（简化版，仅检查 notAfter）
 function isCertificateValid(certDer) {
