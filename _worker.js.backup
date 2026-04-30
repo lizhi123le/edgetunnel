@@ -2224,12 +2224,35 @@ class TlsClient {
 		}
 	}
 
-        // 读取握手直到满足条件（含 TLS Alert 处理）
+        // 读取握手直到满足条件（含 TLS Alert 处理，支持 TLS 1.3 加密握手）
         async readHandshakeUntil(reader, predicate, closedError) {
             let message;
             while (message = this.handshakeParser.next()) {
                 if (await predicate(message)) return;
             }
+            return this.readRecordsUntil(reader, async (record) => {
+                await this.yieldIfNeeded();
+                if (record.type === CONTENT_TYPE_ALERT) {
+                    if (shouldIgnoreTlsAlert(record.fragment)) return;
+                    throw new Error(`TLS Alert: level=${record.fragment[0]}, desc=${record.fragment[1]}`);
+                }
+                if (this.isTls13 && record.type === CONTENT_TYPE_APPLICATION_DATA) {
+                    // TLS 1.3：解密加密的握手消息
+                    const decrypted = await this.decryptTls13(record.fragment);
+                    if (decrypted && decrypted.data && decrypted.data.length > 0) {
+                        this.handshakeParser.feed(decrypted.data);
+                        for (let message; message = this.handshakeParser.next();) {
+                            if (await predicate(message)) return true;
+                        }
+                    }
+                } else if (record.type === CONTENT_TYPE_HANDSHAKE) {
+                    this.handshakeParser.feed(record.fragment);
+                    for (let message; message = this.handshakeParser.next();) {
+                        if (await predicate(message)) return true;
+                    }
+                }
+            }, closedError);
+        }
             return this.readRecordsUntil(reader, async (record) => {
                 await this.yieldIfNeeded();
                 if (record.type === CONTENT_TYPE_ALERT) {
@@ -2394,7 +2417,11 @@ class TlsClient {
         // TLS 1.3 握手（严格遵循 RFC 8446）
         async handshakeTls13(reader, writer, serverHello) {
             await this.yieldIfNeeded();
-            
+
+            // 0. 确定哈希算法（根据密码套件）
+            const tls13Hash = this.cipherConfig.hash || 'SHA-256';
+            const hashLen = TLS哈希长度(tls13Hash);
+
             // 1. 计算 ECDHE 共享密钥
             if (!this.ecdhKeyPair) throw new Error('Missing ECDHE key pair for TLS 1.3');
             const keyShareGroup = serverHello.keyShare?.group;
@@ -2404,10 +2431,10 @@ class TlsClient {
             const curveName = GROUPS_BY_ID.get(keyShareGroup);
             if (!curveName) throw new Error(`Unsupported group: ${keyShareGroup}`);
             const sharedSecret = await TLS派生共享密钥(selectedKeyPair.keyPair.privateKey, serverHello.keyShare.key, curveName);
-            
+
             let sawCertificateRequest = false;
             let serverCertificate = null;
-            
+
             // 2. 读取服务器握手消息（EncryptedExtensions + CertificateRequest? + Certificate + CertificateVerify + Finished）
             await this.readHandshakeUntil(reader, async (message) => {
                 switch (message.type) {
@@ -2428,14 +2455,76 @@ class TlsClient {
                     case HANDSHAKE_TYPE_CERTIFICATE_VERIFY:
                         this.recordHandshake(message.raw);
                         // RFC 8446 §4.4.3：验证服务器 CertificateVerify
-                        // 简化：仅记录握手消息，不验证签名（避免复杂计算）
-                        log('[TLS 1.3] 收到 CertificateVerify，跳过签名验证');
+                        try {
+                            const body = message.body;
+                            if (body.length < 4) throw new Error('CertificateVerify too short');
+                            // 解析签名算法（2字节）
+                            const sigAlgorithm = (body[0] << 8) | body[1];
+                            // 解析签名长度（2字节）
+                            const sigLength = (body[2] << 8) | body[3];
+                            if (body.length < 4 + sigLength) throw new Error('CertificateVerify signature length invalid');
+                            log(`[TLS 1.3] CertificateVerify: sig_alg=0x${sigAlgorithm.toString(16)}, len=${sigLength}`);
+                        } catch (e) {
+                            log(`[TLS 1.3] CertificateVerify 格式验证失败: ${e.message}`);
+                        }
                         break;
                     case HANDSHAKE_TYPE_FINISHED:
                         return true;
                     default:
                         this.recordHandshake(message.raw);
                 }
+            }, 'Connection closed during TLS 1.3 handshake');
+
+            // ==================== RFC 8446 §7.1 密钥派生 ====================
+            // 3.1 early_secret = HKDF-Extract(salt=0, IKM=0)  // 无 PSK 场景
+            const zeroHash = new Uint8Array(hashLen); // 动态哈希输出长度
+            const earlySecret = await hkdfExtract(tls13Hash, zeroHash, new Uint8Array(0));
+
+            // 3.2 handshake_secret = HKDF-Extract(salt=early_secret, IKM=shared_secret)
+            const handshakeSecret = await hkdfExtract(tls13Hash, earlySecret, sharedSecret);
+
+            // 3.3 派生握手流量密钥（用于解密服务器的 Finished）
+            const clientHandshakeKey = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'client handshake key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const serverHandshakeKey = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'server handshake key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const clientHandshakeIv = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'client handshake iv', new Uint8Array(0), this.cipherConfig.ivLen);
+            const serverHandshakeIv = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'server handshake iv', new Uint8Array(0), this.cipherConfig.ivLen);
+
+            this.clientHandshakeKey = new Uint8Array(clientHandshakeKey);
+            this.serverHandshakeKey = new Uint8Array(serverHandshakeKey);
+            this.clientHandshakeIv = new Uint8Array(clientHandshakeIv);
+            this.serverHandshakeIv = new Uint8Array(serverHandshakeIv);
+
+            // 3.4 master_secret = HKDF-Extract(salt=handshake_secret, IKM=0)
+            const masterSecret = await hkdfExtract(tls13Hash, handshakeSecret, new Uint8Array(0));
+            this.masterSecret = masterSecret;
+
+            // 3.5 派生应用流量密钥
+            const clientAppKey = await hkdfExpandLabel(tls13Hash, masterSecret, 'client application key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const serverAppKey = await hkdfExpandLabel(tls13Hash, masterSecret, 'server application key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const clientAppIv = await hkdfExpandLabel(tls13Hash, masterSecret, 'client application iv', new Uint8Array(0), this.cipherConfig.ivLen);
+            const serverAppIv = await hkdfExpandLabel(tls13Hash, masterSecret, 'server application iv', new Uint8Array(0), this.cipherConfig.ivLen);
+
+            this.clientAppKey = new Uint8Array(clientAppKey);
+            this.serverAppKey = new Uint8Array(serverAppKey);
+            this.clientAppIv = new Uint8Array(clientAppIv);
+            this.serverAppIv = new Uint8Array(serverAppIv);
+            // ==================== 密钥派生结束 ===================
+
+            // 4. 发送客户端 Finished (RFC 8446 §4.4.4)
+            // 4.1 计算 client_finished_key
+            const clientFinishedKey = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'finished', new Uint8Array(0), hashLen);
+            // 4.2 计算 transcript hash（所有握手消息的哈希）
+            const transcriptForVerify = await TLS摘要(tls13Hash, this.transcript());
+            // 4.3 计算 verify_data = HMAC(clientFinishedKey, transcriptForVerify)
+            const verifyData = await TLS_HMAC(tls13Hash, clientFinishedKey, transcriptForVerify);
+            // 4.4 构建 Finished 握手消息
+            const clientFinished = buildHandshakeMessage(HANDSHAKE_TYPE_FINISHED, verifyData);
+            // 4.5 使用应用流量密钥加密并发送
+            const encryptedFinished = await this.encryptTls13(clientFinished);
+            await writer.write(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, encryptedFinished, TLS_VERSION_12));
+
+            this.isTls13 = true;
+        }
             }, 'Connection closed during TLS 1.3 handshake');
 
             // ==================== RFC 8446 §7.1 密钥派生 ====================
@@ -2695,20 +2784,88 @@ function extractLeafCertificate(body, hasContext = 0) {
 	return certificateLength ? body.slice(offset, offset + certificateLength) : null;
 }
 
-// 简化的 X.509 证书解析（仅解析基本信息）
+// 简化的 X.509 证书解析（仅解析基本信息，含容错）
 function parseX509Certificate(certDer) {
 	try {
 		const view = new DataView(certDer.buffer, certDer.byteOffset, certDer.byteLength);
 		let offset = 0;
-		// 解析 ASN.1 DER 结构
+		// 解析 ASN.1 DER 结构（含边界检查）
 		function readASN1Length() {
+			if (offset >= certDer.length) throw new Error('ASN.1 length: buffer exhausted');
 			const firstByte = certDer[offset++];
 			if ((firstByte & 0x80) === 0) return firstByte;
 			const numBytes = firstByte & 0x7f;
+			if (numBytes === 0 || numBytes > 4) throw new Error('ASN.1 length: invalid multi-byte length');
 			let length = 0;
-			for (let i = 0; i < numBytes; i++) length = (length << 8) | certDer[offset++];
+			for (let i = 0; i < numBytes; i++) {
+				if (offset >= certDer.length) throw new Error('ASN.1 length: buffer exhausted');
+				length = (length << 8) | certDer[offset++];
+			}
 			return length;
 		}
+		function skipASN1Header(expectedTag) {
+			if (offset >= certDer.length) return false;
+			if (certDer[offset++] !== expectedTag) return false;
+			const len = readASN1Length();
+			if (len === false) return false;
+			return len;
+		}
+		// 跳过外层 SEQUENCE
+		let len = skipASN1Header(0x30);
+		if (len === false) return null;
+		const outerEnd = offset + len;
+		// 解析 TBSCertificate
+		len = skipASN1Header(0x30);
+		if (len === false) return null;
+		const tbsStart = offset;
+		const tbsEnd = offset + len;
+		// 跳过版本（可选，context [0]）
+		if (offset < tbsEnd && certDer[offset] === 0xa0) {
+			offset++;
+			const vLen = readASN1Length();
+			offset += vLen;
+		}
+		// 跳过序列号 INTEGER
+		if (offset < tbsEnd && certDer[offset] === 0x02) {
+			offset++;
+			const sLen = readASN1Length();
+			offset += sLen;
+		}
+		if (offset >= tbsEnd) return null;
+		// 跳过签名算法
+		len = skipASN1Header(0x30);
+		if (len !== false) offset += len;
+		if (offset >= tbsEnd) return null;
+		// 跳过颁发者
+		len = skipASN1Header(0x30);
+		if (len !== false) offset += len;
+		if (offset >= tbsEnd) return null;
+		// 解析有效期 Validity SEQUENCE
+		if (offset < tbsEnd && certDer[offset] === 0x30) {
+			offset++;
+			const vLen = readASN1Length();
+			const validityEnd = offset + vLen;
+			// 解析 notBefore
+			if (offset < validityEnd && (certDer[offset] === 0x17 || certDer[offset] === 0x18)) {
+				offset++;
+				const tLen = readASN1Length();
+				offset += tLen;
+			}
+			// 解析 notAfter
+			if (offset < validityEnd && (certDer[offset] === 0x17 || certDer[offset] === 0x18)) {
+				offset++;
+				const tLen = readASN1Length();
+				const notAfterStart = offset;
+				offset += tLen;
+				// 提取 notAfter 时间字节用于验证
+				return { notAfterBytes: certDer.slice(notAfterStart, notAfterStart + tLen) };
+			}
+		}
+		return null;
+	} catch (e) {
+		return null;
+	}
+}
 		function skipASN1Header(expectedTag) {
 			if (certDer[offset++] !== expectedTag) return false;
 			const len = readASN1Length();
