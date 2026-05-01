@@ -50,8 +50,9 @@ let 缓存userIDMD5 = null, 缓存加密秘钥 = null;
 // 修正严格模式下的变量未定义报错
 let cachedSocks5ListEnv;
 let cachedSocks5List;
-let SOCKS5白名单;
-let SOCKS5白名单正则;
+let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
+let SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
+let 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号, parsedSocks5Address;
 let Pages静态页面 = 'https://edt-pages.github.io';
 
 // 全局日志函数（使用 RequestContext 中的状态）
