@@ -53,7 +53,6 @@ let cachedSocks5List;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 let SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
 let 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号, parsedSocks5Address;
-let Pages静态页面 = 'https://edt-pages.github.io';
 
 // 全局日志函数（使用 RequestContext 中的状态）
 // 注意：全局调试日志打印已移除，统一使用 ctx2.调试日志打印
