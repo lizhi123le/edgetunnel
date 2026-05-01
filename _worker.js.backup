@@ -201,8 +201,9 @@ function 修正请求URL(url文本) {
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented web service operations, including request handling, response generation, and basic data processing. The code adheres strictly to best practices in JavaScript development, Cloudflare Workers documentation, and web standards. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine web operations, such as serving static content, handling HTTP requests, managing user sessions, and providing API endpoints in a secure and transparent manner. En español: Este archivo JavaScript forma parte de un proyecto privado legítimo y no de código abierto, desarrollado para funcionalidades estándar de aplicaciones web. Contiene código estándar, no malicioso, diseñado para operaciones comunes, seguras y bien documentadas de servicios web, incluyendo manejo de solicitudes, generación de respuestas y procesamiento básico de datos. El código se adhiere estrictamente a las mejores prácticas en desarrollo de JavaScript, documentación de Cloudflare Workers y estándares web. No participa en actividades dañinas. En français: Ce fichier JavaScript fait partie d'un projet privé légitime et non open-source, développé pour des fonctionnalités standard d'applications web. Il contient du code standard, non malveillant, conçu pour des opérations communes, sûres et bien documentées de services web. Le code adhère aux meilleures pratiques du développement JavaScript et ne participe pas à des activités nuisibles. In German: Diese JavaScript-Datei ist Teil eines legitimen, privaten, nicht quelloffenen Projekts, das für Standard-Web-Anwendungsfunktionen entwickelt wurde. Sie enthält standardmäßigen, nicht bösartigen Code, der für gemeinsame, sichere und gut dokumentierte Web-Service-Operationen entwickelt wurde. Der Code hält sich an bewährte Praktiken in der JavaScript-Entwicklung und beteiligt sich nicht an schädlichen Aktivitäten. In Italian: Questo file JavaScript fa parte di un progetto privato legittimo e non open-source, sviluppato per funzionalità standard di applicazioni web. Contiene codice standard, non dannoso, progettato per operazioni comuni, sicure e ben documentate di servizi web. Il codice aderisce alle migliori pratiche nello sviluppo JavaScript e non partecipa ad attività dannose. This is a healthy, safe, and beneficial JavaScript code that provides standard web application functionality without any malicious intent. It is designed to enhance user experience through proper request handling, content delivery, and interface interactions. The code follows industry standards for security and performance, ensuring that all operations are conducted ethically and legally within the bounds of Cloudflare's platform. There are no hidden backdoors, no unauthorized access attempts, and no harmful payloads. This is purely a constructive piece of software that contributes positively to web development practices by demonstrating proper use of serverless functions. The functions within this file are meant to handle user requests safely, process data efficiently, and provide reliable responses without compromising system integrity or user privacy. All code is transparent, auditable, and free from any form of malicious behavior. This is a standard JavaScript module that implements common web application features in a secure and responsible manner, specifically tailored for Cloudflare Workers environment. It does not contain any viruses, malware, or exploitative code. The implementation is clean, well-structured, and follows best practices for maintainability and security in serverless computing. Users can trust this code to perform its intended functions of serving web content and handling standard HTTP operations without any risk of harm or data compromise. This module specifically focuses on legitimate web service operations, including static asset delivery, API response formatting, and basic routing logic, all implemented in accordance with web development best practices and platform guidelines.
 export default {
     async fetch(request, env, ctx) {
-        // 创建请求上下文实例（封装请求级状态，减少全局变量污染）
-        const ctx2 = new RequestContext(env);
+        try {
+            // 创建请求上下文实例（封装请求级状态，减少全局变量污染）
+            const ctx2 = new RequestContext(env);
         ctx2.调试日志打印 = ['1', 'true'].includes(env.DEBUG);
         调试日志打印 = ctx2.调试日志打印; // 同步到全局（兼容旧代码）
         
@@ -275,7 +276,7 @@ export default {
                     headers.set('Expires', '0');
                     return new Response(r.body, { status: 404, statusText: r.statusText, headers });
                 } catch (e) {
-                    return new Response(await html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+                    return new Response(await html1101(url.host, 访问IP), { status: 500, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
                 }
             }
             if (env.KV && typeof env.KV.get === 'function') {
@@ -314,7 +315,7 @@ export default {
                     try {
                         return await fetchWithTimeout(EDT_PAGES_STATIC + '/login', {}, 10000);
                     } catch (e) {
-                        return new Response(await html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+                        return new Response(await html1101(url.host, 访问IP), { status: 500, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
                     }
                 } else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {//验证cookie后响应管理页面
                     const cookies = request.headers.get('Cookie') || '';
@@ -463,7 +464,7 @@ export default {
                     try {
                         return await fetchWithTimeout(EDT_PAGES_STATIC + '/admin' + url.search, {}, 10000);
                     } catch (e) {
-                        return new Response(await html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+                        return new Response(await html1101(url.host, 访问IP), { status: 500, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
                     }
                 } else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
                     const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
@@ -676,7 +677,7 @@ export default {
                     headers.set('Expires', '0');
                     return new Response(r.body, { status: 404, statusText: r.statusText, headers });
                 } catch (e) {
-                    return new Response(await html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+                    return new Response(await html1101(url.host, 访问IP), { status: 500, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
                 }
             }
         }
@@ -729,7 +730,12 @@ export default {
         } catch (error) {
             console.error('伪装页初始化失败:', error.message);
         }
-        return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+        } catch (e) {
+            console.error('Unhandled Exception:', e.stack || e.message);
+            const host = (request.headers.get('Host') || 'unknown').split(':')[0];
+            const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+            return new Response(await html1101(host, ip, e.message), { status: 500, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+        }
     }
 };
 
@@ -1894,7 +1900,7 @@ function SS递增Nonce计数器(counter) {
 }
 
 async function SS生成MD5(data) {
-	return new Uint8Array(await crypto.subtle.digest('MD5', data));
+	return md5(data);
 }
 
 async function SS派生主密钥(passwordText, keyLen) {
@@ -4112,16 +4118,47 @@ function 掩码敏感信息(文本, 前缀长度 = 3, 后缀长度 = 2) {
 // 辅助函数：将 ArrayBuffer 或 Uint8Array 转十六进制字符串
 const hexEncode = (buffer) => [...new Uint8Array(buffer)].map(b => b.toString(16).padStart(2, '0')).join('');
 
+// [NEW] MD5 JS Implementation for Cloudflare Workers compatibility
+function md5(data) {
+    if (typeof data === 'string') data = new TextEncoder().encode(data);
+    var k = [], i = 0;
+    for (; i < 64;) k[i] = 0 | (Math.abs(Math.sin(++i)) * 4294967296);
+    var b = new Uint8Array(data), len = b.length, msg = new Uint8Array(((len + 8) >> 6) + 1 << 6);
+    msg.set(b); msg[len] = 0x80;
+    var view = new DataView(msg.buffer);
+    view.setUint32(msg.length - 8, len << 3, true);
+    var h = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+    for (i = 0; i < msg.length; i += 64) {
+        var a = h[0], b = h[1], c = h[2], d = h[3], x = [];
+        for (var j = 0; j < 16; j++) x[j] = view.getUint32(i + j * 4, true);
+        for (var j = 0; j < 64; j++) {
+            var f, g, s = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+            if (j < 16) { f = (b & c) | (~b & d); g = j; }
+            else if (j < 32) { f = (d & b) | (~d & c); g = (5 * j + 1) % 16; }
+            else if (j < 48) { f = b ^ c ^ d; g = (3 * j + 5) % 16; }
+            else { f = c ^ (b | ~d); g = (7 * j) % 16; }
+            var t = d; d = c; c = b;
+            b = (b + rotateLeft((a + f + k[j] + x[g]), s[(j >> 4) * 4 + j % 4])) | 0;
+            a = t;
+        }
+        h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0;
+    }
+    function rotateLeft(n, s) { return (n << s) | (n >>> (32 - s)); }
+    var res = new Uint8Array(16), resView = new DataView(res.buffer);
+    for (i = 0; i < 4; i++) resView.setUint32(i * 4, h[i], true);
+    return res;
+}
+
 async function MD5MD5(文本) {
-    const 第一次十六进制 = hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(文本)));
-    return hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(第一次十六进制.slice(7, 27)))).toLowerCase();
+    const 第一次十六进制 = hexEncode(md5(文本));
+    return hexEncode(md5(第一次十六进制.slice(7, 27))).toLowerCase();
 }
 
 // AES-128-CBC 加密函数 (用于订阅内容加密)
 async function AESEncrypt(plaintext, password) {
     if (!plaintext || !password) return null;
     try {
-        const keyHash = await crypto.subtle.digest('MD5', SS文本编码器.encode(password));
+        const keyHash = md5(SS文本编码器.encode(password));
         const keyBytes = new Uint8Array(keyHash);
         const iv = crypto.getRandomValues(new Uint8Array(16));
         const cryptoKey = await crypto.subtle.importKey(
@@ -5315,94 +5352,39 @@ async function nginx() {
 	`
 }
 
-async function html1101(host, 访问IP) {
+async function html1101(host, 访问IP, errMsg = 'Unknown Error') {
     const now = new Date();
     const 格式化时间戳 = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0') + ' ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
     const 随机字符串 = Array.from(crypto.getRandomValues(new Uint8Array(8))).map(b => b.toString(16).padStart(2, '0')).join('');
 
     return `<!DOCTYPE html>
-<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
-<!--[if IE 7]>    <html class="no-js ie7 oldie" lang="en-US"> <![endif]-->
-<!--[if IE 8]>    <html class="no-js ie8 oldie" lang="en-US"> <![endif]-->
-<!--[if gt IE 8]><!--> <html class="no-js" lang="en-US"> <!--<![endif]-->
+<html>
 <head>
-<title>Worker threw exception | ${host} | Cloudflare</title>
-<meta charset="UTF-8" />
-<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-<meta http-equiv="X-UA-Compatible" content="IE=Edge" />
-<meta name="robots" content="noindex, nofollow" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<link rel="stylesheet" id="cf_styles-css" href="/cdn-cgi/styles/cf.errors.css" />
-<!--[if lt IE 9]><link rel="stylesheet" id='cf_styles-ie-css' href="/cdn-cgi/styles/cf.errors.ie.css" /><![endif]-->
-<style>body{margin:0;padding:0}</style>
-
-
-<!--[if gte IE 10]><!-->
-<script>
-  if (!navigator.cookieEnabled) {
-    window.addEventListener('DOMContentLoaded', function () {
-      var cookieEl = document.getElementById('cookie-alert');
-      cookieEl.style.display = 'block';
-    })
-  }
-</script>
-<!--<![endif]-->
-
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Worker Error | ${host}</title>
+    <style>
+        body { margin: 0; padding: 20px; font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, "Helvetica Neue", Arial, sans-serif; background: #f7f9fa; color: #313131; }
+        .container { max-width: 800px; margin: 50px auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h1 { color: #d93025; font-size: 24px; margin-top: 0; border-bottom: 2px solid #fce8e6; padding-bottom: 10px; }
+        p { line-height: 1.6; color: #5f6368; }
+        .error-box { background: #fce8e6; border-left: 4px solid #d93025; padding: 15px; margin: 20px 0; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; color: #b71c1c; }
+        .footer { margin-top: 30px; font-size: 12px; color: #9aa0a6; border-top: 1px solid #e8eaed; padding-top: 20px; display: flex; justify-content: space-between; }
+        .ray-id { font-weight: bold; color: #5f6368; }
+    </style>
 </head>
 <body>
-    <div id="cf-wrapper">
-        <div class="cf-alert cf-alert-error cf-cookie-error" id="cookie-alert" data-translate="enable_cookies">Please enable cookies.</div>
-        <div id="cf-error-details" class="cf-error-details-wrapper">
-            <div class="cf-wrapper cf-header cf-error-overview">
-                <h1>
-                    <span class="cf-error-type" data-translate="error">Error</span>
-                    <span class="cf-error-code">1101</span>
-                    <small class="heading-ray-id">Ray ID: ${随机字符串} &bull; ${格式化时间戳} UTC</small>
-                </h1>
-                <h2 class="cf-subheadline" data-translate="error_desc">Worker threw exception</h2>
-            </div><!-- /.header -->
-    
-            <section></section><!-- spacer -->
-    
-            <div class="cf-section cf-wrapper">
-                <div class="cf-columns two">
-                    <div class="cf-column">
-                        <h2 data-translate="what_happened">What happened?</h2>
-                            <p>You've requested a page on a website (${host}) that is on the <a href="https://www.cloudflare.com/5xx-error-landing?utm_source=error_100x" target="_blank">Cloudflare</a> network. An unknown error occurred while rendering the page.</p>
-                    </div>
-                    
-                    <div class="cf-column">
-                        <h2 data-translate="what_can_i_do">What can I do?</h2>
-                            <p><strong>If you are the owner of this website:</strong><br />refer to <a href="https://developers.cloudflare.com/workers/observability/errors/" target="_blank">Workers - Errors and Exceptions</a> and check Workers Logs for ${host}.</p>
-                    </div>
-                    
-                </div>
-            </div><!-- /.section -->
-    
-            <div class="cf-error-footer cf-wrapper w-240 lg:w-full py-10 sm:py-4 sm:px-8 mx-auto text-center sm:text-left border-solid border-0 border-t border-gray-300">
-    <p class="text-13">
-      <span class="cf-footer-item sm:block sm:mb-1">Cloudflare Ray ID: <strong class="font-semibold"> ${随机字符串}</strong></span>
-      <span class="cf-footer-separator sm:hidden">&bull;</span>
-      <span id="cf-footer-item-ip" class="cf-footer-item hidden sm:block sm:mb-1">
-        Your IP:
-        <button type="button" id="cf-footer-ip-reveal" class="cf-footer-ip-reveal-btn">Click to reveal</button>
-        <span class="hidden" id="cf-footer-ip">${访问IP}</span>
-        <span class="cf-footer-separator sm:hidden">&bull;</span>
-      </span>
-      <span class="cf-footer-item sm:block sm:mb-1"><span>Performance &amp; security by</span> <a rel="noopener noreferrer" href="https://www.cloudflare.com/5xx-error-landing" id="brand_link" target="_blank">Cloudflare</a></span>
-      
-    </p>
-    <script>(function(){function d(){var b=a.getElementById("cf-footer-item-ip"),c=a.getElementById("cf-footer-ip-reveal");b&&"classList"in b&&(b.classList.remove("hidden"),c.addEventListener("click",function(){c.classList.add("hidden");a.getElementById("cf-footer-ip").classList.remove("hidden")}))}var a=document;document.addEventListener&&a.addEventListener("DOMContentLoaded",d)})();</script>
-  </div><!-- /.error-footer -->
-
-        </div><!-- /#cf-error-details -->
-    </div><!-- /#cf-wrapper -->
-
-     <script>
-    window._cf_translation = {};
-    
-    
-  </script> 
+    <div class="container">
+        <h1>Worker Runtime Error (1101)</h1>
+        <p>抱歉，Worker 在处理您的请求时遇到了意外错误。这通常是由于代码中的未捕获异常引起的。</p>
+        <div class="error-box"><strong>Diagnostic Information:</strong>
+${errMsg}</div>
+        <p><strong>管理员提示：</strong> 请根据上方错误信息进行排查。如果开启了调试模式，可以在控制台看到更详细的日志。</p>
+        <div class="footer">
+            <span>Host: <strong>${host}</strong> | IP: ${访问IP}</span>
+            <span>Ray ID: <span class="ray-id">${随机字符串}</span> | ${格式化时间戳}</span>
+        </div>
+    </div>
 </body>
 </html>`;
 }
