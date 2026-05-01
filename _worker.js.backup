@@ -54,7 +54,7 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 3 * 60 * 1000; // 12 分钟缓存
+const CONFIG_CACHE_TTL = 6 * 60 * 1000; // 12 分钟缓存
 let configJSONCacheTime = 0;
 
 // KV 操作超时包装器 - 防止无限等待导致 loadShed
@@ -1454,18 +1454,18 @@ async function 处理WS请求(request, yourUUID, url) {
 				await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, yourUUID);
 			}
 		},
-		close() { 释放远端写入器(); },
-		abort() { 释放远端写入器(); }
-	})).catch((err) => {
-		const msg = err?.message || `${err}`;
-		if (msg.includes('Network connection lost') || msg.includes('ReadableStream is closed')) {
-			log(`[WS转发] 连接结束: ${msg}`);
-		} else {
-			log(`[WS转发] 处理失败: ${msg}`);
-		}
-		释放远端写入器();
-		closeSocketQuietly(serverSock);
-	});
+	    close() { 释放远端写入器(); },
+        abort() { 释放远端写入器(); }
+    })).catch((err) => {
+        const msg = err?.message || `${err}`;
+        if (!msg.includes('closed') && !msg.includes('Network connection lost')) {
+            log(`[WS转发] 处理失败: ${msg}`);
+        }
+    }).finally(() => {
+        释放远端写入器();
+        closeSocketQuietly(serverSock);
+        try { remoteConnWrapper.socket?.close(); } catch (e) {}
+    });
 
 	return new Response(null, { status: 101, webSocket: clientSock });
 }
@@ -3098,57 +3098,10 @@ function 解析SS请求(chunk, passwordPlainText) {
 }
 
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID) {
-    log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
-    const 连接超时毫秒 = 3000;
+    log(`[TCP转发] 目标: ${host}:${portNum}`);
+
+    const 连接超时毫秒 = 10000;
     let 已通过代理发送首包 = false;
-
-    async function 等待连接建立(remoteSock, timeoutMs = 连接超时毫秒) {
-        await Promise.race([
-            remoteSock.opened,
-            new Promise((_, reject) => setTimeout(() => reject(new Error('连接超时')), timeoutMs))
-        ]);
-    }
-
-    async function connectDirect(address, port, data = null, 所有反代数组 = null, 反代兜底 = true) {
-        let remoteSock;
-        if (所有反代数组 && 所有反代数组.length > 0) {
-            for (let i = 0; i < 所有反代数组.length; i++) {
-                const 反代数组索引 = (缓存反代数组索引 + i) % 所有反代数组.length;
-                const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
-                try {
-                    log(`[反代连接] 尝试连接到: ${反代地址}:${反代端口} (索引: ${反代数组索引})`);
-                    remoteSock = connect({ hostname: 反代地址, port: 反代端口 });
-                    await 等待连接建立(remoteSock);
-                    if (有效数据长度(data) > 0) {
-                        const testWriter = remoteSock.writable.getWriter();
-                        await testWriter.write(data);
-                        testWriter.releaseLock();
-                    }
-                    log(`[反代连接] 成功连接到: ${反代地址}:${反代端口}`);
-                    缓存反代数组索引 = 反代数组索引;
-                    return remoteSock;
-                } catch (err) {
-                    log(`[反代连接] 连接失败: ${反代地址}:${反代端口}, 错误: ${err.message}`);
-                    try { remoteSock?.close?.(); } catch (e) { }
-                    continue;
-                }
-            }
-        }
-
-        if (反代兜底) {
-            remoteSock = connect({ hostname: address, port: port });
-            await 等待连接建立(remoteSock);
-            if (有效数据长度(data) > 0) {
-                const writer = remoteSock.writable.getWriter();
-                await writer.write(data);
-                writer.releaseLock();
-            }
-            return remoteSock;
-        } else {
-            closeSocketQuietly(ws);
-            throw new Error('[反代连接] 所有反代连接失败，且未启用反代兜底，连接终止。');
-        }
-    }
 
     async function connecttoPry(允许发送首包 = true) {
         if (remoteConnWrapper.connectingPromise) {
@@ -3156,63 +3109,47 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
             return;
         }
 
-        const 本次发送首包 = 允许发送首包 && !已通过代理发送首包 && 有效数据长度(rawData) > 0;
-        const 本次首包数据 = 本次发送首包 ? rawData : null;
-
         const 当前连接任务 = (async () => {
             let newSocket;
-            if (启用SOCKS5反代 === 'socks5') {
-                log(`[SOCKS5代理] 代理到: ${host}:${portNum}`);
-                newSocket = await socks5Connect(host, portNum, 本次首包数据);
-            } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
-                const isHTTPS = 启用SOCKS5反代 === 'https';
-                log(`[${isHTTPS ? 'HTTPS' : 'HTTP'}代理] 代理到: ${host}:${portNum}`);
-                newSocket = await httpConnect(host, portNum, 本次首包数据, isHTTPS);
-            } else {
-                log(`[反代连接] 代理到: ${host}:${portNum}`);
-                const 所有反代数组 = await 解析地址端口(反代IP, host, yourUUID);
-                newSocket = await connectDirect(atob('UFJPWFlJUC50cDEuMDkwMjI3Lnh5eg=='), 1, 本次首包数据, 所有反代数组, 启用反代兜底);
+            try {
+                if (启用SOCKS5反代 === 'socks5') {
+                    newSocket = await socks5Connect(host, portNum, rawData);
+                } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
+                    newSocket = await httpConnect(host, portNum, rawData, 启用SOCKS5反代 === 'https');
+                } else {
+                    const 所有反代数组 = await 解析地址端口(反代IP, host, yourUUID);
+                    newSocket = await connectDirect(atob('UFJPWFlJUC50cDEuMDkwMjI3Lnh5eg=='), 1, rawData, 所有反代数组, 启用反代兜底);
+                }
+
+                已通过代理发送首包 = true;
+                remoteConnWrapper.socket = newSocket;
+
+                connectStreams(newSocket, ws, respHeader, () => {
+                    if (remoteConnWrapper.socket === newSocket) return connecttoPry(false);
+                });
+            } catch (err) {
+                log(`[connecttoPry] 失败: ${err.message}`);
+                closeSocketQuietly(ws);
             }
-            if (本次发送首包) 已通过代理发送首包 = true;
-            remoteConnWrapper.socket = newSocket;
-            newSocket.closed.catch(() => { }).finally(() => closeSocketQuietly(ws));
-            connectStreams(newSocket, ws, respHeader, null);
         })();
 
         remoteConnWrapper.connectingPromise = 当前连接任务;
-        try {
-            await 当前连接任务;
-        } finally {
-            if (remoteConnWrapper.connectingPromise === 当前连接任务) {
-                remoteConnWrapper.connectingPromise = null;
-            }
+        try { await 当前连接任务; } 
+        finally { 
+            if (remoteConnWrapper.connectingPromise === 当前连接任务) remoteConnWrapper.connectingPromise = null;
         }
     }
-    remoteConnWrapper.retryConnect = async () => connecttoPry(!已通过代理发送首包);
 
-    // 性能优化2: 使用预编译正则（避免每次创建新RegExp）
-    const 验证SOCKS5白名单 = (addr) => SOCKS5白名单正则.some(p => p.test(addr));
-    if (启用SOCKS5反代 && (启用SOCKS5全局反代 || 验证SOCKS5白名单(host))) {
-        log(`[TCP转发] 启用 SOCKS5/HTTP 全局代理`);
-        try {
-            await connecttoPry();
-        } catch (err) {
-            log(`[TCP转发] SOCKS5/HTTP 代理连接失败: ${err.message}`);
-            throw err;
-        }
-    } else {
-        try {
-            log(`[TCP转发] 尝试直连到: ${host}:${portNum}`);
-            const initialSocket = await connectDirect(host, portNum, rawData);
-            remoteConnWrapper.socket = initialSocket;
-            connectStreams(initialSocket, ws, respHeader, async () => {
-                if (remoteConnWrapper.socket !== initialSocket) return;
-                await connecttoPry();
-            });
-        } catch (err) {
-            log(`[TCP转发] 直连 ${host}:${portNum} 失败: ${err.message}`);
-            await connecttoPry();
-        }
+    remoteConnWrapper.retryConnect = () => connecttoPry(false);
+
+    // 主逻辑
+    try {
+        const initialSocket = await connectDirect(host, portNum, rawData);
+        remoteConnWrapper.socket = initialSocket;
+        connectStreams(initialSocket, ws, respHeader, () => connecttoPry(false));
+    } catch (err) {
+        log(`[直连失败] ${host}:${portNum}，切换代理`);
+        await connecttoPry(false);
     }
 }
 
@@ -3258,10 +3195,19 @@ async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = 
 
 function closeSocketQuietly(socket) {
     try {
-        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CLOSING) {
+        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CLOSING)) {
             socket.close();
         }
-    } catch (error) { }
+    } catch (e) {}
+}
+
+function 释放远端写入器() {
+    // 根据你的上下文实现
+    if (远端写入器) {
+        try { 远端写入器.releaseLock(); } catch (e) {}
+        远端写入器 = null;
+    }
+    当前写入Socket = null;
 }
 
 function formatIdentifier(arr, offset = 0) {
@@ -3275,118 +3221,52 @@ async function WebSocket发送并等待(webSocket, payload) {
 }
 
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
-	let header = headerData, hasData = false, reader, useBYOB = false;
-	const BYOB缓冲区大小 = 512 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024;
-	const 普通流聚合阈值 = 128 * 1024, 普通流刷新间隔 = 2;
-	const BYOB慢速刷新间隔 = 20, BYOB快速刷新间隔 = 2, BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
+    let header = headerData;
+    let reader;
+    let byteCounter = 0;
+    const YIELD_EVERY_BYTES = 128 * 1024;   // 每128KB让出一次CPU
 
-	const 发送块 = async (chunk) => {
-		if (webSocket.readyState !== WebSocket.OPEN) throw new Error('ws.readyState is not open');
-		if (header) {
-			const merged = new Uint8Array(header.length + chunk.byteLength);
-			merged.set(header, 0); merged.set(chunk, header.length);
-			await WebSocket发送并等待(webSocket, merged.buffer);
-			header = null;
-		} else await WebSocket发送并等待(webSocket, chunk);
-	};
+    try {
+        reader = remoteSocket.readable.getReader();
 
-	try { reader = remoteSocket.readable.getReader({ mode: 'byob' }); useBYOB = true }
-	catch (e) { reader = remoteSocket.readable.getReader() }
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value || value.byteLength === 0) continue;
 
-	try {
-		if (!useBYOB) {
-			let pendingChunks = [], pendingBytes = 0, flush定时器 = null, flush任务 = null;
-			const flush = async () => {
-				if (flush任务) return flush任务;
-				flush任务 = (async () => {
-					if (flush定时器) { clearTimeout(flush定时器); flush定时器 = null }
-					if (pendingBytes <= 0) return;
-					const chunks = pendingChunks, bytes = pendingBytes;
-					pendingChunks = []; pendingBytes = 0;
-					const payload = chunks.length === 1 ? chunks[0] : 拼接字节数据(...chunks);
-					if (payload.byteLength || bytes > 0) await 发送块(payload);
-				})().finally(() => { flush任务 = null });
-				return flush任务;
-			};
-			const 推送普通流块 = async (chunk) => {
-				const bytes = 数据转Uint8Array(chunk);
-				if (!bytes.byteLength) return;
-				pendingChunks.push(bytes);
-				pendingBytes += bytes.byteLength;
-				if (pendingBytes >= 普通流聚合阈值) {
-					await flush();
-					if (pendingBytes >= 普通流聚合阈值) await flush();
-				} else if (!flush定时器) {
-					flush定时器 = setTimeout(() => { flush().catch(() => closeSocketQuietly(webSocket)) }, 普通流刷新间隔);
-				}
-			};
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				if (!value || value.byteLength === 0) continue;
-				hasData = true;
-				await 推送普通流块(value);
-			}
-			await flush();
-		} else {
-			let mainBuf = new ArrayBuffer(BYOB缓冲区大小), offset = 0, totalBytes = 0;
-			let flush间隔毫秒 = BYOB快速刷新间隔, flush定时器 = null, 等待刷新恢复 = null;
-			let 正在读取 = false, 读取中待刷新 = false;
+            let chunk = value;
+            if (header) {
+                const merged = new Uint8Array(header.length + chunk.byteLength);
+                merged.set(header, 0);
+                merged.set(chunk, header.length);
+                chunk = merged;
+                header = null;
+            }
 
-			const flush = async () => {
-				if (正在读取) { 读取中待刷新 = true; return }
-				try {
-					if (offset > 0) { const p = new Uint8Array(mainBuf.slice(0, offset)); offset = 0; await 发送块(p) }
-				} finally {
-					读取中待刷新 = false;
-					if (flush定时器) { clearTimeout(flush定时器); flush定时器 = null }
-					if (等待刷新恢复) { const r = 等待刷新恢复; 等待刷新恢复 = null; r() }
-				}
-			};
+            if (webSocket.readyState === WebSocket.OPEN) {
+                await WebSocket发送并等待(webSocket, chunk.buffer);
+            }
 
-			while (true) {
-				正在读取 = true;
-				const { done, value } = await reader.read(new Uint8Array(mainBuf, offset, BYOB单次读取上限));
-				正在读取 = false;
-				if (done) break;
-				if (!value || value.byteLength === 0) { if (读取中待刷新) await flush(); continue }
-				hasData = true;
-				mainBuf = value.buffer;
-				const len = value.byteLength;
+            byteCounter += chunk.byteLength;
 
-				if (value.byteOffset !== offset) {
-					log(`[BYOB] 偏移异常: 预期=${offset}, 实际=${value.byteOffset}`);
-					await 发送块(new Uint8Array(value.buffer, value.byteOffset, len).slice());
-					mainBuf = new ArrayBuffer(BYOB缓冲区大小); offset = 0; totalBytes = 0;
-					continue;
-				}
-
-				if (len < BYOB单次读取上限) {
-					flush间隔毫秒 = BYOB快速刷新间隔;
-					if (len < 4096) totalBytes = 0;
-					if (offset > 0) { offset += len; await flush() }
-					else await 发送块(value.slice());
-				} else {
-					totalBytes += len; offset += len;
-					if (!flush定时器) flush定时器 = setTimeout(() => { flush().catch(() => closeSocketQuietly(webSocket)) }, flush间隔毫秒);
-					if (读取中待刷新) await flush();
-					if (offset > BYOB安全阈值) {
-						if (totalBytes > BYOB高吞吐阈值) flush间隔毫秒 = BYOB慢速刷新间隔;
-						await new Promise(r => { 等待刷新恢复 = r });
-					}
-				}
-			}
-			正在读取 = false;
-			await flush();
-			if (flush定时器) { clearTimeout(flush定时器); flush定时器 = null }
-		}
-	} catch (err) { closeSocketQuietly(webSocket) }
-	finally {
-		try { await reader.cancel(); } catch (e) { }
-		try { reader.releaseLock(); } catch (e) { }
-		try { remoteSocket.close(); } catch (e) { }
-	}
-	if (!hasData && retryFunc) await retryFunc();
+            // 智能让出 CPU，防止长时间独占
+            if (byteCounter >= YIELD_EVERY_BYTES) {
+                byteCounter = 0;
+                await new Promise(r => setTimeout(r, 0));   // 让出主线程
+            }
+        }
+    } catch (err) {
+        const msg = err?.message || '';
+        if (!msg.includes('closed') && !msg.includes('cancel') && !msg.includes('Network connection lost')) {
+            log(`[connectStreams] 转发错误: ${msg}`);
+        }
+    } finally {
+        try { reader?.releaseLock(); } catch (e) {}
+        try { remoteSocket?.close(); } catch (e) {}
+        if (retryFunc && !header) {
+            await retryFunc().catch(() => {});
+        }
+    }
 }
 
 function makeReadableStr(socket, earlyDataHeader) {
