@@ -51,6 +51,7 @@ let 调试日志打印 = false;
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0;
 let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
 let SOCKS5白名单正则 = [];
+let configJSONCacheKey = null;
 
 // 安全辅助函数
 function timingSafeEqual(a, b) {
