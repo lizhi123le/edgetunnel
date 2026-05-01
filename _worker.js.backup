@@ -1455,17 +1455,17 @@ async function 处理WS请求(request, yourUUID, url) {
 			}
 		},
 		close() { 释放远端写入器(); },
-        abort() { 释放远端写入器(); }
-    })).catch((err) => {
-        const msg = err?.message || `${err}`;
-        if (!msg.includes('closed') && !msg.includes('Network connection lost')) {
-            log(`[WS转发] 处理失败: ${msg}`);
-        }
-    }).finally(() => {
-        释放远端写入器();
-        closeSocketQuietly(serverSock);
-        try { remoteConnWrapper.socket?.close(); } catch (e) {}
-    });
+		abort() { 释放远端写入器(); }
+	})).catch((err) => {
+		const msg = err?.message || `${err}`;
+		if (msg.includes('Network connection lost') || msg.includes('ReadableStream is closed')) {
+			log(`[WS转发] 连接结束: ${msg}`);
+		} else {
+			log(`[WS转发] 处理失败: ${msg}`);
+		}
+		释放远端写入器();
+		closeSocketQuietly(serverSock);
+	});
 
 	return new Response(null, { status: 101, webSocket: clientSock });
 }
@@ -3258,19 +3258,10 @@ async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = 
 
 function closeSocketQuietly(socket) {
     try {
-        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CLOSING)) {
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CLOSING) {
             socket.close();
         }
-    } catch (e) {}
-}
-
-function 释放远端写入器() {
-    // 根据你的上下文实现
-    if (远端写入器) {
-        try { 远端写入器.releaseLock(); } catch (e) {}
-        远端写入器 = null;
-    }
-    当前写入Socket = null;
+    } catch (error) { }
 }
 
 function formatIdentifier(arr, offset = 0) {
