@@ -266,7 +266,18 @@ export default {
             return await 处理XHTTP请求(request, userID);
         } else {
             if (url.protocol === 'http:') return Response.redirect(url.href.replace(`http://${url.hostname}`, `https://${url.hostname}`), 301);
-            if (!管理员密码) return fetchWithTimeout(EDT_PAGES_STATIC + '/noADMIN', {}, 10000).then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); }).catch(() => new Response(html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } }));
+                        if (!管理员密码) {
+                try {
+                    const r = await fetchWithTimeout(EDT_PAGES_STATIC + '/noADMIN', {}, 10000);
+                    const headers = new Headers(r.headers);
+                    headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+                    headers.set('Pragma', 'no-cache');
+                    headers.set('Expires', '0');
+                    return new Response(r.body, { status: 404, statusText: r.statusText, headers });
+                } catch (e) {
+                    return new Response(await html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+                }
+            }
             if (env.KV && typeof env.KV.get === 'function') {
 
                 const 区分大小写访问路径 = url.pathname.slice(1);
@@ -300,7 +311,11 @@ export default {
                             return new Response(JSON.stringify({ success: false, message: '密码错误' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
                         }
                     }
-                    return fetchWithTimeout(EDT_PAGES_STATIC + '/login', {}, 10000).catch(() => new Response(html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } }));
+                    try {
+                        return await fetchWithTimeout(EDT_PAGES_STATIC + '/login', {}, 10000);
+                    } catch (e) {
+                        return new Response(await html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+                    }
                 } else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {//验证cookie后响应管理页面
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
@@ -445,7 +460,11 @@ export default {
                     }
 
                     ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Admin_Login', config_JSON));
-                    return fetchWithTimeout(EDT_PAGES_STATIC + '/admin' + url.search, {}, 10000).catch(() => new Response(html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } }));
+                    try {
+                        return await fetchWithTimeout(EDT_PAGES_STATIC + '/admin' + url.search, {}, 10000);
+                    } catch (e) {
+                        return new Response(await html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+                    }
                 } else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
                     const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
                     响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
@@ -648,7 +667,18 @@ export default {
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
                     if (authCookie && await verifyAuthCookie(authCookie, UA, 加密秘钥, 管理员密码)) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
                 } else if (访问路径 === 'robots.txt') return new Response('User-agent: *\nDisallow: /', { status: 200, headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
-            } else if (!envUUID) return fetch(EDT_PAGES_STATIC + '/noKV').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); }).catch(() => new Response(html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } }));
+                        } else if (!envUUID) {
+                try {
+                    const r = await fetch(EDT_PAGES_STATIC + '/noKV');
+                    const headers = new Headers(r.headers);
+                    headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+                    headers.set('Pragma', 'no-cache');
+                    headers.set('Expires', '0');
+                    return new Response(r.body, { status: 404, statusText: r.statusText, headers });
+                } catch (e) {
+                    return new Response(await html1101(url.host, 访问IP), { status: 1101, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+                }
+            }
         }
 
         let 伪装页URL = env.URL || 'nginx';
