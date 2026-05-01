@@ -25,6 +25,7 @@ class RequestContext {
         this.SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
         // 预编译正则（请求级缓存）
         this.SOCKS5白名单正则 = this.SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
+        this.启用反代兜底 = true;
     }
     
     log(...args) {
@@ -120,7 +121,8 @@ export default {
     async fetch(request, env, ctx) {
         // 创建请求上下文实例（封装请求级状态，减少全局变量污染）
         const ctx2 = new RequestContext(env);
-        let 反代IP = '', 启用反代兜底 = false, config_JSON = null; // 声明局部变量，避免严格模式报错
+        let 反代IP = '', 启用反代兜底 = true, config_JSON = null; // 声明局部变量，并开启反代兜底
+        ctx2.启用反代兜底 = 启用反代兜底; // 同步初始状态到上下文
         ctx2.调试日志打印 = ['1', 'true'].includes(env.DEBUG);
         全局调试日志打印 = ctx2.调试日志打印; // 同步到全局（兼容旧代码）
         
