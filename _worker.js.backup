@@ -52,6 +52,10 @@ let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0;
 let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
 let SOCKS5白名单正则 = [];
 let configJSONCacheKey = null;
+let 启用SOCKS5反代 = null;
+let 启用SOCKS5全局反代 = false;
+let 启用反代兜底 = true;
+let 反代IP = '';
 
 // 安全辅助函数
 function timingSafeEqual(a, b) {
@@ -831,7 +835,7 @@ async function 处理XHTTP请求(request, yourUUID) {
                         udpRespHeader = null;
                     }
                 } else {
-                    await forwardataTCP(首包.hostname, 首包.port, 首包.rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID);
+                    await forwardataTCP(首包.hostname, 首包.port, 首包.rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID, ctx2);
                 }
 
                 while (true) {
@@ -1222,7 +1226,7 @@ async function 处理gRPC请求(request, yourUUID) {
                                 const { port, hostname, rawClientData } = 解析结果;
                                 //console.log(`[gRPC] 木马首包: ${hostname}:${port}`);
                                 if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
-                                await forwardataTCP(hostname, port, rawClientData, grpcBridge, null, remoteConnWrapper, yourUUID);
+                                await forwardataTCP(hostname, port, rawClientData, grpcBridge, null, remoteConnWrapper, yourUUID, ctx2);
                             } else {
                                 判断是否是木马 = false;
                                 const 解析结果 = 解析魏烈思请求(首包buffer, yourUUID);
@@ -1238,7 +1242,7 @@ async function 处理gRPC请求(request, yourUUID) {
                                 grpcBridge.send(respHeader);
                                 const rawData = 首包buffer.slice(rawIndex);
                                 if (isDnsQuery) await forwardataudp(rawData, grpcBridge, null);
-                                else await forwardataTCP(hostname, port, rawData, grpcBridge, null, remoteConnWrapper, yourUUID);
+                                else await forwardataTCP(hostname, port, rawData, grpcBridge, null, remoteConnWrapper, yourUUID, ctx2);
                             }
                         }
                     }
@@ -1569,7 +1573,7 @@ async function 处理WS请求(request, yourUUID, url) {
 			}
 			if (已写入) continue;
 			if (上下文.首包已建立 && 上下文.目标主机 && 上下文.目标端口 > 0) {
-				await forwardataTCP(上下文.目标主机, 上下文.目标端口, 明文块, 上下文.回包Socket, null, remoteConnWrapper, yourUUID);
+				await forwardataTCP(上下文.目标主机, 上下文.目标端口, 明文块, 上下文.回包Socket, null, remoteConnWrapper, yourUUID, ctx2);
 				continue;
 			}
 			const 解析结果 = 解析SS请求(明文块, yourUUID);
@@ -1579,7 +1583,7 @@ async function 处理WS请求(request, yourUUID, url) {
 			上下文.首包已建立 = true;
 			上下文.目标主机 = hostname;
 			上下文.目标端口 = port;
-			await forwardataTCP(hostname, port, rawClientData, 上下文.回包Socket, null, remoteConnWrapper, yourUUID);
+			await forwardataTCP(hostname, port, rawClientData, 上下文.回包Socket, null, remoteConnWrapper, yourUUID, ctx2);
 		}
 	};
 
@@ -1609,7 +1613,7 @@ async function 处理WS请求(request, yourUUID, url) {
 				if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
 				const { port, hostname, rawClientData } = 解析结果;
 				if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
-				await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, yourUUID);
+				await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, yourUUID, ctx2);
 			} else {
 				const 解析结果 = 解析魏烈思请求(chunk, yourUUID);
 				if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
@@ -1622,7 +1626,7 @@ async function 处理WS请求(request, yourUUID, url) {
 				const respHeader = new Uint8Array([version[0], 0]);
 				const rawData = chunk.slice(rawIndex);
 				if (isDnsQuery) return forwardataudp(rawData, serverSock, respHeader);
-				await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, yourUUID);
+				await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, yourUUID, ctx2);
 			}
 		},
 		close() { 释放远端写入器(); },
@@ -3275,13 +3279,13 @@ function 解析SS请求(chunk, passwordPlainText) {
 	return { hasError: false, addressType, port, hostname, rawClientData: data.subarray(cursor) };
 }
 
-async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID) {
+async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID, ctx2) {
     if (isPrivateIP(host)) {
         log(`[TCP转发] 拒绝连接到私有IP/内部地址: ${host}`);
         ws.close();
         return;
     }
-    log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
+    log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${ctx2.反代IP} | 反代兜底: ${ctx2.启用反代兜底 ? '是' : '否'} | 反代类型: ${ctx2.启用SOCKS5反代 || 'proxyip'} | 全局: ${ctx2.启用SOCKS5全局反代 ? '是' : '否'}`);
     const 连接超时毫秒 = 3000;
     let 已通过代理发送首包 = false;
 
@@ -3344,17 +3348,17 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 
         const 当前连接任务 = (async () => {
             let newSocket;
-            if (启用SOCKS5反代 === 'socks5') {
+            if (ctx2.启用SOCKS5反代 === 'socks5') {
                 log(`[SOCKS5代理] 代理到: ${host}:${portNum}`);
                 newSocket = await socks5Connect(host, portNum, 本次首包数据);
-            } else if (启用SOCKS5反代 === 'http' || 启用SOCKS5反代 === 'https') {
-                const isHTTPS = 启用SOCKS5反代 === 'https';
+            } else if (ctx2.启用SOCKS5反代 === 'http' || ctx2.启用SOCKS5反代 === 'https') {
+                const isHTTPS = ctx2.启用SOCKS5反代 === 'https';
                 log(`[${isHTTPS ? 'HTTPS' : 'HTTP'}代理] 代理到: ${host}:${portNum}`);
                 newSocket = await httpConnect(host, portNum, 本次首包数据, isHTTPS);
             } else {
                 log(`[反代连接] 代理到: ${host}:${portNum}`);
                 const 所有反代数组 = await 解析地址端口(ctx2.反代IP, host, yourUUID);
-                newSocket = await connectDirect(atob('UFJPWFlJUC50cDEuMDkwMjI3Lnh5eg=='), 1, 本次首包数据, 所有反代数组, 启用反代兜底);
+                newSocket = await connectDirect(atob('UFJPWFlJUC50cDEuMDkwMjI3Lnh5eg=='), 1, 本次首包数据, 所有反代数组, ctx2.启用反代兜底);
             }
             if (本次发送首包) 已通过代理发送首包 = true;
             remoteConnWrapper.socket = newSocket;
@@ -3375,7 +3379,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 
     // 性能优化2: 使用预编译正则（避免每次创建新RegExp）
     const 验证SOCKS5白名单 = (addr) => SOCKS5白名单正则.some(p => p.test(addr));
-    if (启用SOCKS5反代 && (启用SOCKS5全局反代 || 验证SOCKS5白名单(host))) {
+    if (ctx2.启用SOCKS5反代 && (ctx2.启用SOCKS5全局反代 || 验证SOCKS5白名单(host))) {
         log(`[TCP转发] 启用 SOCKS5/HTTP 全局代理`);
         try {
             await connecttoPry();
@@ -4984,16 +4988,16 @@ async function 反代参数获取(url, ctx2) {
     const pathLower = pathname.toLowerCase();
 
     // 初始化
-    我的SOCKS5账号 = ctx2.我的SOCKS5账号 = searchParams.get('socks5') || searchParams.get('http') || null;
-    启用SOCKS5全局反代 = ctx2.启用SOCKS5全局反代 = searchParams.has('globalproxy') || false;
+    ctx2.我的SOCKS5账号 = searchParams.get('socks5') || searchParams.get('http') || null;
+    ctx2.启用SOCKS5全局反代 = searchParams.has('globalproxy') || false;
 
     // 辅助函数：解析代理协议URL (socks5://... 或 http://...)
     const 解析代理URL = (proxyUrl, 默认全局 = true) => {
         const protocolMatch = proxyUrl.match(/^(socks5|http):\/\/(.+)$/i);
         if (!protocolMatch) return false;
-        启用SOCKS5反代 = ctx2.启用SOCKS5反代 = protocolMatch[1].toLowerCase();
-        我的SOCKS5账号 = ctx2.我的SOCKS5账号 = protocolMatch[2].split('/')[0];
-        启用SOCKS5全局反代 = ctx2.启用SOCKS5全局反代 = 默认全局 || ctx2.启用SOCKS5全局反代;
+        ctx2.启用SOCKS5反代 = protocolMatch[1].toLowerCase();
+        ctx2.我的SOCKS5账号 = protocolMatch[2].split('/')[0];
+        ctx2.启用SOCKS5全局反代 = 默认全局 || ctx2.启用SOCKS5全局反代;
         return true;
     };
 
@@ -5029,7 +5033,7 @@ async function 反代参数获取(url, ctx2) {
         else {
             // 否则作为 IP 反代
             ctx2.反代IP = 路参IP;
-            启用反代兜底 = false;
+            ctx2.启用反代兜底 = false;
             return;
         }
     }
@@ -5038,9 +5042,16 @@ async function 反代参数获取(url, ctx2) {
     // ==================== 第二步：处理路径中的 SOCKS5/HTTP 协议关键词 ====================
     // 匹配：/socks5://..., /socks://.., /http://...
     else if ((socksMatch = pathname.match(/\/(socks5?|http):\/?\/?([^/?#\s]+)/i))) {
-        启用SOCKS5反代 = ctx2.启用SOCKS5反代 = socksMatch[1].toLowerCase() === 'http' ? 'http' : 'socks5';
-        我的SOCKS5账号 = ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
-        启用SOCKS5全局反代 = ctx2.启用SOCKS5全局反代 = true;
+        ctx2.启用SOCKS5反代 = socksMatch[1].toLowerCase() === 'http' ? 'http' : 'socks5';
+        ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
+        ctx2.启用SOCKS5全局反代 = true;
+    }
+    // 匹配：/socks5=..., /s5=..., /gs5=..., /http=..., /ghttp=...
+    else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http)=([^/?#\s]+)/i))) {
+        const type = socksMatch[1].toLowerCase();
+        ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
+        ctx2.启用SOCKS5反代 = type.includes('http') ? 'http' : 'socks5';
+        ctx2.启用SOCKS5全局反代 = type.startsWith('g') || ctx2.启用SOCKS5全局反代;
     }
     // 匹配：/socks5=..., /s5=..., /gs5=..., /http=..., /ghttp=...
     else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http)=([^/?#\s]+)/i))) {
@@ -5056,21 +5067,23 @@ async function 反代参数获取(url, ctx2) {
         // proxyip 值以 socks5:// 或 http:// 开头，视为对应协议处理
         if (!解析代理URL(路参IP)) {
             // 否则作为 IP 反代
-            反代IP = ctx2.反代IP = 路参IP;
-            启用反代兜底 = ctx2.启用反代兜底 = false;
+            ctx2.反代IP = 路参IP;
+            ctx2.启用反代兜底 = false;
             return;
         }
     }
 
     // 统一解析SOCKS5地址
-    if (我的SOCKS5账号) {
+    if (ctx2.我的SOCKS5账号) {
         try {
-            parsedSocks5Address = ctx2.parsedSocks5Address = await 获取SOCKS5账号(我的SOCKS5账号);
-            启用SOCKS5反代 = ctx2.启用SOCKS5反代 = searchParams.get('http') ? 'http' : (ctx2.启用SOCKS5反代 || 'socks5');
+            ctx2.parsedSocks5Address = await 获取SOCKS5账号(ctx2.我的SOCKS5账号);
+            ctx2.启用SOCKS5反代 = searchParams.get('http') ? 'http' : (ctx2.启用SOCKS5反代 || 'socks5');
         } catch (err) {
             console.error('解析SOCKS5地址失败:', err.message);
-            启用SOCKS5反代 = ctx2.启用SOCKS5反代 = null;
+            ctx2.启用SOCKS5反代 = null;
         }
+    } else ctx2.启用SOCKS5反代 = null;
+}
     } else 启用SOCKS5反代 = ctx2.启用SOCKS5反代 = null;
 }
 
