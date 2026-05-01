@@ -5053,13 +5053,6 @@ async function 反代参数获取(url, ctx2) {
         ctx2.启用SOCKS5反代 = type.includes('http') ? 'http' : 'socks5';
         ctx2.启用SOCKS5全局反代 = type.startsWith('g') || ctx2.启用SOCKS5全局反代;
     }
-    // 匹配：/socks5=..., /s5=..., /gs5=..., /http=..., /ghttp=...
-    else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http)=([^/?#\s]+)/i))) {
-        const type = socksMatch[1].toLowerCase();
-        我的SOCKS5账号 = ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
-        启用SOCKS5反代 = ctx2.启用SOCKS5反代 = type.includes('http') ? 'http' : 'socks5';
-        启用SOCKS5全局反代 = ctx2.启用SOCKS5全局反代 = type.startsWith('g') || ctx2.启用SOCKS5全局反代;
-    }
 
     // ==================== 第三步：处理路径中的 proxyip/pyip/ip ====================
     else if ((proxyMatch = pathLower.match(/\/(proxyip[.=]|pyip=|ip=)([^?#\s]+)/))) {
@@ -5083,8 +5076,6 @@ async function 反代参数获取(url, ctx2) {
             ctx2.启用SOCKS5反代 = null;
         }
     } else ctx2.启用SOCKS5反代 = null;
-}
-    } else 启用SOCKS5反代 = ctx2.启用SOCKS5反代 = null;
 }
 
 async function 获取SOCKS5账号(address) {
