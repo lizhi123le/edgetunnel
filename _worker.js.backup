@@ -57,9 +57,76 @@ let configJSONCacheKey = null;
 const CONFIG_CACHE_TTL = 3 * 60 * 1000; // 12 分钟缓存
 let configJSONCacheTime = 0;
 
+// HMAC-SHA256 签名密钥（基于加密秘钥派生）
+const HMAC_SIGN_KEY_PREFIX = 'edgetunnel_hmac_v1_';
+
+// 生成 Cookie 签名
+async function generateCookieSignature(cookieValue, secret) {
+    const key = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(HMAC_SIGN_KEY_PREFIX + secret),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    );
+    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(cookieValue));
+    return btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/=/g, '');
+}
+
+// 验证 Cookie 签名
+async function verifyCookieSignature(cookieValue, signature, secret) {
+    const expected = await generateCookieSignature(cookieValue, secret);
+    const expectedBytes = new TextEncoder().encode(expected);
+    const providedBytes = new TextEncoder().encode(signature);
+    if (expectedBytes.length !== providedBytes.length) return false;
+    return crypto.subtle.timingSafeEqual(expectedBytes, providedBytes);
+}
+
+// 安全比较两个字符串（防时序攻击）
+function secureCompare(a, b) {
+    const aBytes = new TextEncoder().encode(a);
+    const bBytes = new TextEncoder().encode(b);
+    if (aBytes.length !== bBytes.length) return false;
+    return crypto.subtle.timingSafeEqual(aBytes, bBytes);
+}
+
+// 限制字符串长度
+function clampLength(str, maxLen) {
+    if (!str) return '';
+    return str.length > maxLen ? str.substring(0, maxLen) + '...' : str;
+}
+
+// 清理 URL（移除查询参数中的敏感信息）
+function sanitizeURL(url) {
+    try {
+        const u = new URL(url);
+        u.search = '';
+        return u.toString();
+    } catch {
+        return url;
+    }
+}
+
+// 统一错误响应（不泄露内部细节）
+function sanitizedErrorResponse(message, status = 500) {
+    const publicMessages = {
+        400: '请求参数无效',
+        401: '未授权访问',
+        403: '禁止访问',
+        404: '资源不存在',
+        429: '请求过于频繁，请稍后重试',
+        500: '服务器内部错误',
+        504: '请求超时'
+    };
+    return new Response(JSON.stringify({ error: publicMessages[status] || '操作失败' }), {
+        status,
+        headers: { 'Content-Type': 'application/json;charset=utf-8' }
+    });
+}
+
 // KV 操作超时包装器 - 防止无限等待导致 loadShed
 // 异步超时包装器 - 防止无限等待导致 Worker 挂起
-const withTimeout = (promise, timeoutMs = 5000) => Promise.race([
+const withTimeout = (promise, timeoutMs = 3000) => Promise.race([
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error('操作超时')), timeoutMs))
 ]);
@@ -166,24 +233,46 @@ export default {
                 } else if (访问路径 === 'login') {//处理登录页面和登录请求
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
-                    if (authCookie == await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin' } });
+                    const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
+                    const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
+                    // 使用 timingSafeEqual 防时序攻击
+                    if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin' } });
                     if (request.method === 'POST') {
+                        // 登录速率限制：5次/10分钟
+                        const 登录尝试次数 = env.KV ? (await env.KV.get(`login_fail:${访问IP}`) || 0) : 0;
+                        if (Number(登录尝试次数) >= 5) return sanitizedErrorResponse('登录尝试次数过多，请10分钟后再试', 429);
                         const formData = await request.text();
                         const params = new URLSearchParams(formData);
                         const 输入密码 = params.get('password');
-                        if (输入密码 === 管理员密码) {
-                            // 密码正确，设置cookie并返回成功标记
+                        // 使用 timingSafeEqual 防时序攻击
+                        if (输入密码 && secureCompare(输入密码, 管理员密码)) {
+                            // 清除失败计数
+                            if (env.KV) ctx.waitUntil(env.KV.delete(`login_fail:${访问IP}`));
+                            const authValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
+                            const authSig = await generateCookieSignature(authValue, 加密秘钥 + 管理员密码);
+                            // Cookie: Secure; SameSite=Strict; Max-Age=3600(1小时)
                             const 响应 = new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-                            响应.headers.set('Set-Cookie', `auth=${await MD5MD5(UA + 加密秘钥 + 管理员密码)}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Strict`);
+                            响应.headers.set('Set-Cookie', `auth=${authValue}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict`);
+                            响应.headers.append('Set-Cookie', `auth_sig=${authSig}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict`);
                             return 响应;
+                        } else {
+                            // 记录失败次数
+                            if (env.KV) {
+                                const 新次数 = Number(登录尝试次数) + 1;
+                                ctx.waitUntil(env.KV.put(`login_fail:${访问IP}`, String(新次数), { expirationTtl: 600 }));
+                            }
                         }
                     }
                     return fetchWithTimeout(Pages静态页面 + '/login', {}, 10000);
                 } else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {//验证cookie后响应管理页面
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
+                    const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
+                    const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
+                    // 验证 cookie 值（timingSafeEqual）和签名（HMAC-SHA256）
+                    const 认证通过 = authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码);
                     // 没有cookie或cookie错误，跳转到/login页面
-                    if (!authCookie || authCookie !== await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
+                    if (!认证通过) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
                     if (访问路径 === 'admin/log.json') {// 读取日志内容
                         try {
                             const 读取日志内容 = await withTimeout(env.KV.get('log.json'), 3000) || '[]';
@@ -196,8 +285,8 @@ export default {
                             const Usage_JSON = await getCloudflareUsage(url.searchParams.get('Email'), url.searchParams.get('GlobalAPIKey'), url.searchParams.get('AccountID'), url.searchParams.get('APIToken'));
                             return new Response(JSON.stringify(Usage_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
                         } catch (err) {
-                            const errorResponse = { msg: '查询请求量失败，失败原因：' + err.message, error: err.message };
-                            return new Response(JSON.stringify(errorResponse, null, 2), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                            console.error('查询CF用量失败:', err.message);
+                            return sanitizedErrorResponse('查询用量失败', 500);
                         }
                     } else if (区分大小写访问路径 === 'admin/getADDAPI') {// 验证优选API
                         if (url.searchParams.get('url')) {
@@ -209,8 +298,8 @@ export default {
                                 优选API的IP = 优选API的IP.map(item => item.replace(/#(.+)$/, (_, remark) => '#' + decodeURIComponent(remark)));
                                 return new Response(JSON.stringify({ success: true, data: 优选API的IP }, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (err) {
-                                const errorResponse = { msg: '验证优选API失败，失败原因：' + err.message, error: err.message };
-                                return new Response(JSON.stringify(errorResponse, null, 2), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('验证优选API失败:', err.message);
+                                return sanitizedErrorResponse('验证优选API失败', 500);
                             }
                         }
                         return new Response(JSON.stringify({ success: false, data: [] }, null, 2), { status: 403, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -237,8 +326,8 @@ export default {
                             config_JSON.init = '配置已重置为默认值';
                             return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                         } catch (err) {
-                            const errorResponse = { msg: '配置重置失败，失败原因：' + err.message, error: err.message };
-                            return new Response(JSON.stringify(errorResponse, null, 2), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                            console.error('配置重置失败:', err.message);
+                            return sanitizedErrorResponse('配置重置失败', 500);
                         }
                     } else if (request.method === 'POST') {// 处理 KV 操作（POST 请求）
                         if (访问路径 === 'admin/config.json') { // 保存config.json配置
@@ -252,8 +341,8 @@ export default {
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
-                                console.error('保存配置失败:', error);
-                                return new Response(JSON.stringify({ error: '保存配置失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('保存配置失败:', error.message);
+                                return sanitizedErrorResponse('保存配置失败', 500);
                             }
                         } else if (访问路径 === 'admin/cf.json') { // 保存cf.json配置
                             try {
@@ -278,8 +367,8 @@ export default {
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
-                                console.error('保存配置失败:', error);
-                                return new Response(JSON.stringify({ error: '保存配置失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('保存CF配置失败:', error.message);
+                                return sanitizedErrorResponse('保存CF配置失败', 500);
                             }
                         } else if (访问路径 === 'admin/tg.json') { // 保存tg.json配置
                             try {
@@ -294,8 +383,8 @@ export default {
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
-                                console.error('保存配置失败:', error);
-                                return new Response(JSON.stringify({ error: '保存配置失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('保存TG配置失败:', error.message);
+                                return sanitizedErrorResponse('保存TG配置失败', 500);
                             }
                         } else if (区分大小写访问路径 === 'admin/ADD.txt') { // 保存自定义优选IP
                             try {
@@ -304,8 +393,8 @@ export default {
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Custom_IPs', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '自定义IP已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
-                                console.error('保存自定义IP失败:', error);
-                                return new Response(JSON.stringify({ error: '保存自定义IP失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('保存自定义IP失败:', error.message);
+                                return sanitizedErrorResponse('保存自定义IP失败', 500);
                             }
                         } else return new Response(JSON.stringify({ error: '不支持的POST请求路径' }), { status: 404, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                     } else if (访问路径 === 'admin/config.json') {// 处理 admin/config.json 请求，返回JSON
@@ -326,11 +415,20 @@ export default {
                     return fetchWithTimeout(Pages静态页面 + '/admin' + url.search, {}, 10000);
                 } else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
                     const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
-                    响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
+                    响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict');
+                    响应.headers.append('Set-Cookie', 'auth_sig=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict');
                     return 响应;
                 } else if (访问路径 === 'sub') {//处理订阅请求
                     const 订阅TOKEN = await MD5MD5(host + userID), 作为优选订阅生成器 = ['1', 'true'].includes(env.BEST_SUB) && url.searchParams.get('host') === 'example.com' && url.searchParams.get('uuid') === '00000000-0000-4000-8000-000000000000' && UA.toLowerCase().includes('tunnel (https://github.com/cmliu/edge');
                     if (url.searchParams.get('token') === 订阅TOKEN || 作为优选订阅生成器) {
+                        // 订阅速率限制：单IP 10次/小时
+                        if (env.KV) {
+                            const subCount = await env.KV.get(`sub_rate:${访问IP}`);
+                            if (Number(subCount) >= 10) {
+                                return sanitizedErrorResponse('订阅请求过于频繁，请稍后重试', 429);
+                            }
+                            ctx.waitUntil(env.KV.put(`sub_rate:${访问IP}`, String(Number(subCount) + 1), { expirationTtl: 3600 }));
+                        }
                         config_JSON = await 读取config_JSON(env, host, userID, UA, false, ctx2);
                         if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
                         else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
@@ -481,9 +579,10 @@ export default {
                                 if (response.ok) {
                                     订阅内容 = await response.text();
                                     if (url.searchParams.has('surge') || ua.includes('surge')) 订阅内容 = await Surge订阅配置文件热补丁(订阅内容, url.protocol + '//' + url.host + '/sub?token=' + 订阅TOKEN + '&surge', config_JSON);
-                                } else return new Response('订阅转换后端异常：' + response.statusText, { status: response.status });
+                                } else return new Response('订阅转换服务暂时不可用', { status: response.status });
                             } catch (error) {
-                                return new Response('订阅转换后端异常：' + error.message, { status: 403 });
+                                console.error('订阅转换失败:', error.message);
+                                return new Response('订阅转换服务暂时不可用', { status: 503 });
                             }
                         }
 
@@ -520,7 +619,9 @@ export default {
                 } else if (访问路径 === 'locations') {//反代locations列表
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
-                    if (authCookie && authCookie == await MD5MD5(UA + 加密秘钥 + 管理员密码)) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
+                    const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
+                    const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
+                    if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
                 } else if (访问路径 === 'robots.txt') return new Response('User-agent: *\nDisallow: /', { status: 200, headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
             } else if (!envUUID) return fetch(Pages静态页面 + '/noKV').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); });
         }
@@ -3855,30 +3956,35 @@ async function Surge订阅配置文件热补丁(content, url, config_JSON) {
 async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SUB", config_JSON, 是否写入KV日志 = true) {
     try {
         const 当前时间 = new Date();
-        const 日志内容 = { TYPE: 请求类型, IP: 访问IP, ASN: `AS${request.cf?.asn || '0'} ${request.cf?.asOrganization || 'Unknown'}`, CC: `${request.cf?.country || 'N/A'} ${request.cf?.city || 'N/A'}`, URL: request.url, UA: request.headers.get('User-Agent') || 'Unknown', TIME: 当前时间.getTime() };
+        // 日志脱敏：URL 仅记录 pathname，UA 限制 200 字符
+        const sanitizedUA = clampLength(request.headers.get('User-Agent') || 'Unknown', 200);
+        const 日志内容 = { TYPE: 请求类型, IP: 访问IP, ASN: `AS${request.cf?.asn || '0'} ${request.cf?.asOrganization || 'Unknown'}`, CC: `${request.cf?.country || 'N/A'} ${request.cf?.city || 'N/A'}`, URL: sanitizeURL(request.url), UA: sanitizedUA, TIME: 当前时间.getTime() };
         if (config_JSON.TG.启用) {
             try {
                 const TG_TXT = await withTimeout(env.KV.get('tg.json'), 3000);
                 const TG_JSON = JSON.parse(TG_TXT);
                 await sendMessage(TG_JSON.BotToken, TG_JSON.ChatID, 日志内容, config_JSON);
-            } catch (error) { console.error(`读取tg.json出错: ${error.message}`) }
+            } catch (error) { console.error(`读取tg.json出错: ${error.message}`); }
         }
         是否写入KV日志 = ['1', 'true'].includes(env.OFF_LOG) ? false : 是否写入KV日志;
         if (!是否写入KV日志) return;
         let 日志数组 = [];
-        const 现有日志 = await withTimeout(env.KV.get('log.json'), 3000), KV容量限制 = 4;//MB
+        const 现有日志 = await withTimeout(env.KV.get('log.json'), 3000);
+        const KV日志条数限制 = 1000; // 改用条数限制，更可靠
         if (现有日志) {
             try {
                 日志数组 = JSON.parse(现有日志);
                 if (!Array.isArray(日志数组)) { 日志数组 = [日志内容]; }
                 else if (请求类型 !== "Get_SUB") {
                     const 三十分钟前时间戳 = 当前时间.getTime() - 30 * 60 * 1000;
-                    if (日志数组.some(log => log.TYPE !== "Get_SUB" && log.IP === 访问IP && log.URL === request.url && log.UA === (request.headers.get('User-Agent') || 'Unknown') && log.TIME >= 三十分钟前时间戳)) return;
+                    const sanitizedRequestURL = sanitizeURL(request.url);
+                    if (日志数组.some(log => log.TYPE !== "Get_SUB" && log.IP === 访问IP && log.URL === sanitizedRequestURL && log.TIME >= 三十分钟前时间戳)) return;
                     日志数组.push(日志内容);
-                    while (JSON.stringify(日志数组, null, 2).length > KV容量限制 * 1024 * 1024 && 日志数组.length > 0) 日志数组.shift();
+                    // 改用条数限制代替字节大小计算
+                    while (日志数组.length > KV日志条数限制) 日志数组.shift();
                 } else {
                     日志数组.push(日志内容);
-                    while (JSON.stringify(日志数组, null, 2).length > KV容量限制 * 1024 * 1024 && 日志数组.length > 0) 日志数组.shift();
+                    while (日志数组.length > KV日志条数限制) 日志数组.shift();
                 }
             } catch (e) { 日志数组 = [日志内容]; }
         } else { 日志数组 = [日志内容]; }
