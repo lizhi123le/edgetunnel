@@ -54,7 +54,7 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 60 * 60 * 1000; // 60 分钟缓存
+const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 60 分钟缓存
 let configJSONCacheTime = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
@@ -1536,16 +1536,23 @@ async function 处理WS请求(request, yourUUID, url) {
 				await 处理SS数据(chunk);
 				return;
 			}
-			if (await 写入远端(chunk)) return;
-			if (判断协议类型 === null) {
-				if (url.searchParams.get('enc')) 判断协议类型 = 'ss';
-				else {
-					const bytes = new Uint8Array(chunk);
-					判断协议类型 = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a ? '木马' : '魏烈思';
-				}
-				log(`[WS转发] 协议类型: ${判断协议类型} | 来自: ${url.host} | UA: ${request.headers.get('user-agent') || '未知'}`);
+		if (await 写入远端(chunk)) return;
+		if (判断协议类型 === null) {
+			const bytes = new Uint8Array(chunk);
+			const isVless = bytes.byteLength >= 17 && formatIdentifier(bytes.subarray(1, 17)) === yourUUID;
+			const isTrojan = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a;
+			if (isVless) {
+				判断协议类型 = '魏烈思';
+			} else if (isTrojan) {
+				判断协议类型 = '木马';
+			} else if (url.searchParams.get('enc')) {
+				判断协议类型 = 'ss';
+			} else {
+				判断协议类型 = '魏烈思';
 			}
-			if (判断协议类型 === 'ss') {
+			log(`[WS转发] 协议类型: ${判断协议类型} | 来自: ${url.host} | UA: ${request.headers.get('user-agent') || '未知'}`);
+		}
+		if (判断协议类型 === 'ss') {
 				await 处理SS数据(chunk);
 				return;
 			}
