@@ -54,7 +54,7 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 3 * 60 * 1000; // 12 分钟缓存
+const CONFIG_CACHE_TTL = 60 * 60 * 1000; // 60 分钟缓存
 let configJSONCacheTime = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
@@ -338,6 +338,10 @@ export default {
 
                                 // 保存到 KV（带超时保护）
                                 await withTimeout(env.KV.put('config.json', JSON.stringify(newConfig, null, 2)), 3000);
+                                // 清除缓存，确保下次请求读取最新配置
+                                configJSONCache = null;
+                                configJSONCacheKey = null;
+                                configJSONCacheTime = 0;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
@@ -364,6 +368,10 @@ export default {
 
                                 // 保存到 KV（带超时保护）
                                 await withTimeout(env.KV.put('cf.json', JSON.stringify(CF_JSON, null, 2)), 3000);
+                                // 清除缓存，确保下次请求读取最新CF配置
+                                configJSONCache = null;
+                                configJSONCacheKey = null;
+                                configJSONCacheTime = 0;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
@@ -381,6 +389,10 @@ export default {
                                     await withTimeout(env.KV.put('tg.json', JSON.stringify(newConfig, null, 2)), 3000);
                                 }
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
+                                // 清除缓存，确保下次请求读取最新TG配置
+                                configJSONCache = null;
+                                configJSONCacheKey = null;
+                                configJSONCacheTime = 0;
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
                                 console.error('保存TG配置失败:', error.message);
@@ -390,6 +402,10 @@ export default {
                             try {
                                 const customIPs = await request.text();
                                 await withTimeout(env.KV.put('ADD.txt', customIPs), 3000);// 保存到 KV（带超时保护）
+                                // 清除缓存，确保下次请求读取最新配置
+                                configJSONCache = null;
+                                configJSONCacheKey = null;
+                                configJSONCacheTime = 0;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Custom_IPs', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '自定义IP已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
