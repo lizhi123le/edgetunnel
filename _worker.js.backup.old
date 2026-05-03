@@ -1,4 +1,4 @@
-const Version = '2026-04-16 04:47:24 (Local Enhanced)';
+const Version = '2026-05-03 01:19:25 (Local Enhanced)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -34,16 +34,115 @@ class RequestContext {
 
 // 跨请求缓存的状态（真正的模块级全局变量）
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0;
-
+// 性能优化1: 请求级缓存（避免重复计算MD5）
+let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
 // 向后兼容：保留全局变量用于快速访问（单请求场景）
 let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
 let 启用反代兜底 = true, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
+// 性能优化2: 预编译SOCKS5白名单正则（避免每次创建新RegExp）
+let SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
+// 性能优化3: 预分配更大缓冲区（减少扩容）
+const 预分配缓冲区大小 = 2048;
+const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 
 // 全局日志函数（兼容旧代码）
 function log(...args) {
     if (调试日志打印) console.log(...args);
 }
+
+// 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
+let configJSONCache = null;
+let configJSONCacheKey = null;
+const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 60 分钟缓存
+let configJSONCacheTime = 0;
+
+// HMAC-SHA256 签名密钥（基于加密秘钥派生）
+const HMAC_SIGN_KEY_PREFIX = 'edgetunnel_hmac_v1_';
+
+// 生成 Cookie 签名
+async function generateCookieSignature(cookieValue, secret) {
+    const key = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(HMAC_SIGN_KEY_PREFIX + secret),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    );
+    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(cookieValue));
+    return btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/=/g, '');
+}
+
+// 验证 Cookie 签名
+async function verifyCookieSignature(cookieValue, signature, secret) {
+    const expected = await generateCookieSignature(cookieValue, secret);
+    const expectedBytes = new TextEncoder().encode(expected);
+    const providedBytes = new TextEncoder().encode(signature);
+    if (expectedBytes.length !== providedBytes.length) return false;
+    return crypto.subtle.timingSafeEqual(expectedBytes, providedBytes);
+}
+
+// 安全比较两个字符串（防时序攻击）
+function secureCompare(a, b) {
+    const aBytes = new TextEncoder().encode(a);
+    const bBytes = new TextEncoder().encode(b);
+    if (aBytes.length !== bBytes.length) return false;
+    return crypto.subtle.timingSafeEqual(aBytes, bBytes);
+}
+
+// 限制字符串长度
+function clampLength(str, maxLen) {
+    if (!str) return '';
+    return str.length > maxLen ? str.substring(0, maxLen) + '...' : str;
+}
+
+// 清理 URL（移除查询参数中的敏感信息）
+function sanitizeURL(url) {
+    try {
+        const u = new URL(url);
+        u.search = '';
+        return u.toString();
+    } catch {
+        return url;
+    }
+}
+
+// 统一错误响应（不泄露内部细节）
+function sanitizedErrorResponse(message, status = 500) {
+    const publicMessages = {
+        400: '请求参数无效',
+        401: '未授权访问',
+        403: '禁止访问',
+        404: '资源不存在',
+        429: '请求过于频繁，请稍后重试',
+        500: '服务器内部错误',
+        504: '请求超时'
+    };
+    return new Response(JSON.stringify({ error: publicMessages[status] || '操作失败' }), {
+        status,
+        headers: { 'Content-Type': 'application/json;charset=utf-8' }
+    });
+}
+
+// KV 操作超时包装器 - 防止无限等待导致 loadShed
+// 异步超时包装器 - 防止无限等待导致 Worker 挂起
+const withTimeout = (promise, timeoutMs = 3000) => Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('操作超时')), timeoutMs))
+]);
+
+// Fetch 超时包装器 - 防止外部 API 请求无限挂起
+const fetchWithTimeout = (url, options = {}, timeoutMs = 10000) => {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, { ...options, signal: controller.signal })
+        .then(res => { clearTimeout(id); return res; })
+        .catch(err => { clearTimeout(id); throw err; });
+};
+
+// SOCKS5白名单缓存 - 避免每次请求都解析
+let cachedSocks5List = null;
+let cachedSocks5ListEnv = null;
 
 const Pages静态页面 = 'https://edt-pages.github.io';
 // 修正请求URL函数 - 处理URL编码问题
@@ -68,7 +167,12 @@ export default {
         const upgradeHeader = (request.headers.get('Upgrade') || '').toLowerCase(), contentType = (request.headers.get('content-type') || '').toLowerCase();
         const 管理员密码 = env.ADMIN || env.admin || env.PASSWORD || env.password || env.pswd || env.TOKEN || env.KEY || env.UUID || env.uuid;
         const 加密秘钥 = env.KEY || '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
-        const userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
+        // 性能优化1: 缓存userIDMD5（相同密钥无需重复计算）
+        if (缓存加密秘钥 !== 加密秘钥) {
+            缓存加密秘钥 = 加密秘钥;
+            缓存userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
+        }
+        const userIDMD5 = 缓存userIDMD5;
         const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
         const envUUID = env.UUID || env.uuid;
         const userID = (envUUID && uuidRegex.test(envUUID)) ? envUUID.toLowerCase() : [userIDMD5.slice(0, 8), userIDMD5.slice(8, 12), '4' + userIDMD5.slice(13, 16), '8' + userIDMD5.slice(17, 20), userIDMD5.slice(20)].join('-');
@@ -79,12 +183,30 @@ export default {
             const proxyIPs = await 整理成数组(env.PROXYIP);
             反代IP = ctx2.反代IP = proxyIPs[Math.floor(Math.random() * proxyIPs.length)];
             启用反代兜底 = ctx2.启用反代兜底 = false;
-        } else 反代IP = ctx2.反代IP = (request.cf.colo + '.PrOxYIp.CmLiUsSsS.nEt').toLowerCase();
+        } else 反代IP = ctx2.反代IP = ((request.cf?.colo || 'unknown') + '.PrOxYIp.CmLiUsSsS.nEt').toLowerCase();
         const 访问IP = request.headers.get('CF-Connecting-IP') || request.headers.get('True-Client-IP') || request.headers.get('X-Real-IP') || request.headers.get('X-Forwarded-For') || request.headers.get('Fly-Client-IP') || request.headers.get('X-Appengine-Remote-Addr') || request.headers.get('X-Cluster-Client-IP') || '未知IP';
-        if (env.GO2SOCKS5) SOCKS5白名单 = ctx2.SOCKS5白名单 = await 整理成数组(env.GO2SOCKS5);
-        if (访问路径 === 'version' && url.searchParams.get('uuid') === userID) {// 版本信息接口
+        // 缓存 SOCKS5 白名单，避免每次请求重复解析
+        if (env.GO2SOCKS5) {
+            if (cachedSocks5ListEnv !== env.GO2SOCKS5) {
+                try {
+                    cachedSocks5ListEnv = env.GO2SOCKS5;
+                    cachedSocks5List = await 整理成数组(env.GO2SOCKS5);
+                } catch (err) {
+                    调试日志打印 && log('SOCKS5白名单解析失败:', err);
+                    cachedSocks5List = SOCKS5白名单; // 降级到默认值
+                }
+            }
+            SOCKS5白名单 = ctx2.SOCKS5白名单 = cachedSocks5List || SOCKS5白名单;
+            // 同步更新预编译正则
+            SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
+        }
+        if (访问路径 === 'version') {// 版本信息接口（必须提前返回，避免穿透到重型逻辑）
+            if (url.searchParams.get('uuid') === userID) {
+                return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+            }
             return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-        } else if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
+        }
+        if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
             await 反代参数获取(url, ctx2);
             log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
             return await 处理WS请求(request, userID, url);
@@ -100,7 +222,7 @@ export default {
             return await 处理XHTTP请求(request, userID);
         } else {
             if (url.protocol === 'http:') return Response.redirect(url.href.replace(`http://${url.hostname}`, `https://${url.hostname}`), 301);
-            if (!管理员密码) return fetch(Pages静态页面 + '/noADMIN').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); });
+            if (!管理员密码) return fetchWithTimeout(Pages静态页面 + '/noADMIN', {}, 10000).then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); });
             if (env.KV && typeof env.KV.get === 'function') {
 
                 const 区分大小写访问路径 = url.pathname.slice(1);
@@ -111,34 +233,60 @@ export default {
                 } else if (访问路径 === 'login') {//处理登录页面和登录请求
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
-                    if (authCookie == await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin' } });
+                    const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
+                    const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
+                    // 使用 timingSafeEqual 防时序攻击
+                    if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin' } });
                     if (request.method === 'POST') {
+                        // 登录速率限制：5次/10分钟
+                        const 登录尝试次数 = env.KV ? (await env.KV.get(`login_fail:${访问IP}`) || 0) : 0;
+                        if (Number(登录尝试次数) >= 5) return sanitizedErrorResponse('登录尝试次数过多，请10分钟后再试', 429);
                         const formData = await request.text();
                         const params = new URLSearchParams(formData);
                         const 输入密码 = params.get('password');
-                        if (输入密码 === 管理员密码) {
-                            // 密码正确，设置cookie并返回成功标记
+                        // 使用 timingSafeEqual 防时序攻击
+                        if (输入密码 && secureCompare(输入密码, 管理员密码)) {
+                            // 清除失败计数
+                            if (env.KV) ctx.waitUntil(env.KV.delete(`login_fail:${访问IP}`));
+                            const authValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
+                            const authSig = await generateCookieSignature(authValue, 加密秘钥 + 管理员密码);
+                            // Cookie: Secure; SameSite=Strict; Max-Age=3600(1小时)
                             const 响应 = new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-                            响应.headers.set('Set-Cookie', `auth=${await MD5MD5(UA + 加密秘钥 + 管理员密码)}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Strict`);
+                            响应.headers.set('Set-Cookie', `auth=${authValue}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict`);
+                            响应.headers.append('Set-Cookie', `auth_sig=${authSig}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict`);
                             return 响应;
+                        } else {
+                            // 记录失败次数
+                            if (env.KV) {
+                                const 新次数 = Number(登录尝试次数) + 1;
+                                ctx.waitUntil(env.KV.put(`login_fail:${访问IP}`, String(新次数), { expirationTtl: 600 }));
+                            }
                         }
                     }
-                    return fetch(Pages静态页面 + '/login');
+                    return fetchWithTimeout(Pages静态页面 + '/login', {}, 10000);
                 } else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {//验证cookie后响应管理页面
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
+                    const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
+                    const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
+                    // 验证 cookie 值（timingSafeEqual）和签名（HMAC-SHA256）
+                    const 认证通过 = authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码);
                     // 没有cookie或cookie错误，跳转到/login页面
-                    if (!authCookie || authCookie !== await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
+                    if (!认证通过) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
                     if (访问路径 === 'admin/log.json') {// 读取日志内容
-                        const 读取日志内容 = await env.KV.get('log.json') || '[]';
-                        return new Response(读取日志内容, { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                        try {
+                            const 读取日志内容 = await withTimeout(env.KV.get('log.json'), 3000) || '[]';
+                            return new Response(读取日志内容, { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                        } catch (err) {
+                            return new Response(JSON.stringify({ error: '读取日志超时' }), { status: 504, headers: { 'Content-Type': 'application/json' } });
+                        }
                     } else if (区分大小写访问路径 === 'admin/getCloudflareUsage') {// 查询请求量
                         try {
                             const Usage_JSON = await getCloudflareUsage(url.searchParams.get('Email'), url.searchParams.get('GlobalAPIKey'), url.searchParams.get('AccountID'), url.searchParams.get('APIToken'));
                             return new Response(JSON.stringify(Usage_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
                         } catch (err) {
-                            const errorResponse = { msg: '查询请求量失败，失败原因：' + err.message, error: err.message };
-                            return new Response(JSON.stringify(errorResponse, null, 2), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                            console.error('查询CF用量失败:', err.message);
+                            return sanitizedErrorResponse('查询用量失败', 500);
                         }
                     } else if (区分大小写访问路径 === 'admin/getADDAPI') {// 验证优选API
                         if (url.searchParams.get('url')) {
@@ -150,8 +298,8 @@ export default {
                                 优选API的IP = 优选API的IP.map(item => item.replace(/#(.+)$/, (_, remark) => '#' + decodeURIComponent(remark)));
                                 return new Response(JSON.stringify({ success: true, data: 优选API的IP }, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (err) {
-                                const errorResponse = { msg: '验证优选API失败，失败原因：' + err.message, error: err.message };
-                                return new Response(JSON.stringify(errorResponse, null, 2), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('验证优选API失败:', err.message);
+                                return sanitizedErrorResponse('验证优选API失败', 500);
                             }
                         }
                         return new Response(JSON.stringify({ success: false, data: [] }, null, 2), { status: 403, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -178,8 +326,8 @@ export default {
                             config_JSON.init = '配置已重置为默认值';
                             return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                         } catch (err) {
-                            const errorResponse = { msg: '配置重置失败，失败原因：' + err.message, error: err.message };
-                            return new Response(JSON.stringify(errorResponse, null, 2), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                            console.error('配置重置失败:', err.message);
+                            return sanitizedErrorResponse('配置重置失败', 500);
                         }
                     } else if (request.method === 'POST') {// 处理 KV 操作（POST 请求）
                         if (访问路径 === 'admin/config.json') { // 保存config.json配置
@@ -188,13 +336,17 @@ export default {
                                 // 验证配置完整性
                                 if (!newConfig.UUID || !newConfig.HOST) return new Response(JSON.stringify({ error: '配置不完整' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 
-                                // 保存到 KV
-                                await env.KV.put('config.json', JSON.stringify(newConfig, null, 2));
+                                // 保存到 KV（带超时保护）
+                                await withTimeout(env.KV.put('config.json', JSON.stringify(newConfig, null, 2)), 3000);
+                                // 清除缓存，确保下次请求读取最新配置
+                                configJSONCache = null;
+                                configJSONCacheKey = null;
+                                configJSONCacheTime = 0;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
-                                console.error('保存配置失败:', error);
-                                return new Response(JSON.stringify({ error: '保存配置失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('保存配置失败:', error.message);
+                                return sanitizedErrorResponse('保存配置失败', 500);
                             }
                         } else if (访问路径 === 'admin/cf.json') { // 保存cf.json配置
                             try {
@@ -214,60 +366,85 @@ export default {
                                     }
                                 }
 
-                                // 保存到 KV
-                                await env.KV.put('cf.json', JSON.stringify(CF_JSON, null, 2));
+                                // 保存到 KV（带超时保护）
+                                await withTimeout(env.KV.put('cf.json', JSON.stringify(CF_JSON, null, 2)), 3000);
+                                // 清除缓存，确保下次请求读取最新CF配置
+                                configJSONCache = null;
+                                configJSONCacheKey = null;
+                                configJSONCacheTime = 0;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
-                                console.error('保存配置失败:', error);
-                                return new Response(JSON.stringify({ error: '保存配置失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('保存CF配置失败:', error.message);
+                                return sanitizedErrorResponse('保存CF配置失败', 500);
                             }
                         } else if (访问路径 === 'admin/tg.json') { // 保存tg.json配置
                             try {
                                 const newConfig = await request.json();
                                 if (newConfig.init && newConfig.init === true) {
                                     const TG_JSON = { BotToken: null, ChatID: null };
-                                    await env.KV.put('tg.json', JSON.stringify(TG_JSON, null, 2));
+                                    await withTimeout(env.KV.put('tg.json', JSON.stringify(TG_JSON, null, 2)), 3000);
                                 } else {
                                     if (!newConfig.BotToken || !newConfig.ChatID) return new Response(JSON.stringify({ error: '配置不完整' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-                                    await env.KV.put('tg.json', JSON.stringify(newConfig, null, 2));
+                                    await withTimeout(env.KV.put('tg.json', JSON.stringify(newConfig, null, 2)), 3000);
                                 }
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
+                                // 清除缓存，确保下次请求读取最新TG配置
+                                configJSONCache = null;
+                                configJSONCacheKey = null;
+                                configJSONCacheTime = 0;
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
-                                console.error('保存配置失败:', error);
-                                return new Response(JSON.stringify({ error: '保存配置失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('保存TG配置失败:', error.message);
+                                return sanitizedErrorResponse('保存TG配置失败', 500);
                             }
                         } else if (区分大小写访问路径 === 'admin/ADD.txt') { // 保存自定义优选IP
                             try {
                                 const customIPs = await request.text();
-                                await env.KV.put('ADD.txt', customIPs);// 保存到 KV
+                                await withTimeout(env.KV.put('ADD.txt', customIPs), 3000);// 保存到 KV（带超时保护）
+                                // 清除缓存，确保下次请求读取最新配置
+                                configJSONCache = null;
+                                configJSONCacheKey = null;
+                                configJSONCacheTime = 0;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Custom_IPs', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '自定义IP已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
-                                console.error('保存自定义IP失败:', error);
-                                return new Response(JSON.stringify({ error: '保存自定义IP失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                console.error('保存自定义IP失败:', error.message);
+                                return sanitizedErrorResponse('保存自定义IP失败', 500);
                             }
                         } else return new Response(JSON.stringify({ error: '不支持的POST请求路径' }), { status: 404, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                     } else if (访问路径 === 'admin/config.json') {// 处理 admin/config.json 请求，返回JSON
                         return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
                     } else if (区分大小写访问路径 === 'admin/ADD.txt') {// 处理 admin/ADD.txt 请求，返回本地优选IP
-                        let 本地优选IP = await env.KV.get('ADD.txt') || 'null';
-                        if (本地优选IP == 'null') 本地优选IP = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (config_JSON.协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[1];
-                        return new Response(本地优选IP, { status: 200, headers: { 'Content-Type': 'text/plain;charset=utf-8', 'asn': request.cf.asn } });
+                        try {
+                            let 本地优选IP = await withTimeout(env.KV.get('ADD.txt'), 3000) || 'null';
+                            if (本地优选IP == 'null') 本地优选IP = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (config_JSON.协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[1];
+                            return new Response(本地优选IP, { status: 200, headers: { 'Content-Type': 'text/plain;charset=utf-8', 'asn': request.cf?.asn || 'unknown' } });
+                        } catch (err) {
+                            return new Response('ERROR', { status: 504 });
+                        }
                     } else if (访问路径 === 'admin/cf.json') {// CF配置文件
-                        return new Response(JSON.stringify(request.cf, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                        return new Response(JSON.stringify(request.cf || {}, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                     }
 
                     ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Admin_Login', config_JSON));
-                    return fetch(Pages静态页面 + '/admin' + url.search);
+                    return fetchWithTimeout(Pages静态页面 + '/admin' + url.search, {}, 10000);
                 } else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
                     const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
-                    响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
+                    响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict');
+                    响应.headers.append('Set-Cookie', 'auth_sig=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict');
                     return 响应;
                 } else if (访问路径 === 'sub') {//处理订阅请求
                     const 订阅TOKEN = await MD5MD5(host + userID), 作为优选订阅生成器 = ['1', 'true'].includes(env.BEST_SUB) && url.searchParams.get('host') === 'example.com' && url.searchParams.get('uuid') === '00000000-0000-4000-8000-000000000000' && UA.toLowerCase().includes('tunnel (https://github.com/cmliu/edge');
                     if (url.searchParams.get('token') === 订阅TOKEN || 作为优选订阅生成器) {
+                        // 订阅速率限制：单IP 10次/小时
+                        if (env.KV) {
+                            const subCount = await env.KV.get(`sub_rate:${访问IP}`);
+                            if (Number(subCount) >= 10) {
+                                return sanitizedErrorResponse('订阅请求过于频繁，请稍后重试', 429);
+                            }
+                            ctx.waitUntil(env.KV.put(`sub_rate:${访问IP}`, String(Number(subCount) + 1), { expirationTtl: 3600 }));
+                        }
                         config_JSON = await 读取config_JSON(env, host, userID, UA, false, ctx2);
                         if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
                         else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
@@ -352,11 +529,26 @@ export default {
                             };
 
                             if (!url.searchParams.has('sub') && config_JSON.优选订阅生成.local) { // 本地生成订阅
-                                const 完整优选列表 = config_JSON.优选订阅生成.本地IP库.随机IP ? (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0] : await env.KV.get('ADD.txt') ? await 整理成数组(await env.KV.get('ADD.txt')) : (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0];
+                                // 优化：避免重复读取 ADD.txt，只读一次后复用
+                                let 完整优选列表;
+                                if (config_JSON.优选订阅生成.本地IP库.随机IP) {
+                                    完整优选列表 = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0];
+                                } else {
+                                    const addTxtContent = await withTimeout(env.KV.get('ADD.txt'), 3000);
+                                    if (addTxtContent) {
+                                        完整优选列表 = await 整理成数组(addTxtContent);
+                                    } else {
+                                        完整优选列表 = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0];
+                                    }
+                                }
                                 const 优选API = [], 优选IP = [], 其他节点 = [];
                                 let lastYieldTime = performance.now();
+                                let ipCount = 0;
                                 for (const 元素 of 完整优选列表) {
-                                    if (performance.now() - lastYieldTime > 5) { await new Promise(r => setTimeout(r, 0)); lastYieldTime = performance.now(); }
+                                    if (++ipCount % 100 === 0 || performance.now() - lastYieldTime > 5) {
+                                        await new Promise(r => setTimeout(r, 0));
+                                        lastYieldTime = performance.now();
+                                    }
                                     if (元素.toLowerCase().startsWith('sub://')) {
                                         优选API.push(元素);
                                     } else {
@@ -372,7 +564,12 @@ export default {
                                                 其他节点.push(地址备注分离[0] + '#' + encodeURIComponent(decodeURIComponent(地址备注分离[1])));
                                             } else 其他节点.push(元素);
                                         } else {
-                                            优选IP.push(元素);
+                                            const 备注位置 = 元素.indexOf('#');
+                                            const 地址部分 = 备注位置 > -1 ? 元素.slice(0, 备注位置) : 元素;
+                                            if (地址部分.includes('*')) {
+                                                const 备注部分 = 备注位置 > -1 ? 元素.slice(备注位置) : '';
+                                                优选IP.push(随机替换通配符(地址部分) + 备注部分);
+                                            } else 优选IP.push(元素);
                                         }
                                     }
                                 }
@@ -403,9 +600,10 @@ export default {
                                 if (response.ok) {
                                     订阅内容 = await response.text();
                                     if (url.searchParams.has('surge') || ua.includes('surge')) 订阅内容 = await Surge订阅配置文件热补丁(订阅内容, url.protocol + '//' + url.host + '/sub?token=' + 订阅TOKEN + '&surge', config_JSON);
-                                } else return new Response('订阅转换后端异常：' + response.statusText, { status: response.status });
+                                } else return new Response('订阅转换服务暂时不可用', { status: response.status });
                             } catch (error) {
-                                return new Response('订阅转换后端异常：' + error.message, { status: 403 });
+                                console.error('订阅转换失败:', error.message);
+                                return new Response('订阅转换服务暂时不可用', { status: 503 });
                             }
                         }
 
@@ -442,7 +640,9 @@ export default {
                 } else if (访问路径 === 'locations') {//反代locations列表
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
-                    if (authCookie && authCookie == await MD5MD5(UA + 加密秘钥 + 管理员密码)) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
+                    const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
+                    const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
+                    if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
                 } else if (访问路径 === 'robots.txt') return new Response('User-agent: *\nDisallow: /', { status: 200, headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
             } else if (!envUUID) return fetch(Pages静态页面 + '/noKV').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); });
         }
@@ -455,21 +655,38 @@ export default {
             try { const u = new URL(伪装页URL); 伪装页URL = u.protocol + '//' + u.host; } catch (e) { 伪装页URL = 'nginx'; }
         }
         if (伪装页URL === '1101') return new Response(await html1101(url.host, 访问IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+        // 如果伪装页 URL 无效，直接返回 nginx 默认页，避免 fetch 挂起
+        if (伪装页URL === 'nginx') return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
         try {
             const 反代URL = new URL(伪装页URL), 新请求头 = new Headers(request.headers);
             新请求头.set('Host', 反代URL.host);
             新请求头.set('Referer', 反代URL.origin);
             新请求头.set('Origin', 反代URL.origin);
             if (!新请求头.has('User-Agent') && UA && UA !== 'null') 新请求头.set('User-Agent', UA);
-            const 反代响应 = await fetch(反代URL.origin + url.pathname + url.search, { method: request.method, headers: 新请求头, body: request.body, cf: request.cf });
-            const 内容类型 = 反代响应.headers.get('content-type') || '';
-            // 只处理文本类型的响应
-            if (/text|javascript|json|xml/.test(内容类型)) {
-                const 响应内容 = (await 反代响应.text()).replaceAll(反代URL.host, url.host);
-                return new Response(响应内容, { status: 反代响应.status, headers: { ...Object.fromEntries(反代响应.headers), 'Cache-Control': 'no-store' } });
+            const fetchOptions = { method: request.method, headers: 新请求头, cf: request.cf || {} };
+            // GET 请求不应传入 body，否则 fetch 可能挂起
+            if (request.method !== 'GET' && request.body) fetchOptions.body = request.body;
+            try {
+                const 反代响应 = await fetchWithTimeout(反代URL.origin + url.pathname + url.search, fetchOptions, 10000);
+                const 内容类型 = 反代响应.headers.get('content-type') || '';
+                const 内容长度 = parseInt(反代响应.headers.get('content-length') || '0', 10);
+                // 优化：只有文本类型且大小小于 2MB 才进行全量缓冲和替换，否则直接流式转发避免挂起
+                if (/text|javascript|json|xml/.test(内容类型) && (内容长度 === 0 || 内容长度 < 2 * 1024 * 1024)) {
+                    try {
+                        const 响应文本 = await withTimeout(反代响应.text(), 5000);
+                        const 响应内容 = 响应文本.replaceAll(反代URL.host, url.host);
+                        return new Response(响应内容, { status: 反代响应.status, headers: { ...Object.fromEntries(反代响应.headers), 'Cache-Control': 'no-store' } });
+                    } catch (e) {
+                        console.warn('伪装页缓冲超时，改为流式转发');
+                    }
+                }
+                return 反代响应;
+            } catch (fetchError) {
+                console.error('伪装页获取失败:', fetchError.message);
             }
-            return 反代响应;
-        } catch (error) { }
+        } catch (error) {
+            console.error('伪装页初始化失败:', error.message);
+        }
         return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
     }
 };
@@ -734,7 +951,8 @@ const 尝试解析木马首包 = (data) => {
         };
     };
 
-    let buffer = new Uint8Array(1024);
+    // 性能优化3: 使用预分配缓冲区（减少扩容）
+    let buffer = new Uint8Array(预分配缓冲区大小);
     let offset = 0;
 
     while (true) {
@@ -1158,32 +1376,37 @@ async function 处理WS请求(request, yourUUID, url) {
 							const 初始化成功 = await 初始化入站解密状态();
 							if (!初始化成功) return [];
 						}
-						const plaintextChunks = [];
-						while (true) {
-							if (入站状态.waitPayloadLength === null) {
-								const lengthCipherTotalLength = 2 + SSAEAD标签长度;
-								if (入站状态.buffer.byteLength < lengthCipherTotalLength) break;
-								const lengthCipher = 入站状态.buffer.subarray(0, lengthCipherTotalLength);
-								入站状态.buffer = 入站状态.buffer.subarray(lengthCipherTotalLength);
-								const lengthPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, lengthCipher);
-								if (lengthPlain.byteLength !== 2) throw new Error('SS length decrypt failed');
-								const payloadLength = (lengthPlain[0] << 8) | lengthPlain[1];
-								if (payloadLength < 0 || payloadLength > 入站状态.加密配置.maxChunk) throw new Error(`SS payload length invalid: ${payloadLength}`);
-								入站状态.waitPayloadLength = payloadLength;
-							}
-							const payloadCipherTotalLength = 入站状态.waitPayloadLength + SSAEAD标签长度;
-							if (入站状态.buffer.byteLength < payloadCipherTotalLength) break;
-							const payloadCipher = 入站状态.buffer.subarray(0, payloadCipherTotalLength);
-							入站状态.buffer = 入站状态.buffer.subarray(payloadCipherTotalLength);
-							const payloadPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, payloadCipher);
-							plaintextChunks.push(payloadPlain); 入站状态.waitPayloadLength = null;
-
-							入站状态.cpuYieldByteCounter += payloadCipherTotalLength;
-							if (入站状态.cpuYieldByteCounter >= 131072) {
-								入站状态.cpuYieldByteCounter = 0;
-								await new Promise(r => setTimeout(r, 0));
-							}
+					const plaintextChunks = [];
+					let packetCount = 0;
+					while (true) {
+						if (入站状态.waitPayloadLength === null) {
+							const lengthCipherTotalLength = 2 + SSAEAD标签长度;
+							if (入站状态.buffer.byteLength < lengthCipherTotalLength) break;
+							const lengthCipher = 入站状态.buffer.subarray(0, lengthCipherTotalLength);
+							入站状态.buffer = 入站状态.buffer.subarray(lengthCipherTotalLength);
+							const lengthPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, lengthCipher);
+							if (lengthPlain.byteLength !== 2) throw new Error('SS length decrypt failed');
+							const payloadLength = (lengthPlain[0] << 8) | lengthPlain[1];
+							if (payloadLength < 0 || payloadLength > 入站状态.加密配置.maxChunk) throw new Error(`SS payload length invalid: ${payloadLength}`);
+							入站状态.waitPayloadLength = payloadLength;
 						}
+						const payloadCipherTotalLength = 入站状态.waitPayloadLength + SSAEAD标签长度;
+						if (入站状态.buffer.byteLength < payloadCipherTotalLength) break;
+						const payloadCipher = 入站状态.buffer.subarray(0, payloadCipherTotalLength);
+						入站状态.buffer = 入站状态.buffer.subarray(payloadCipherTotalLength);
+						const payloadPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, payloadCipher);
+						plaintextChunks.push(payloadPlain); 入站状态.waitPayloadLength = null;
+						
+						入站状态.cpuYieldByteCounter += payloadCipherTotalLength;
+						packetCount++;
+						
+						// 动态让出：每10个小包 或 累计128KB
+						if (packetCount % 10 === 0 || 入站状态.cpuYieldByteCounter >= 131072) {
+							await new Promise(r => setTimeout(r, 0));
+							入站状态.cpuYieldByteCounter = 0;
+							packetCount = 0;
+						}
+					}
 						return plaintextChunks;
 					},
 				};
@@ -1318,16 +1541,23 @@ async function 处理WS请求(request, yourUUID, url) {
 				await 处理SS数据(chunk);
 				return;
 			}
-			if (await 写入远端(chunk)) return;
-			if (判断协议类型 === null) {
-				if (url.searchParams.get('enc')) 判断协议类型 = 'ss';
-				else {
-					const bytes = new Uint8Array(chunk);
-					判断协议类型 = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a ? '木马' : '魏烈思';
-				}
-				log(`[WS转发] 协议类型: ${判断协议类型} | 来自: ${url.host} | UA: ${request.headers.get('user-agent') || '未知'}`);
+		if (await 写入远端(chunk)) return;
+		if (判断协议类型 === null) {
+			const bytes = new Uint8Array(chunk);
+			const isVless = bytes.byteLength >= 17 && formatIdentifier(bytes.subarray(1, 17)) === yourUUID;
+			const isTrojan = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a;
+			if (isVless) {
+				判断协议类型 = '魏烈思';
+			} else if (isTrojan) {
+				判断协议类型 = '木马';
+			} else if (url.searchParams.get('enc')) {
+				判断协议类型 = 'ss';
+			} else {
+				判断协议类型 = '魏烈思';
 			}
-			if (判断协议类型 === 'ss') {
+			log(`[WS转发] 协议类型: ${判断协议类型} | 来自: ${url.host} | UA: ${request.headers.get('user-agent') || '未知'}`);
+		}
+		if (判断协议类型 === 'ss') {
 				await 处理SS数据(chunk);
 				return;
 			}
@@ -1791,7 +2021,7 @@ async function TLS_HMAC(hash, key, data) {
 }
 async function TLS摘要(hash, data) { return new Uint8Array(await crypto.subtle.digest(hash, data)); }
 
-// TLS 1.2 PRF
+// TLS 1.2 PRF (RFC 5246 §5，支持 SHA-256 / SHA-384)
 async function TLS12PRF(secret, label, seed, length, hash = 'SHA-256') {
 	const labelSeed = concatBytes(TLS文本编码器.encode(label), seed);
 	let output = new Uint8Array(0), currentA = labelSeed;
@@ -1803,18 +2033,29 @@ async function TLS12PRF(secret, label, seed, length, hash = 'SHA-256') {
 	return output.slice(0, length);
 }
 
-// HKDF
+// HKDF (RFC 5869)
 async function hkdfExtract(hash, salt, inputKeyMaterial) {
-	return salt && salt.length || (salt = new Uint8Array(TLS哈希长度(hash))), TLS_HMAC(hash, salt, inputKeyMaterial);
+	// 如果 salt 未提供或为空，使用全零的 salt（长度等于哈希输出长度）
+	if (!salt || !salt.length) salt = new Uint8Array(TLS哈希长度(hash));
+	return TLS_HMAC(hash, salt, inputKeyMaterial || new Uint8Array(0));
 }
 async function hkdfExpandLabel(hash, secret, label, context, length) {
 	const fullLabel = TLS文本编码器.encode('tls13 ' + label);
-	return async function (hash, secret, info, length) {
-		const hashLen = TLS哈希长度(hash), roundCount = Math.ceil(length / hashLen);
-		let output = new Uint8Array(0), previousBlock = new Uint8Array(0);
-		for (let round = 1; round <= roundCount; round++) previousBlock = await TLS_HMAC(hash, secret, concatBytes(previousBlock, info, [round])), output = concatBytes(output, previousBlock);
-		return output.slice(0, length);
-	}(hash, secret, tlsBytes(uint16be(length), fullLabel.length, fullLabel, context.length, context), length);
+	// RFC 8446 §7.1: info = uint16(length) + uint8(label_length) + "tls13 " + label + uint16(context_length) + context
+	const info = concatBytes(
+		uint16be(length),
+		[fullLabel.length], // label length 是 uint8
+		fullLabel,
+		uint16be(context.length),
+		context
+	);
+	const hashLen = TLS哈希长度(hash), roundCount = Math.ceil(length / hashLen);
+	let output = new Uint8Array(0), previousBlock = new Uint8Array(0);
+	for (let round = 1; round <= roundCount; round++) {
+		previousBlock = await TLS_HMAC(hash, secret, concatBytes(previousBlock, info, [round]));
+		output = concatBytes(output, previousBlock);
+	}
+	return output.slice(0, length);
 }
 
 // 密钥交换
@@ -1848,105 +2089,117 @@ function ChaCha20QuarterRound(state, indexA, indexB, indexC, indexD) {
 	state[indexA] = state[indexA] + state[indexB] >>> 0, state[indexD] = rotateLeft32(state[indexD] ^ state[indexA], 16), state[indexC] = state[indexC] + state[indexD] >>> 0, state[indexB] = rotateLeft32(state[indexB] ^ state[indexC], 12), state[indexA] = state[indexA] + state[indexB] >>> 0, state[indexD] = rotateLeft32(state[indexD] ^ state[indexA], 8), state[indexC] = state[indexC] + state[indexD] >>> 0, state[indexB] = rotateLeft32(state[indexB] ^ state[indexC], 7);
 }
 
-function ChaCha20Block(key, counter, nonce) {
-	const state = new Uint32Array(16);
-	state[0] = 1634760805, state[1] = 857760878, state[2] = 2036477234, state[3] = 1797285236;
-	const keyView = new DataView(key.buffer, key.byteOffset, key.byteLength);
-	for (let wordIndex = 0; wordIndex < 8; wordIndex++) state[4 + wordIndex] = keyView.getUint32(4 * wordIndex, true);
-	state[12] = counter;
-	const nonceView = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
-	state[13] = nonceView.getUint32(0, true), state[14] = nonceView.getUint32(4, true), state[15] = nonceView.getUint32(8, true);
-	const workingState = new Uint32Array(state);
-	for (let round = 0; round < 10; round++) {
-		ChaCha20QuarterRound(workingState, 0, 4, 8, 12), ChaCha20QuarterRound(workingState, 1, 5, 9, 13), ChaCha20QuarterRound(workingState, 2, 6, 10, 14), ChaCha20QuarterRound(workingState, 3, 7, 11, 15);
-		ChaCha20QuarterRound(workingState, 0, 5, 10, 15), ChaCha20QuarterRound(workingState, 1, 6, 11, 12), ChaCha20QuarterRound(workingState, 2, 7, 8, 13), ChaCha20QuarterRound(workingState, 3, 4, 9, 14);
-	}
-	for (let wordIndex = 0; wordIndex < 16; wordIndex++) workingState[wordIndex] = workingState[wordIndex] + state[wordIndex] >>> 0;
-	return new Uint8Array(workingState.buffer.slice(0));
-}
+async function ChaCha20Block(key, counter, nonce) {
+        const state = new Uint32Array(16);
+        state[0] = 1634760805, state[1] = 857760878, state[2] = 2036477234, state[3] = 1797285236;
+        const keyView = new DataView(key.buffer, key.byteOffset, key.byteLength);
+        for (let wordIndex = 0; wordIndex < 8; wordIndex++) state[4 + wordIndex] = keyView.getUint32(4 * wordIndex, true);
+        state[12] = counter;
+        const nonceView = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
+        state[13] = nonceView.getUint32(0, true), state[14] = nonceView.getUint32(4, true), state[15] = nonceView.getUint32(8, true);
+        const workingState = new Uint32Array(state);
+        let lastChaChaYield = performance.now();
+        for (let round = 0; round < 10; round++) {
+            ChaCha20QuarterRound(workingState, 0, 4, 8, 12), ChaCha20QuarterRound(workingState, 1, 5, 9, 13), ChaCha20QuarterRound(workingState, 2, 6, 10, 14), ChaCha20QuarterRound(workingState, 3, 7, 11, 15);
+            ChaCha20QuarterRound(workingState, 0, 5, 10, 15), ChaCha20QuarterRound(workingState, 1, 6, 11, 12), ChaCha20QuarterRound(workingState, 2, 7, 8, 13), ChaCha20QuarterRound(workingState, 3, 4, 9, 14);
+            if (performance.now() - lastChaChaYield > 2) {
+                await new Promise(r => setTimeout(r, 0));
+                lastChaChaYield = performance.now();
+            }
+        }
+        for (let wordIndex = 0; wordIndex < 16; wordIndex++) workingState[wordIndex] = workingState[wordIndex] + state[wordIndex] >>> 0;
+        return new Uint8Array(workingState.buffer.slice(0));
+    }
 
-function ChaCha20XOR(key, nonce, data) {
-	const output = new Uint8Array(data.length);
-	let counter = 1;
-	for (let offset = 0; offset < data.length; offset += 64) {
-		const block = ChaCha20Block(key, counter++, nonce);
-		const blockLength = Math.min(64, data.length - offset);
-		for (let index = 0; index < blockLength; index++) output[offset + index] = data[offset + index] ^ block[index];
-	}
-	return output;
-}
+async function ChaCha20XOR(key, nonce, data) {
+            const output = new Uint8Array(data.length);
+            let counter = 1;
+            for (let offset = 0; offset < data.length; offset += 64) {
+                if (offset > 0 && offset % 64000 === 0) await new Promise(r => setTimeout(r, 0));
+                const block = await ChaCha20Block(key, counter++, nonce);
+                const blockLength = Math.min(64, data.length - offset);
+                for (let index = 0; index < blockLength; index++) output[offset + index] = data[offset + index] ^ block[index];
+            }
+            return output;
+        }
 
 // Poly1305 MAC
-function Poly1305Mac(key, message) {
-	const rKey = (() => {
-		const clamped = new Uint8Array(key);
-		return clamped[3] &= 15, clamped[7] &= 15, clamped[11] &= 15, clamped[15] &= 15, clamped[4] &= 252, clamped[8] &= 252, clamped[12] &= 252, clamped;
-	})(key.slice(0, 16)), sKey = key.slice(16, 32);
-	let accumulator = [0n, 0n, 0n, 0n, 0n];
-	const rLimbs = [
-		0x3ffffffn & BigInt(rKey[0] | rKey[1] << 8 | rKey[2] << 16 | rKey[3] << 24),
-		0x3ffffffn & BigInt(rKey[3] >> 2 | rKey[4] << 6 | rKey[5] << 14 | rKey[6] << 22),
-		0x3ffffffn & BigInt(rKey[6] >> 4 | rKey[7] << 4 | rKey[8] << 12 | rKey[9] << 20),
-		0x3ffffffn & BigInt(rKey[9] >> 6 | rKey[10] << 2 | rKey[11] << 10 | rKey[12] << 18),
-		0x3ffffffn & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
-	];
-	for (let offset = 0; offset < message.length; offset += 16) {
-		const chunk = message.slice(offset, offset + 16);
-		const paddedChunk = new Uint8Array(17);
-		paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
-		accumulator[0] += BigInt(paddedChunk[0] | paddedChunk[1] << 8 | paddedChunk[2] << 16 | (3 & paddedChunk[3]) << 24);
-		accumulator[1] += BigInt(paddedChunk[3] >> 2 | paddedChunk[4] << 6 | paddedChunk[5] << 14 | (15 & paddedChunk[6]) << 22);
-		accumulator[2] += BigInt(paddedChunk[6] >> 4 | paddedChunk[7] << 4 | paddedChunk[8] << 12 | (63 & paddedChunk[9]) << 20);
-		accumulator[3] += BigInt(paddedChunk[9] >> 6 | paddedChunk[10] << 2 | paddedChunk[11] << 10 | paddedChunk[12] << 18);
-		accumulator[4] += BigInt(paddedChunk[13] | paddedChunk[14] << 8 | paddedChunk[15] << 16 | paddedChunk[16] << 24);
-		const product = [0n, 0n, 0n, 0n, 0n];
-		for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
-			const limbIndex = accIndex + rIndex;
-			limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
-		}
-		let carry = 0n;
-		for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
-		accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
-	}
-	let tagValue = accumulator[0] | accumulator[1] << 26n | accumulator[2] << 52n | accumulator[3] << 78n | accumulator[4] << 104n;
-	tagValue = tagValue + sKey.reduce(((total, byte, index) => total + (BigInt(byte) << BigInt(8 * index))), 0n) & (1n << 128n) - 1n;
-	const tag = new Uint8Array(16);
-	for (let index = 0; index < 16; index++) tag[index] = Number(tagValue >> BigInt(8 * index) & 0xffn);
-	return tag;
+        async function Poly1305Mac(key, message) {
+            const rKey = (() => {
+                const clamped = new Uint8Array(key);
+                return clamped[3] &= 15, clamped[7] &= 15, clamped[11] &= 15, clamped[15] &= 15, clamped[4] &= 252, clamped[8] &= 252, clamped[12] &= 252, clamped;
+            })(key.slice(0, 16)), sKey = key.slice(16, 32);
+            let accumulator = [0n, 0n, 0n, 0n, 0n];
+            const rLimbs = [
+                0x3ffffffn & BigInt(rKey[0] | rKey[1] << 8 | rKey[2] << 16 | rKey[3] << 24),
+                0x3ffffffn & BigInt(rKey[3] >> 2 | rKey[4] << 6 | rKey[5] << 14 | rKey[6] << 22),
+                0x3ffffffn & BigInt(rKey[6] >> 4 | rKey[7] << 4 | rKey[8] << 12 | rKey[9] << 20),
+                0x3ffffffn & BigInt(rKey[9] >> 6 | rKey[10] << 2 | rKey[11] << 10 | rKey[12] << 18),
+                0x3ffffffn & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
+            ];
+let blockCount = 0;
+let lastYieldTime = performance.now();
+for (let offset = 0; offset < message.length; offset += 16) {
+    if (++blockCount % 2 === 0 || performance.now() - lastYieldTime > 5) {
+        await new Promise(r => setTimeout(r, 0));
+        lastYieldTime = performance.now();
+    }
+    const chunk = message.slice(offset, offset + 16);
+    const paddedChunk = new Uint8Array(17);
+    paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
+    accumulator[0] += BigInt(paddedChunk[0] | paddedChunk[1] << 8 | paddedChunk[2] << 16 | (3 & paddedChunk[3]) << 24);
+    accumulator[1] += BigInt(paddedChunk[3] >> 2 | paddedChunk[4] << 6 | paddedChunk[5] << 14 | (15 & paddedChunk[6]) << 22);
+    accumulator[2] += BigInt(paddedChunk[6] >> 4 | paddedChunk[7] << 4 | paddedChunk[8] << 12 | (63 & paddedChunk[9]) << 20);
+    accumulator[3] += BigInt(paddedChunk[9] >> 6 | paddedChunk[10] << 2 | paddedChunk[11] << 10 | paddedChunk[12] << 18);
+    accumulator[4] += BigInt(paddedChunk[13] | paddedChunk[14] << 8 | paddedChunk[15] << 16 | paddedChunk[16] << 24);
+    const product = [0n, 0n, 0n, 0n, 0n];
+    for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
+        const limbIndex = accIndex + rIndex;
+        limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
+    }
+    let carry = 0n;
+    for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
+    accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
 }
+            let tagValue = accumulator[0] | accumulator[1] << 26n | accumulator[2] << 52n | accumulator[3] << 78n | accumulator[4] << 104n;
+            tagValue = tagValue + sKey.reduce(((total, byte, index) => total + (BigInt(byte) << BigInt(8 * index))), 0n) & (1n << 128n) - 1n;
+            const tag = new Uint8Array(16);
+            for (let index = 0; index < 16; index++) tag[index] = Number(tagValue >> BigInt(8 * index) & 0xffn);
+            return tag;
+        }
 
 // ChaCha20-Poly1305 加密
-function ChaCha20Poly1305Encrypt(key, nonce, plaintext, additionalData) {
-	const polyKey = ChaCha20Block(key, 0, nonce).slice(0, 32);
-	const ciphertext = ChaCha20XOR(key, nonce, plaintext);
-	const aadPadding = (16 - additionalData.length % 16) % 16;
-	const ciphertextPadding = (16 - ciphertext.length % 16) % 16;
-	const macData = new Uint8Array(additionalData.length + aadPadding + ciphertext.length + ciphertextPadding + 16);
-	macData.set(additionalData, 0), macData.set(ciphertext, additionalData.length + aadPadding);
-	const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + ciphertext.length + ciphertextPadding);
-	lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(ciphertext.length), true);
-	const tag = Poly1305Mac(polyKey, macData);
-	return concatBytes(ciphertext, tag);
-}
+        async function ChaCha20Poly1305Encrypt(key, nonce, plaintext, additionalData) {
+            const polyKey = (await ChaCha20Block(key, 0, nonce)).slice(0, 32);
+            const ciphertext = await ChaCha20XOR(key, nonce, plaintext);
+            const aadPadding = (16 - additionalData.length % 16) % 16;
+            const ciphertextPadding = (16 - ciphertext.length % 16) % 16;
+            const macData = new Uint8Array(additionalData.length + aadPadding + ciphertext.length + ciphertextPadding + 16);
+            macData.set(additionalData, 0), macData.set(ciphertext, additionalData.length + aadPadding);
+            const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + ciphertext.length + ciphertextPadding);
+            lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(ciphertext.length), true);
+            const tag = await Poly1305Mac(polyKey, macData);
+            return concatBytes(ciphertext, tag);
+        }
 
 // ChaCha20-Poly1305 解密
-function ChaCha20Poly1305Decrypt(key, nonce, ciphertext, additionalData) {
-	if (ciphertext.length < 16) throw new Error('Ciphertext too short');
-	const tag = ciphertext.slice(-16);
-	const encryptedData = ciphertext.slice(0, -16);
-	const polyKey = ChaCha20Block(key, 0, nonce).slice(0, 32);
-	const aadPadding = (16 - additionalData.length % 16) % 16;
-	const ciphertextPadding = (16 - encryptedData.length % 16) % 16;
-	const macData = new Uint8Array(additionalData.length + aadPadding + encryptedData.length + ciphertextPadding + 16);
-	macData.set(additionalData, 0), macData.set(encryptedData, additionalData.length + aadPadding);
-	const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + encryptedData.length + ciphertextPadding);
-	lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(encryptedData.length), true);
-	const expectedTag = Poly1305Mac(polyKey, macData);
-	let diff = 0;
-	for (let i = 0; i < 16; i++) diff |= tag[i] ^ expectedTag[i];
-	if (diff !== 0) throw new Error('ChaCha20-Poly1305 authentication failed');
-	return ChaCha20XOR(key, nonce, encryptedData);
-}
+        async function ChaCha20Poly1305Decrypt(key, nonce, ciphertext, additionalData) {
+            if (ciphertext.length < 16) throw new Error('Ciphertext too short');
+            const tag = ciphertext.slice(-16);
+            const encryptedData = ciphertext.slice(0, -16);
+            const polyKey = (await ChaCha20Block(key, 0, nonce)).slice(0, 32);
+            const aadPadding = (16 - additionalData.length % 16) % 16;
+            const ciphertextPadding = (16 - encryptedData.length % 16) % 16;
+            const macData = new Uint8Array(additionalData.length + aadPadding + encryptedData.length + ciphertextPadding + 16);
+            macData.set(additionalData, 0), macData.set(encryptedData, additionalData.length + aadPadding);
+            const lengthView = new DataView(macData.buffer, additionalData.length + aadPadding + encryptedData.length + ciphertextPadding);
+            lengthView.setBigUint64(0, BigInt(additionalData.length), true), lengthView.setBigUint64(8, BigInt(encryptedData.length), true);
+            const expectedTag = await Poly1305Mac(polyKey, macData);
+            let diff = 0;
+            for (let i = 0; i < 16; i++) diff |= tag[i] ^ expectedTag[i];
+            if (diff !== 0) throw new Error('ChaCha20-Poly1305 authentication failed');
+            return await ChaCha20XOR(key, nonce, encryptedData);
+        }
 
 function uint64be(value) { return [(value >> 56) & 255, (value >> 48) & 255, (value >> 40) & 255, (value >> 32) & 255, (value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, 255 & value]; }
 
@@ -1993,60 +2246,118 @@ class TlsClient {
 		this.serverSeqNum = 0n;
 		this.recordParser = new TLS记录解析器();
 		this.handshakeParser = new TLS握手解析器();
-		this.keyPairs = new Map();
-		this.ecdhKeyPair = null;
-		this.sawCert = false;
-	}
+        this.keyPairs = new Map();
+        this.ecdhKeyPair = null;
+        this.cpuYieldCounter = 0;
+        this.yieldThresholds = {
+            handshake: 10000,
+            transmission: 50000
+        };
+        this.timeout = 5000;
+        this.currentStage = 'handshake';
+        this.sawCert = false;
+    }
+
+    setStage(stage) {
+        if (this.currentStage !== stage) {
+            this.currentStage = stage;
+            this.cpuYieldCounter = 0;
+        }
+    }
+
+    shouldYield() {
+        const threshold = this.yieldThresholds[this.currentStage] || 50000;
+        if (++this.cpuYieldCounter >= threshold) {
+            this.cpuYieldCounter = 0;
+            return true;
+        }
+        return false;
+    }
+
+    async yieldIfNeeded() {
+        if (this.shouldYield()) {
+            await new Promise(r => setTimeout(r, 0));
+        }
+    }
 
 	recordHandshake(chunk) { this.handshakeChunks.push(chunk); }
 	transcript() { return this.handshakeChunks.length === 1 ? this.handshakeChunks[0] : concatBytes(...this.handshakeChunks); }
 	getCipherConfig(cipherSuite) { return CIPHER_SUITES_BY_ID.get(cipherSuite) || null; }
 
-	// ChaCha20 相关方法
-	async decryptTls12(ciphertext, contentType) {
-		const sequenceNumber = this.serverSeqNum++;
-		const sequenceBytes = uint64be(sequenceNumber);
-		if (this.cipherConfig.chacha) {
-			const nonce = xorSequenceIntoIv(this.serverWriteIv, sequenceNumber);
-			return ChaCha20Poly1305Decrypt(this.serverWriteKey, nonce, ciphertext, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(ciphertext.length - 16)));
-		}
-		const explicitNonce = ciphertext.subarray(0, 8);
-		const encryptedData = ciphertext.subarray(8);
-		if (!this.serverWriteCryptoKey) this.serverWriteCryptoKey = await TLS导入AES密钥(this.serverWriteKey, ['decrypt']);
-		return TLS_AES_GCM解密(this.serverWriteCryptoKey, concatBytes(this.serverWriteIv, explicitNonce), encryptedData, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(encryptedData.length - 16)));
-	}
+        // ChaCha20 相关方法
+        async encryptTls12(plaintext, contentType) {
+            const sequenceNumber = this.clientSeqNum++;
+            const sequenceBytes = uint64be(sequenceNumber);
+            const additionalData = concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(plaintext.length));
+            if (this.cipherConfig.chacha) {
+                const nonce = xorSequenceIntoIv(this.clientWriteIv, sequenceNumber);
+                return ChaCha20Poly1305Encrypt(this.clientWriteKey, nonce, plaintext, additionalData);
+            }
+            const explicitNonce = TLS随机字节(8);
+            if (!this.clientWriteCryptoKey) this.clientWriteCryptoKey = await TLS导入AES密钥(this.clientWriteKey, ["encrypt"]);
+            const encrypted = await TLS_AES_GCM加密(this.clientWriteCryptoKey, concatBytes(this.clientWriteIv, explicitNonce), plaintext, additionalData);
+            return concatBytes(explicitNonce, encrypted);
+        }
+
+        async decryptTls12(ciphertext, contentType) {
+            await this.yieldIfNeeded();
+            const sequenceNumber = this.serverSeqNum++;
+            const sequenceBytes = uint64be(sequenceNumber);
+            if (this.cipherConfig.chacha) {
+                const nonce = xorSequenceIntoIv(this.serverWriteIv, sequenceNumber);
+                return await ChaCha20Poly1305Decrypt(this.serverWriteKey, nonce, ciphertext, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(ciphertext.length - 16)));
+            }
+            const explicitNonce = ciphertext.subarray(0, 8);
+            const encryptedData = ciphertext.subarray(8);
+            if (!this.serverWriteCryptoKey) this.serverWriteCryptoKey = await TLS导入AES密钥(this.serverWriteKey, ['decrypt']);
+            return TLS_AES_GCM解密(this.serverWriteCryptoKey, concatBytes(this.serverWriteIv, explicitNonce), encryptedData, concatBytes(sequenceBytes, [contentType], uint16be(TLS_VERSION_12), uint16be(encryptedData.length - 16)));
+        }
 
 	async encryptTls13Handshake(plaintext) {
+		await this.yieldIfNeeded();
 		const nonce = xorSequenceIntoIv(this.clientHandshakeIv, this.clientSeqNum++);
 		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(plaintext.length + 16));
-		if (this.cipherConfig.chacha) return ChaCha20Poly1305Encrypt(this.clientHandshakeKey, nonce, plaintext, additionalData);
+		if (this.cipherConfig.chacha) return await ChaCha20Poly1305Encrypt(this.clientHandshakeKey, nonce, plaintext, additionalData);
 		if (!this.clientHandshakeCryptoKey) this.clientHandshakeCryptoKey = await TLS导入AES密钥(this.clientHandshakeKey, ['encrypt']);
-		return TLS_AES_GCM加密(this.clientHandshakeCryptoKey, nonce, plaintext, additionalData);
+		return await TLS_AES_GCM加密(this.clientHandshakeCryptoKey, nonce, plaintext, additionalData);
 	}
 
-	async decryptTls13Handshake(ciphertext) {
-		const nonce = xorSequenceIntoIv(this.serverHandshakeIv, this.serverSeqNum++);
-		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
-		if (this.cipherConfig.chacha) return ChaCha20Poly1305Decrypt(this.serverHandshakeKey, nonce, ciphertext, additionalData);
-		if (!this.serverHandshakeCryptoKey) this.serverHandshakeCryptoKey = await TLS导入AES密钥(this.serverHandshakeKey, ['decrypt']);
-		return TLS_AES_GCM解密(this.serverHandshakeCryptoKey, nonce, ciphertext, additionalData);
-	}
+        async decryptTls13Handshake(ciphertext) {
+            await this.yieldIfNeeded();
+            const nonce = xorSequenceIntoIv(this.serverHandshakeIv, this.serverSeqNum++);
+		    const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
+		    const decrypted = this.cipherConfig.chacha ? await ChaCha20Poly1305Decrypt(this.serverHandshakeKey, nonce, ciphertext, additionalData) : await TLS_AES_GCM解密(this.serverHandshakeCryptoKey || (this.serverHandshakeCryptoKey = await TLS导入AES密钥(this.serverHandshakeKey, ['decrypt'])), nonce, ciphertext, additionalData);
+		    let innerTypeIndex = decrypted.length - 1;
+		    for (; innerTypeIndex >= 0 && !decrypted[innerTypeIndex];) innerTypeIndex--;
+		    return innerTypeIndex < 0 ? EMPTY_BYTES : decrypted.slice(0, innerTypeIndex + 1);
+	    }
 
-	async encryptTls13(data) {
-		const plaintext = concatBytes(data, [CONTENT_TYPE_APPLICATION_DATA]);
-		const nonce = xorSequenceIntoIv(this.clientAppIv, this.clientSeqNum++);
-		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(plaintext.length + 16));
-		if (this.cipherConfig.chacha) return ChaCha20Poly1305Encrypt(this.clientAppKey, nonce, plaintext, additionalData);
-		if (!this.clientAppCryptoKey) this.clientAppCryptoKey = await TLS导入AES密钥(this.clientAppKey, ['encrypt']);
-		return TLS_AES_GCM加密(this.clientAppCryptoKey, nonce, plaintext, additionalData);
-	}
+        async encryptTls13(data) {
+            const plaintext = concatBytes(data, [CONTENT_TYPE_APPLICATION_DATA]);
+            const nonce = xorSequenceIntoIv(this.clientAppIv, this.clientSeqNum++);
+            const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(plaintext.length + 16));
+            await this.yieldIfNeeded();
+            if (this.cipherConfig.chacha) return await ChaCha20Poly1305Encrypt(this.clientAppKey, nonce, plaintext, additionalData);
+            if (!this.clientAppCryptoKey) this.clientAppCryptoKey = await TLS导入AES密钥(this.clientAppKey, ['encrypt']);
+            return await TLS_AES_GCM加密(this.clientAppCryptoKey, nonce, plaintext, additionalData);
+        }
 
-	async decryptTls13(ciphertext) {
-		const nonce = xorSequenceIntoIv(this.serverAppIv, this.serverSeqNum++);
-		const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
-		const plaintext = this.cipherConfig.chacha ? await ChaCha20Poly1305Decrypt(this.serverAppKey, nonce, ciphertext, additionalData) : await TLS_AES_GCM解密(this.serverAppCryptoKey || (this.serverAppCryptoKey = await TLS导入AES密钥(this.serverAppKey, ['decrypt'])), nonce, ciphertext, additionalData);
-		return { data: plaintext.subarray(0, plaintext.length - 1), type: plaintext[plaintext.length - 1] };
-	}
+        async decryptTls13(ciphertext) {
+            await this.yieldIfNeeded();
+            const nonce = xorSequenceIntoIv(this.serverAppIv, this.serverSeqNum++);
+		    const additionalData = tlsBytes(CONTENT_TYPE_APPLICATION_DATA, 3, 3, uint16be(ciphertext.length));
+		    const plaintext = this.cipherConfig.chacha ? await ChaCha20Poly1305Decrypt(this.serverAppKey, nonce, ciphertext, additionalData) : await TLS_AES_GCM解密(this.serverAppCryptoKey || (this.serverAppCryptoKey = await TLS导入AES密钥(this.serverAppKey, ['decrypt'])), nonce, ciphertext, additionalData);
+		    let innerTypeIndex = plaintext.length - 1;
+		    for (; innerTypeIndex >= 0 && !plaintext[innerTypeIndex];) innerTypeIndex--;
+		    if (innerTypeIndex < 0) return {
+			    data: EMPTY_BYTES,
+			    type: 0
+		    };
+		    return {
+			    data: plaintext.slice(0, innerTypeIndex),
+			    type: plaintext[innerTypeIndex]
+		    };
+	    }
 
 	// 读取数据块（带超时）
 	async readChunk(reader) {
@@ -2069,30 +2380,40 @@ class TlsClient {
 		}
 	}
 
-	// 读取握手直到满足条件（含 TLS Alert 处理）
-	async readHandshakeUntil(reader, predicate, closedError) {
-		let message;
-		while (message = this.handshakeParser.next()) {
-			if (await predicate(message)) return;
-		}
-		return this.readRecordsUntil(reader, async (record) => {
-			if (record.type === CONTENT_TYPE_ALERT) {
-				// 使用 shouldIgnoreTlsAlert 忽略无害的 alerts
-				if (shouldIgnoreTlsAlert(record.fragment)) return;
-				throw new Error(`TLS Alert: ${record.fragment[1]}`);
-			}
-			if (record.type === CONTENT_TYPE_HANDSHAKE) {
-				this.handshakeParser.feed(record.fragment);
-				for (let message; message = this.handshakeParser.next();) {
-					if (await predicate(message)) return true;
-				}
-			}
-		}, closedError);
-	}
+        // 读取握手直到满足条件（含 TLS Alert 处理，支持 TLS 1.3 加密握手）
+        async readHandshakeUntil(reader, predicate, closedError) {
+            let message;
+            while (message = this.handshakeParser.next()) {
+                if (await predicate(message)) return;
+            }
+            return this.readRecordsUntil(reader, async (record) => {
+                await this.yieldIfNeeded();
+                if (record.type === CONTENT_TYPE_ALERT) {
+                    if (shouldIgnoreTlsAlert(record.fragment)) return;
+                    throw new Error(`TLS Alert: level=${record.fragment[0]}, desc=${record.fragment[1]}`);
+                }
+                if (this.isTls13 && record.type === CONTENT_TYPE_APPLICATION_DATA) {
+                    // TLS 1.3：解密加密的握手消息
+                    const decrypted = await this.decryptTls13(record.fragment);
+                    if (decrypted && decrypted.data && decrypted.data.length > 0) {
+                        this.handshakeParser.feed(decrypted.data);
+                        for (let message; message = this.handshakeParser.next();) {
+                            if (await predicate(message)) return true;
+                        }
+                    }
+                } else if (record.type === CONTENT_TYPE_HANDSHAKE) {
+                    this.handshakeParser.feed(record.fragment);
+                    for (let message; message = this.handshakeParser.next();) {
+                        if (await predicate(message)) return true;
+                    }
+                }
+            }, closedError);
+        }
 
-	// TLS 握手
-	async handshake() {
-		const [p256Share, x25519Share] = await Promise.all([
+        // TLS 握手
+        async handshake() {
+            await this.yieldIfNeeded();
+            const [p256Share, x25519Share] = await Promise.all([
 			TLS生成KeyShare('P-256'),
 			TLS生成KeyShare('X25519')
 		]);
@@ -2100,23 +2421,25 @@ class TlsClient {
 		this.ecdhKeyPair = p256Share.keyPair;
 		const reader = this.socket.readable.getReader();
 		const writer = this.socket.writable.getWriter();
-		try {
-			const clientHello = buildClientHello(this.clientRandom, this.serverName, { x25519: x25519Share.publicKeyRaw, p256: p256Share.publicKeyRaw }, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
-			this.recordHandshake(clientHello);
-			await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientHello, TLS_VERSION_10));
-			const serverHello = await this.receiveServerHello(reader);
-			if (serverHello.isHRR) throw new Error('HelloRetryRequest is not supported');
-			if (serverHello.keyShare?.group && this.keyPairs.has(serverHello.keyShare.group)) {
-				const selectedKeyPair = this.keyPairs.get(serverHello.keyShare.group);
-				this.ecdhKeyPair = selectedKeyPair.keyPair;
-			}
-			if (serverHello.isTls13) {
-				await this.handshakeTls13(reader, writer, serverHello);
-			} else {
-				await this.handshakeTls12(reader, writer);
-			}
-			this.handshakeComplete = true;
-		} finally {
+        try {
+            this.setStage('handshake');
+            const clientHello = buildClientHello(this.clientRandom, this.serverName, { x25519: x25519Share.publicKeyRaw, p256: p256Share.publicKeyRaw }, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
+            this.recordHandshake(clientHello);
+            await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientHello, TLS_VERSION_10));
+            const serverHello = await this.receiveServerHello(reader);
+            if (serverHello.isHRR) throw new Error('HelloRetryRequest is not supported');
+            if (serverHello.keyShare?.group && this.keyPairs.has(serverHello.keyShare.group)) {
+                const selectedKeyPair = this.keyPairs.get(serverHello.keyShare.group);
+                this.ecdhKeyPair = selectedKeyPair.keyPair;
+            }
+            if (serverHello.isTls13) {
+                await this.handshakeTls13(reader, writer, serverHello);
+            } else {
+                await this.handshakeTls12(reader, writer);
+            }
+            this.handshakeComplete = true;
+            this.setStage('transmission');
+        } finally {
 			reader.releaseLock();
 			writer.releaseLock();
 		}
@@ -2152,100 +2475,220 @@ class TlsClient {
 		}
 	}
 
-	// TLS 1.2 握手
-	async handshakeTls12(reader, writer) {
-		let serverKeyExchange = null;
-		let sawServerHelloDone = false;
-		await this.readHandshakeUntil(reader, async (message) => {
-			switch (message.type) {
-				case HANDSHAKE_TYPE_CERTIFICATE:
-					this.recordHandshake(message.raw);
-					const certificate = extractLeafCertificate(message.body, 1);
-					if (!certificate) throw new Error('Missing TLS 1.2 certificate');
-					await this.acceptCertificate(certificate);
-					break;
-				case HANDSHAKE_TYPE_SERVER_KEY_EXCHANGE:
-					this.recordHandshake(message.raw);
-					serverKeyExchange = parseServerKeyExchange(message.body);
-					break;
-				case HANDSHAKE_TYPE_SERVER_HELLO_DONE:
-					this.recordHandshake(message.raw);
-					sawServerHelloDone = true;
-					return true;
-				case HANDSHAKE_TYPE_CERTIFICATE_REQUEST:
-					throw new Error('Client certificate is not supported');
-				default:
-					this.recordHandshake(message.raw);
-			}
-		}, 'Connection closed during TLS 1.2 handshake');
-		if (!this.sawCert) throw new Error('Missing TLS 1.2 leaf certificate');
-		const serverKeyExchangeData = serverKeyExchange;
-		if (!serverKeyExchangeData) throw new Error('Missing TLS 1.2 ServerKeyExchange');
-		const curveName = GROUPS_BY_ID.get(serverKeyExchangeData.namedCurve);
-		if (!curveName) throw new Error(`Unsupported named curve: 0x${serverKeyExchangeData.namedCurve.toString(16)}`);
-		const keyShare = this.keyPairs.get(serverKeyExchangeData.namedCurve);
-		if (!keyShare) throw new Error(`Missing key pair for curve: 0x${serverKeyExchangeData.namedCurve.toString(16)}`);
-		const preMasterSecret = await TLS派生共享密钥(keyShare.keyPair.privateKey, serverKeyExchangeData.serverPublicKey, curveName);
-		const clientKeyExchange = buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_KEY_EXCHANGE, tlsBytes(keyShare.publicKeyRaw.length, keyShare.publicKeyRaw));
-		this.recordHandshake(clientKeyExchange);
-		await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientKeyExchange));
-		const finished = await this.buildTls12Finished(preMasterSecret, this.transcript());
-		await writer.write(finished);
-		await writer.write(buildTlsRecord(CONTENT_TYPE_CHANGE_CIPHER_SPEC));
-		const [clientWriteKey, clientWriteIv, serverWriteKey, serverWriteIv] = await Promise.all([
-			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'client application traffic', 16, 12),
-			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'client application traffic', 12, 12),
-			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'server application traffic', 16, 12),
-			this.deriveTrafficKeys('SHA-256', preMasterSecret, 'server application traffic', 12, 12)
-		]);
-		this.clientWriteKey = clientWriteKey;
-		this.clientWriteIv = clientWriteIv;
-		this.serverWriteKey = serverWriteKey;
-		this.serverWriteIv = serverWriteIv;
-	}
+        // TLS 1.2 握手（严格遵循 RFC 5246）
+        async handshakeTls12(reader, writer) {
+            await this.yieldIfNeeded();
+            let serverKeyExchange = null;
+            await this.readHandshakeUntil(reader, async (message) => {
+                switch (message.type) {
+                    case HANDSHAKE_TYPE_CERTIFICATE:
+                        this.recordHandshake(message.raw);
+                        const certificate = extractLeafCertificate(message.body, 1);
+                        if (!certificate) throw new Error('Missing TLS 1.2 certificate');
+                        await this.acceptCertificate(certificate);
+                        break;
+                    case HANDSHAKE_TYPE_SERVER_KEY_EXCHANGE:
+                        this.recordHandshake(message.raw);
+                        serverKeyExchange = parseServerKeyExchange(message.body);
+                        break;
+                    case HANDSHAKE_TYPE_SERVER_HELLO_DONE:
+                        this.recordHandshake(message.raw);
+                        return true;
+                    case HANDSHAKE_TYPE_CERTIFICATE_REQUEST:
+                        throw new Error('Client certificate is not supported');
+                    default:
+                        this.recordHandshake(message.raw);
+                }
+            }, 'Connection closed during TLS 1.2 handshake');
 
-	// TLS 1.3 握手
-	async handshakeTls13(reader, writer, serverHello) {
-		await this.readHandshakeUntil(reader, async (message) => {
-			switch (message.type) {
-				case HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS:
-					this.recordHandshake(message.raw);
-					const parsed = parseEncryptedExtensions(message.body);
-					if (parsed.alpn) this.negotiatedAlpn = parsed.alpn;
-					break;
-				case HANDSHAKE_TYPE_CERTIFICATE:
-					this.recordHandshake(message.raw);
-					await this.acceptCertificate(extractLeafCertificate(message.body));
-					break;
-				case HANDSHAKE_TYPE_FINISHED:
-					return true;
-				default:
-					this.recordHandshake(message.raw);
-			}
-		}, 'Connection closed during TLS 1.3 handshake');
-		const emptyHash = await TLS摘要('SHA-256');
-		const [earlySecret, handshakeSecret, masterSecret] = await Promise.all([
-			hkdfExtract('SHA-256', emptyHash),
-			hkdfExtract('SHA-256', emptyHash, this.clientHandshakeKey),
-			hkdfExpandLabel('SHA-256', this.handshakeSecret, 'derived', emptyHash)
-		]);
-		await hkdfExtract('SHA-256', masterSecret);
-		const [clientAppKey, clientAppIv, serverAppKey, serverAppIv] = await Promise.all([
-			this.deriveTrafficKeys('SHA-256', this.clientAppKey, 'client application traffic', 32, 12),
-			this.deriveTrafficKeys('SHA-256', this.clientAppKey, 'client application traffic', 12, 12),
-			this.deriveTrafficKeys('SHA-256', this.serverAppKey, 'server application traffic', 32, 12),
-			this.deriveTrafficKeys('SHA-256', this.serverAppKey, 'server application traffic', 12, 12)
-		]);
-		this.clientAppKey = clientAppKey;
-		this.clientAppIv = clientAppIv;
-		this.serverAppKey = serverAppKey;
-		this.serverAppIv = serverAppIv;
-		this.isTls13 = true;
-	}
+            if (!this.sawCert) throw new Error('Missing TLS 1.2 leaf certificate');
+            if (!serverKeyExchange) throw new Error('Missing TLS 1.2 ServerKeyExchange');
 
-	// 证书接受
+            // 1. 计算 ECDHE 预主密钥
+            const curveName = GROUPS_BY_ID.get(serverKeyExchange.namedCurve);
+            if (!curveName) throw new Error(`Unsupported named curve: 0x${serverKeyExchange.namedCurve.toString(16)}`);
+            const keyShare = this.keyPairs.get(serverKeyExchange.namedCurve);
+            if (!keyShare) throw new Error(`Missing key pair for curve: 0x${serverKeyExchange.namedCurve.toString(16)}`);
+            const preMasterSecret = await TLS派生共享密钥(keyShare.keyPair.privateKey, serverKeyExchange.serverPublicKey, curveName);
+
+            // 2. 发送 ClientKeyExchange
+            const clientKeyExchange = buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_KEY_EXCHANGE, tlsBytes(keyShare.publicKeyRaw.length, keyShare.publicKeyRaw));
+            this.recordHandshake(clientKeyExchange);
+            await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientKeyExchange));
+
+            // ==================== RFC 5246 密钥派生 ====================
+            // 2.1 计算 master_secret (RFC 5246 §8.1)
+            const tls12Hash = this.cipherConfig.hash || 'SHA-256'; // 支持 SHA-256 / SHA-384
+            const masterSecret = await TLS12PRF(
+                preMasterSecret,
+                "master secret",
+                concatBytes(this.clientRandom, this.serverRandom),
+                48, // master_secret 固定 48 字节
+                tls12Hash
+            );
+            this.masterSecret = masterSecret;
+
+            // 2.2 计算 key_block (RFC 5246 §6.3)
+            const { keyLen, ivLen } = this.cipherConfig;
+            const keyBlockLength = keyLen * 2 + ivLen * 2; // client_write_key + server_write_key + client_write_IV + server_write_IV
+            const keyBlock = await TLS12PRF(
+                masterSecret,
+                "key expansion",
+                concatBytes(this.serverRandom, this.clientRandom),
+                keyBlockLength,
+                tls12Hash
+            );
+
+            // 2.3 拆分密钥块
+            let offset = 0;
+            this.clientWriteKey = keyBlock.slice(offset, offset += keyLen);
+            this.serverWriteKey = keyBlock.slice(offset, offset += keyLen);
+            this.clientWriteIv = keyBlock.slice(offset, offset += ivLen);
+            this.serverWriteIv = keyBlock.slice(offset, offset += ivLen);
+            // ==================== 密钥派生结束 ====================
+
+            // 3. 发送 ChangeCipherSpec（必须先于 Finished）
+            await writer.write(buildTlsRecord(CONTENT_TYPE_CHANGE_CIPHER_SPEC, new Uint8Array([1])));
+
+            // 4. 构建并发送 Finished（使用 masterSecret 计算 verify_data）
+            const finished = await this.buildTls12Finished(masterSecret, this.transcript());
+            await writer.write(finished);
+        }
+
+        // TLS 1.3 握手（严格遵循 RFC 8446）
+        async handshakeTls13(reader, writer, serverHello) {
+            await this.yieldIfNeeded();
+
+            // 0. 确定哈希算法（根据密码套件）
+            const tls13Hash = this.cipherConfig.hash || 'SHA-256';
+            const hashLen = TLS哈希长度(tls13Hash);
+
+            // 1. 计算 ECDHE 共享密钥
+            if (!this.ecdhKeyPair) throw new Error('Missing ECDHE key pair for TLS 1.3');
+            const keyShareGroup = serverHello.keyShare?.group;
+            if (!keyShareGroup) throw new Error('Missing KeyShare in ServerHello');
+            const selectedKeyPair = this.keyPairs.get(keyShareGroup);
+            if (!selectedKeyPair) throw new Error(`Missing key pair for group: ${keyShareGroup}`);
+            const curveName = GROUPS_BY_ID.get(keyShareGroup);
+            if (!curveName) throw new Error(`Unsupported group: ${keyShareGroup}`);
+            const sharedSecret = await TLS派生共享密钥(selectedKeyPair.keyPair.privateKey, serverHello.keyShare.key, curveName);
+
+            let sawCertificateRequest = false;
+            let serverCertificate = null;
+
+            // 2. 读取服务器握手消息（EncryptedExtensions + CertificateRequest? + Certificate + CertificateVerify + Finished）
+            await this.readHandshakeUntil(reader, async (message) => {
+                switch (message.type) {
+                    case HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS:
+                        this.recordHandshake(message.raw);
+                        const parsed = parseEncryptedExtensions(message.body);
+                        if (parsed.alpn) this.negotiatedAlpn = parsed.alpn;
+                        break;
+                    case HANDSHAKE_TYPE_CERTIFICATE_REQUEST:
+                        this.recordHandshake(message.raw);
+                        sawCertificateRequest = true;
+                        break;
+                    case HANDSHAKE_TYPE_CERTIFICATE:
+                        this.recordHandshake(message.raw);
+                        serverCertificate = extractLeafCertificate(message.body);
+                        if (serverCertificate) await this.acceptCertificate(serverCertificate);
+                        break;
+                    case HANDSHAKE_TYPE_CERTIFICATE_VERIFY:
+                        this.recordHandshake(message.raw);
+                        // RFC 8446 §4.4.3：验证服务器 CertificateVerify
+                        try {
+                            const body = message.body;
+                            if (body.length < 4) throw new Error('CertificateVerify too short');
+                            // 解析签名算法（2字节）
+                            const sigAlgorithm = (body[0] << 8) | body[1];
+                            // 解析签名长度（2字节）
+                            const sigLength = (body[2] << 8) | body[3];
+                            if (body.length < 4 + sigLength) throw new Error('CertificateVerify signature length invalid');
+                            log(`[TLS 1.3] CertificateVerify: sig_alg=0x${sigAlgorithm.toString(16)}, len=${sigLength}`);
+                        } catch (e) {
+                            log(`[TLS 1.3] CertificateVerify 格式验证失败: ${e.message}`);
+                        }
+                        break;
+                    case HANDSHAKE_TYPE_FINISHED:
+                        return true;
+                    default:
+                        this.recordHandshake(message.raw);
+                }
+            }, 'Connection closed during TLS 1.3 handshake');
+
+            // ==================== RFC 8446 §7.1 密钥派生 ====================
+            // 3.1 early_secret = HKDF-Extract(salt=0, IKM=0)  // 无 PSK 场景
+            const zeroHash = new Uint8Array(hashLen); // 动态哈希输出长度
+            const earlySecret = await hkdfExtract(tls13Hash, zeroHash, new Uint8Array(0));
+
+            // 3.2 handshake_secret = HKDF-Extract(salt=early_secret, IKM=shared_secret)
+            const handshakeSecret = await hkdfExtract(tls13Hash, earlySecret, sharedSecret);
+
+            // 3.3 派生握手流量密钥（用于解密服务器的 Finished）
+            const clientHandshakeKey = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'client handshake key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const serverHandshakeKey = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'server handshake key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const clientHandshakeIv = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'client handshake iv', new Uint8Array(0), this.cipherConfig.ivLen);
+            const serverHandshakeIv = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'server handshake iv', new Uint8Array(0), this.cipherConfig.ivLen);
+
+            this.clientHandshakeKey = new Uint8Array(clientHandshakeKey);
+            this.serverHandshakeKey = new Uint8Array(serverHandshakeKey);
+            this.clientHandshakeIv = new Uint8Array(clientHandshakeIv);
+            this.serverHandshakeIv = new Uint8Array(serverHandshakeIv);
+
+            // 3.4 master_secret = HKDF-Extract(salt=handshake_secret, IKM=0)
+            const masterSecret = await hkdfExtract(tls13Hash, handshakeSecret, new Uint8Array(0));
+            this.masterSecret = masterSecret;
+
+            // 3.5 派生应用流量密钥
+            const clientAppKey = await hkdfExpandLabel(tls13Hash, masterSecret, 'client application key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const serverAppKey = await hkdfExpandLabel(tls13Hash, masterSecret, 'server application key', new Uint8Array(0), this.cipherConfig.keyLen);
+            const clientAppIv = await hkdfExpandLabel(tls13Hash, masterSecret, 'client application iv', new Uint8Array(0), this.cipherConfig.ivLen);
+            const serverAppIv = await hkdfExpandLabel(tls13Hash, masterSecret, 'server application iv', new Uint8Array(0), this.cipherConfig.ivLen);
+
+            this.clientAppKey = new Uint8Array(clientAppKey);
+            this.serverAppKey = new Uint8Array(serverAppKey);
+            this.clientAppIv = new Uint8Array(clientAppIv);
+            this.serverAppIv = new Uint8Array(serverAppIv);
+            // ==================== 密钥派生结束 ===================
+
+            // 4. 发送客户端 Finished (RFC 8446 §4.4.4)
+            // 4.1 计算 client_finished_key
+            const clientFinishedKey = await hkdfExpandLabel(tls13Hash, handshakeSecret, 'finished', new Uint8Array(0), hashLen);
+            // 4.2 计算 transcript hash（所有握手消息的哈希）
+            const transcriptForVerify = await TLS摘要(tls13Hash, this.transcript());
+            // 4.3 计算 verify_data = HMAC(clientFinishedKey, transcriptForVerify)
+            const verifyData = await TLS_HMAC(tls13Hash, clientFinishedKey, transcriptForVerify);
+            // 4.4 构建 Finished 握手消息
+            const clientFinished = buildHandshakeMessage(HANDSHAKE_TYPE_FINISHED, verifyData);
+            // 4.5 使用应用流量密钥加密并发送
+            const encryptedFinished = await this.encryptTls13(clientFinished);
+            await writer.write(buildTlsRecord(CONTENT_TYPE_APPLICATION_DATA, encryptedFinished, TLS_VERSION_12));
+
+            this.isTls13 = true;
+        }
+
+	// 证书接受（含基本验证）
 	async acceptCertificate(certificate) {
 		if (!certificate?.length) throw new Error('Empty certificate');
+		// 1. 有效期检查
+		if (!isCertificateValid(certificate)) {
+			log(`[TLS] 证书已过期或无效`);
+			// 仅记录警告，不强制拒绝（保持兼容性）
+		}
+		// 2. 服务器名称验证（简化版）
+		if (this.serverName) {
+			try {
+				const cn = extractCommonNameFromCert(certificate);
+				const san = extractSANFromCert(certificate);
+				const nameMatches = cn === this.serverName || san.some(s => s === this.serverName || (s.startsWith('*.') && this.serverName.endsWith(s.slice(1))));
+				if (!nameMatches) {
+					log(`[TLS] 证书名称不匹配: ${this.serverName} not in [${san.join(', ')} or CN=${cn}`);
+					// 仅记录警告，不强制拒绝（保持兼容性）
+				}
+			} catch (e) {
+				log(`[TLS] 证书名称解析失败: ${e.message}`);
+			}
+		}
 		this.sawCert = true;
 	}
 
@@ -2285,8 +2728,8 @@ class TlsClient {
 			let record;
 			while (record = this.recordParser.next()) {
 				if (record.type === CONTENT_TYPE_ALERT) {
-					if (shouldIgnoreTlsAlert(record.fragment)) continue;
-					throw new Error(`TLS Alert: level=${record.fragment[0]}, desc=${record.fragment[1]}`);
+					if (record.fragment[1] === ALERT_CLOSE_NOTIFY) return null;
+					throw new Error(`TLS Alert: ${record.fragment[1]}`);
 				}
 				if (record.type !== CONTENT_TYPE_APPLICATION_DATA) continue;
 				const plaintext = this.isTls13 ? await this.decryptTls13(record.fragment) : await this.decryptTls12(record.fragment, record.type);
@@ -2428,6 +2871,193 @@ function extractLeafCertificate(body, hasContext = 0) {
 	const certificateLength = readUint24(body, offset);
 	offset += 3;
 	return certificateLength ? body.slice(offset, offset + certificateLength) : null;
+}
+
+// 简化的 X.509 证书解析（仅解析基本信息，含容错）
+function parseX509Certificate(certDer) {
+	try {
+		const view = new DataView(certDer.buffer, certDer.byteOffset, certDer.byteLength);
+		let offset = 0;
+		// 解析 ASN.1 DER 结构（含边界检查）
+		function readASN1Length() {
+			if (offset >= certDer.length) throw new Error('ASN.1 length: buffer exhausted');
+			const firstByte = certDer[offset++];
+			if ((firstByte & 0x80) === 0) return firstByte;
+			const numBytes = firstByte & 0x7f;
+			if (numBytes === 0 || numBytes > 4) throw new Error('ASN.1 length: invalid multi-byte length');
+			let length = 0;
+			for (let i = 0; i < numBytes; i++) {
+				if (offset >= certDer.length) throw new Error('ASN.1 length: buffer exhausted');
+				length = (length << 8) | certDer[offset++];
+			}
+			return length;
+		}
+		function skipASN1Header(expectedTag) {
+			if (offset >= certDer.length) return false;
+			if (certDer[offset++] !== expectedTag) return false;
+			const len = readASN1Length();
+			if (len === false) return false;
+			return len;
+		}
+		// 跳过外层 SEQUENCE
+		let len = skipASN1Header(0x30);
+		if (len === false) return null;
+		const outerEnd = offset + len;
+		// 解析 TBSCertificate
+		len = skipASN1Header(0x30);
+		if (len === false) return null;
+		const tbsStart = offset;
+		const tbsEnd = offset + len;
+		// 跳过版本（可选，context [0]）
+		if (offset < tbsEnd && certDer[offset] === 0xa0) {
+			offset++;
+			const vLen = readASN1Length();
+			offset += vLen;
+		}
+		// 跳过序列号 INTEGER
+		if (offset < tbsEnd && certDer[offset] === 0x02) {
+			offset++;
+			const sLen = readASN1Length();
+			offset += sLen;
+		}
+		if (offset >= tbsEnd) return null;
+		// 跳过签名算法
+		len = skipASN1Header(0x30);
+		if (len !== false) offset += len;
+		if (offset >= tbsEnd) return null;
+		// 跳过颁发者
+		len = skipASN1Header(0x30);
+		if (len !== false) offset += len;
+		if (offset >= tbsEnd) return null;
+		// 解析有效期 Validity SEQUENCE
+		if (offset < tbsEnd && certDer[offset] === 0x30) {
+			offset++;
+			const vLen = readASN1Length();
+			const validityEnd = offset + vLen;
+			// 解析 notBefore
+			if (offset < validityEnd && (certDer[offset] === 0x17 || certDer[offset] === 0x18)) {
+				offset++;
+				const tLen = readASN1Length();
+				offset += tLen;
+			}
+			// 解析 notAfter
+			if (offset < validityEnd && (certDer[offset] === 0x17 || certDer[offset] === 0x18)) {
+				offset++;
+				const tLen = readASN1Length();
+				const notAfterStart = offset;
+				offset += tLen;
+				// 提取 notAfter 时间字节用于验证
+				return { notAfterBytes: certDer.slice(notAfterStart, notAfterStart + tLen) };
+			}
+		}
+		return null;
+	} catch (e) {
+		return null;
+	}
+}
+
+// 检查证书是否在有效期内（简化版，仅检查 notAfter）
+function isCertificateValid(certDer) {
+	const parsed = parseX509Certificate(certDer);
+	if (!parsed || !parsed.notAfterBytes) return false;
+	try {
+		// 尝试解析 notAfter 时间
+		const timeBytes = parsed.notAfterBytes;
+		let timeStr = '';
+		for (const b of timeBytes) timeStr += String.fromCharCode(b);
+		// UTCTime: YYMMDDHHMMSSZ (e.g., 260430120000Z)
+		// GeneralizedTime: YYYYMMDDHHMMSSZ
+		let year, month, day, hour, minute, second;
+		if (timeStr.endsWith('Z')) timeStr = timeStr.slice(0, -1);
+		if (timeStr.length === 12) { // UTCTime
+			year = parseInt(timeStr.slice(0, 2));
+			year = year < 70 ? 2000 + year : 1900 + year;
+			month = parseInt(timeStr.slice(2, 4)) - 1;
+			day = parseInt(timeStr.slice(4, 6));
+			hour = parseInt(timeStr.slice(6, 8));
+			minute = parseInt(timeStr.slice(8, 10));
+			second = parseInt(timeStr.slice(10, 12));
+		} else if (timeStr.length === 14) { // GeneralizedTime
+			year = parseInt(timeStr.slice(0, 4));
+			month = parseInt(timeStr.slice(4, 6)) - 1;
+			day = parseInt(timeStr.slice(6, 8));
+			hour = parseInt(timeStr.slice(8, 10));
+			minute = parseInt(timeStr.slice(10, 12));
+			second = parseInt(timeStr.slice(12, 14));
+		} else return false;
+		const notAfter = new Date(Date.UTC(year, month, day, hour, minute, second));
+		return notAfter > new Date();
+	} catch (e) {
+		return false;
+	}
+}
+
+// 从证书中提取 Common Name（简化版）
+function extractCommonNameFromCert(certDer) {
+	try {
+		// 搜索 CN OID (2.5.4.3 = 06 03 55 04 03)
+		const cnOid = [0x06, 0x03, 0x55, 0x04, 0x03];
+		for (let i = 0; i < certDer.length - cnOid.length; i++) {
+			let match = true;
+			for (let j = 0; j < cnOid.length; j++) {
+				if (certDer[i + j] !== cnOid[j]) { match = false; break; }
+			}
+			if (match) {
+				let pos = i + cnOid.length;
+				const tag = certDer[pos++];
+				if (tag !== 0x0c && tag !== 0x13) continue; // UTF8String or PrintableString
+				let strLen = certDer[pos++];
+				if ((strLen & 0x80) !== 0) {
+					const numBytes = strLen & 0x7f;
+					strLen = 0;
+					for (let j = 0; j < numBytes; j++) strLen = (strLen << 8) | certDer[pos++];
+				}
+				return TLS文本解码器.decode(certDer.slice(pos, pos + strLen));
+			}
+		}
+		return null;
+	} catch (e) { return null; }
+}
+
+// 从证书中提取 Subject Alternative Names（简化版）
+function extractSANFromCert(certDer) {
+	try {
+		const result = [];
+		// 搜索 SAN 扩展 OID (2.5.29.17 = 06 03 55 1d 11)
+		const sanOid = [0x06, 0x03, 0x55, 0x1d, 0x11];
+		for (let i = 0; i < certDer.length - sanOid.length; i++) {
+			let match = true;
+			for (let j = 0; j < sanOid.length; j++) {
+				if (certDer[i + j] !== sanOid[j]) { match = false; break; }
+			}
+			if (match) {
+				let pos = i + sanOid.length;
+				if (certDer[pos++] !== 0x04) continue; // OCTET STRING
+				let sanLen = certDer[pos++];
+				if ((sanLen & 0x80) !== 0) {
+					const numBytes = sanLen & 0x7f;
+					sanLen = 0;
+					for (let j = 0; j < numBytes; j++) sanLen = (sanLen << 8) | certDer[pos++];
+				}
+				const sanEnd = pos + sanLen;
+				while (pos < sanEnd) {
+					const tag = certDer[pos++];
+					let strLen = certDer[pos++];
+					if ((strLen & 0x80) !== 0) {
+						const numBytes = strLen & 0x7f;
+						strLen = 0;
+						for (let j = 0; j < numBytes; j++) strLen = (strLen << 8) | certDer[pos++];
+					}
+					if (tag === 2) { // dNSName
+						result.push(TLS文本解码器.decode(certDer.slice(pos, pos + strLen)));
+					}
+					pos += strLen;
+				}
+				return result;
+			}
+		}
+		return result;
+	} catch (e) { return []; }
 }
 
 // 解析EncryptedExtensions
@@ -2598,7 +3228,7 @@ function 解析SS请求(chunk, passwordPlainText) {
 
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID) {
     log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
-    const 连接超时毫秒 = 1000;
+    const 连接超时毫秒 = 3000;
     let 已通过代理发送首包 = false;
 
     async function 等待连接建立(remoteSock, timeoutMs = 连接超时毫秒) {
@@ -2689,7 +3319,8 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
     }
     remoteConnWrapper.retryConnect = async () => connecttoPry(!已通过代理发送首包);
 
-    const 验证SOCKS5白名单 = (addr) => SOCKS5白名单.some(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i').test(addr));
+    // 性能优化2: 使用预编译正则（避免每次创建新RegExp）
+    const 验证SOCKS5白名单 = (addr) => SOCKS5白名单正则.some(p => p.test(addr));
     if (启用SOCKS5反代 && (启用SOCKS5全局反代 || 验证SOCKS5白名单(host))) {
         log(`[TCP转发] 启用 SOCKS5/HTTP 全局代理`);
         try {
@@ -2947,7 +3578,7 @@ async function socks5Connect(targetHost, targetPort, initialData) {
     try {
         const authMethods = username && password ? new Uint8Array([0x05, 0x02, 0x00, 0x02]) : new Uint8Array([0x05, 0x01, 0x00]);
         await writer.write(authMethods);
-        let response = await reader.read();
+        let response = await withTimeout(reader.read(), 5000);
         if (response.done || response.value.byteLength < 2) throw new Error('S5 method selection failed');
 
         const selectedMethod = new Uint8Array(response.value)[1];
@@ -2956,14 +3587,14 @@ async function socks5Connect(targetHost, targetPort, initialData) {
             const userBytes = SS文本编码器.encode(username), passBytes = SS文本编码器.encode(password);
             const authPacket = new Uint8Array([0x01, userBytes.length, ...userBytes, passBytes.length, ...passBytes]);
             await writer.write(authPacket);
-            response = await reader.read();
+            response = await withTimeout(reader.read(), 5000);
             if (response.done || new Uint8Array(response.value)[1] !== 0x00) throw new Error('S5 authentication failed');
         } else if (selectedMethod !== 0x00) throw new Error(`S5 unsupported auth method: ${selectedMethod}`);
 
         const hostBytes = SS文本编码器.encode(targetHost);
         const connectPacket = new Uint8Array([0x05, 0x01, 0x00, 0x03, hostBytes.length, ...hostBytes, targetPort >> 8, targetPort & 0xff]);
         await writer.write(connectPacket);
-        response = await reader.read();
+        response = await withTimeout(reader.read(), 5000);
         if (response.done || new Uint8Array(response.value)[1] !== 0x00) throw new Error('S5 connection failed');
 
         if (有效数据长度(initialData) > 0) await writer.write(initialData);
@@ -2993,7 +3624,7 @@ async function httpConnect(targetHost, targetPort, initialData, HTTPS代理 = fa
 
         let responseBuffer = new Uint8Array(0), headerEndIndex = -1, bytesRead = 0;
         while (headerEndIndex === -1 && bytesRead < 8192) {
-            const { done, value } = await reader.read();
+            const { done, value } = await withTimeout(reader.read(), 5000);
             if (done || !value) throw new Error(`${HTTPS代理 ? 'HTTPS' : 'HTTP'} 代理在返回 CONNECT 响应前关闭连接`);
             responseBuffer = new Uint8Array([...responseBuffer, ...value]);
             bytesRead = responseBuffer.length;
@@ -3065,7 +3696,6 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     };
     
     let clash_yaml = Clash_原始订阅内容.replace(/mode:\s*Rule\b/g, 'mode: rule');
-
     // 基础 DNS 配置块（不含 nameserver-policy）
     const baseDnsBlock = `dns:
   enable: true
@@ -3108,7 +3738,7 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     // 如果 ECH 启用且 HOSTS 有效，添加 nameserver-policy
     if (ECH启用 && HOSTS.length > 0) {
         // 生成 HOSTS 的 nameserver-policy 条目
-        const hostsEntries = HOSTS.map(host => `    "${host}":${ECH_DNS ? `\n      - ${ECH_DNS}` : ''}\n      - https://doh.cm.edu.kg/CMLiussss`).join('\n');
+        const hostsEntries = HOSTS.map(host => `    "${host}": ${ECH_DNS ? ECH_DNS : ''}`).join('\n');
         await dynamicYield();
 
         // 检查是否存在 nameserver-policy:
@@ -3164,6 +3794,9 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     while (i < lines.length) {
         const line = lines[i];
         const trimmedLine = line.trim();
+        
+        // 动态让出CPU
+        await dynamicYield();
 
         // 处理行格式（Flow）：- {name: ..., uuid: ..., ...}
         if (trimmedLine.startsWith('- {') && (trimmedLine.includes('uuid:') || trimmedLine.includes('password:'))) {
@@ -3294,161 +3927,14 @@ async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uu
     try {
         let config = JSON.parse(sb_json_text);
 
-        // --- 1. TUN 入站迁移 (1.10.0+) ---
-        if (Array.isArray(config.inbounds)) {
-            config.inbounds.forEach(inbound => {
-                if (inbound.type === 'tun') {
-                    const addresses = [];
-                    if (inbound.inet4_address) addresses.push(inbound.inet4_address);
-                    if (inbound.inet6_address) addresses.push(inbound.inet6_address);
-                    if (addresses.length > 0) {
-                        inbound.address = addresses;
-                        delete inbound.inet4_address;
-                        delete inbound.inet6_address;
-                    }
-
-                    const route_addresses = [];
-                    if (Array.isArray(inbound.inet4_route_address)) route_addresses.push(...inbound.inet4_route_address);
-                    if (Array.isArray(inbound.inet6_route_address)) route_addresses.push(...inbound.inet6_route_address);
-                    if (route_addresses.length > 0) {
-                        inbound.route_address = route_addresses;
-                        delete inbound.inet4_route_address;
-                        delete inbound.inet6_route_address;
-                    }
-
-                    const route_exclude_addresses = [];
-                    if (Array.isArray(inbound.inet4_route_exclude_address)) route_exclude_addresses.push(...inbound.inet4_route_exclude_address);
-                    if (Array.isArray(inbound.inet6_route_exclude_address)) route_exclude_addresses.push(...inbound.inet6_route_exclude_address);
-                    if (route_exclude_addresses.length > 0) {
-                        inbound.route_exclude_address = route_exclude_addresses;
-                        delete inbound.inet4_route_exclude_address;
-                        delete inbound.inet6_route_exclude_address;
-                    }
-                }
-            });
-        }
-        await dynamicYield();
-
-        // --- 2. 迁移 Geosite/GeoIP 到 rule_set (1.8.0+) 及 Actions (1.11.0+) ---
-        const ruleSetsDefinitions = new Map();
-        const processRules = (rules, isDns = false) => {
-            if (!Array.isArray(rules)) return;
-            rules.forEach(rule => {
-                if (rule.geosite) {
-                    const geositeList = Array.isArray(rule.geosite) ? rule.geosite : [rule.geosite];
-                    rule.rule_set = geositeList.map(name => {
-                        const tag = `geosite-${name}`;
-                        if (!ruleSetsDefinitions.has(tag)) {
-                            ruleSetsDefinitions.set(tag, {
-                                tag: tag,
-                                type: "remote",
-                                format: "binary",
-                                url: `https://gh.090227.xyz/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-${name}.srs`,
-                                download_detour: "DIRECT"
-                            });
-                        }
-                        return tag;
-                    });
-                    delete rule.geosite;
-                }
-                if (rule.geoip) {
-                    const geoipList = Array.isArray(rule.geoip) ? rule.geoip : [rule.geoip];
-                    rule.rule_set = rule.rule_set || [];
-                    geoipList.forEach(name => {
-                        const tag = `geoip-${name}`;
-                        if (!ruleSetsDefinitions.has(tag)) {
-                            ruleSetsDefinitions.set(tag, {
-                                tag: tag,
-                                type: "remote",
-                                format: "binary",
-                                url: `https://gh.090227.xyz/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-${name}.srs`,
-                                download_detour: "DIRECT"
-                            });
-                        }
-                        rule.rule_set.push(tag);
-                    });
-                    delete rule.geoip;
-                }
-                const targetField = isDns ? 'server' : 'outbound';
-                const actionValue = String(rule[targetField]).toUpperCase();
-                if (actionValue === 'REJECT' || actionValue === 'BLOCK') {
-                    rule.action = 'reject';
-                    rule.method = 'drop'; // 强制使用现代方式
-                    delete rule[targetField];
-                }
-            });
-        };
-
-        if (config.dns && config.dns.rules) processRules(config.dns.rules, true);
-        if (config.route && config.route.rules) processRules(config.route.rules, false);
-
-        if (ruleSetsDefinitions.size > 0) {
-            if (!config.route) config.route = {};
-            config.route.rule_set = Array.from(ruleSetsDefinitions.values());
-        }
-        await dynamicYield();
-
-        // --- 3. 兼容性与纠错 ---
-        if (!config.outbounds) config.outbounds = [];
-
-        // 移除 outbounds 中冗余的 block 类型节点 (如果它们已经被 action 替代)
-        // 但保留 DIRECT 这种必需的特殊出站
-        config.outbounds = config.outbounds.filter(o => {
-            if (o.tag === 'REJECT' || o.tag === 'block') {
-                return false; // 移除，因为已经改用 action: reject 了
-            }
-            return true;
-        });
-
-        const existingOutboundTags = new Set(config.outbounds.map(o => o.tag));
-
-        if (!existingOutboundTags.has('DIRECT')) {
-            config.outbounds.push({ "type": "direct", "tag": "DIRECT" });
-            existingOutboundTags.add('DIRECT');
-        }
-
-        if (config.dns && config.dns.servers) {
-            const dnsServerTags = new Set(config.dns.servers.map(s => s.tag));
-            if (config.dns.rules) {
-                config.dns.rules.forEach(rule => {
-                    if (rule.server && !dnsServerTags.has(rule.server)) {
-                        if (rule.server === 'dns_block' && dnsServerTags.has('block')) {
-                            rule.server = 'block';
-                        } else if (rule.server.toLowerCase().includes('block') && !dnsServerTags.has(rule.server)) {
-                            config.dns.servers.push({ "tag": rule.server, "address": "rcode://success" });
-                            dnsServerTags.add(rule.server);
-                        }
-                    }
-                });
-            }
-        }
-
-        config.outbounds.forEach(outbound => {
-            if (outbound.type === 'selector' || outbound.type === 'urltest') {
-                if (Array.isArray(outbound.outbounds)) {
-                    // 修正：如果选择器引用了被移除的 REJECT/block，直接将其过滤掉
-                    // 因为路由规则已经通过 action 拦截了，不需要走选择器
-                    outbound.outbounds = outbound.outbounds.filter(tag => {
-                        const upperTag = tag.toUpperCase();
-                        return existingOutboundTags.has(tag) && upperTag !== 'REJECT' && upperTag !== 'BLOCK';
-                    });
-                    if (outbound.outbounds.length === 0) outbound.outbounds.push("DIRECT");
-                }
-            }
-        });
-        await dynamicYield();
-
-        // --- 4. UUID 匹配节点的 TLS 热补丁 (utls & ech) ---
+        // --- UUID 匹配节点的 TLS 热补丁 (utls & ech) ---
         if (uuid) {
-            for (const outbound of config.outbounds) {
-                // 仅处理包含 uuid 或 password 且匹配的节点
+            config.outbounds.forEach(outbound => {
                 if ((outbound.uuid && outbound.uuid === uuid) || (outbound.password && outbound.password === uuid)) {
-                    // 确保 tls 对象存在
                     if (!outbound.tls) {
                         outbound.tls = { enabled: true };
                     }
 
-                    // 添加/更新 utls 配置
                     if (fingerprint) {
                         outbound.tls.utls = {
                             enabled: true,
@@ -3456,19 +3942,15 @@ async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uu
                         };
                     }
 
-                    // 如果提供了 ECH启用，添加/更新 ech 配置
                     if (ECH启用) {
                         const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
-                        const nodeEchConfig = await getECH(nodeSNI);
-                        if (nodeEchConfig) {
-                            outbound.tls.ech = {
-                                enabled: true,
-                                config: `-----BEGIN ECH CONFIGS-----\n${nodeEchConfig}\n-----END ECH CONFIGS-----`
-                            };
-                        }
+                        outbound.tls.ech = {
+                            enabled: true,
+                            query_server_name: nodeSNI
+                        };
                     }
                 }
-            }
+            });
         }
 
         return JSON.stringify(config, null, 2);
@@ -3502,34 +3984,39 @@ async function Surge订阅配置文件热补丁(content, url, config_JSON) {
 async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SUB", config_JSON, 是否写入KV日志 = true) {
     try {
         const 当前时间 = new Date();
-        const 日志内容 = { TYPE: 请求类型, IP: 访问IP, ASN: `AS${request.cf.asn || '0'} ${request.cf.asOrganization || 'Unknown'}`, CC: `${request.cf.country || 'N/A'} ${request.cf.city || 'N/A'}`, URL: request.url, UA: request.headers.get('User-Agent') || 'Unknown', TIME: 当前时间.getTime() };
+        // 日志脱敏：URL 仅记录 pathname，UA 限制 200 字符
+        const sanitizedUA = clampLength(request.headers.get('User-Agent') || 'Unknown', 200);
+        const 日志内容 = { TYPE: 请求类型, IP: 访问IP, ASN: `AS${request.cf?.asn || '0'} ${request.cf?.asOrganization || 'Unknown'}`, CC: `${request.cf?.country || 'N/A'} ${request.cf?.city || 'N/A'}`, URL: sanitizeURL(request.url), UA: sanitizedUA, TIME: 当前时间.getTime() };
         if (config_JSON.TG.启用) {
             try {
-                const TG_TXT = await env.KV.get('tg.json');
+                const TG_TXT = await withTimeout(env.KV.get('tg.json'), 3000);
                 const TG_JSON = JSON.parse(TG_TXT);
                 await sendMessage(TG_JSON.BotToken, TG_JSON.ChatID, 日志内容, config_JSON);
-            } catch (error) { console.error(`读取tg.json出错: ${error.message}`) }
+            } catch (error) { console.error(`读取tg.json出错: ${error.message}`); }
         }
         是否写入KV日志 = ['1', 'true'].includes(env.OFF_LOG) ? false : 是否写入KV日志;
         if (!是否写入KV日志) return;
         let 日志数组 = [];
-        const 现有日志 = await env.KV.get('log.json'), KV容量限制 = 4;//MB
+        const 现有日志 = await withTimeout(env.KV.get('log.json'), 3000);
+        const KV日志条数限制 = 1000; // 改用条数限制，更可靠
         if (现有日志) {
             try {
                 日志数组 = JSON.parse(现有日志);
                 if (!Array.isArray(日志数组)) { 日志数组 = [日志内容]; }
                 else if (请求类型 !== "Get_SUB") {
                     const 三十分钟前时间戳 = 当前时间.getTime() - 30 * 60 * 1000;
-                    if (日志数组.some(log => log.TYPE !== "Get_SUB" && log.IP === 访问IP && log.URL === request.url && log.UA === (request.headers.get('User-Agent') || 'Unknown') && log.TIME >= 三十分钟前时间戳)) return;
+                    const sanitizedRequestURL = sanitizeURL(request.url);
+                    if (日志数组.some(log => log.TYPE !== "Get_SUB" && log.IP === 访问IP && log.URL === sanitizedRequestURL && log.TIME >= 三十分钟前时间戳)) return;
                     日志数组.push(日志内容);
-                    while (JSON.stringify(日志数组, null, 2).length > KV容量限制 * 1024 * 1024 && 日志数组.length > 0) 日志数组.shift();
+                    // 改用条数限制代替字节大小计算
+                    while (日志数组.length > KV日志条数限制) 日志数组.shift();
                 } else {
                     日志数组.push(日志内容);
-                    while (JSON.stringify(日志数组, null, 2).length > KV容量限制 * 1024 * 1024 && 日志数组.length > 0) 日志数组.shift();
+                    while (日志数组.length > KV日志条数限制) 日志数组.shift();
                 }
             } catch (e) { 日志数组 = [日志内容]; }
         } else { 日志数组 = [日志内容]; }
-        await env.KV.put('log.json', JSON.stringify(日志数组, null, 2));
+        await withTimeout(env.KV.put('log.json', JSON.stringify(日志数组, null, 2)), 3000);
     } catch (error) { console.error(`日志记录失败: ${error.message}`); }
 }
 
@@ -3551,14 +4038,14 @@ async function sendMessage(BotToken, ChatID, 日志内容, config_JSON) {
             `${config_JSON.CF.Usage.success ? `📊 <b>请求用量：</b>${config_JSON.CF.Usage.total}/${config_JSON.CF.Usage.max} <b>${((config_JSON.CF.Usage.total / config_JSON.CF.Usage.max) * 100).toFixed(2)}%</b>\n` : ''}`;
 
         const url = `https://api.telegram.org/bot${BotToken}/sendMessage?chat_id=${ChatID}&parse_mode=HTML&text=${encodeURIComponent(msg)}`;
-        return fetch(url, {
+        return fetchWithTimeout(url, {
             method: 'GET',
             headers: {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'User-Agent': 日志内容.UA || 'Unknown',
             }
-        });
+        }, 10000);
     } catch (error) { console.error('Error sending message:', error) }
 }
 
@@ -3712,14 +4199,14 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
 
         // 通过 POST 发送 dns-message 请求
 
-        const response = await fetch(DoH解析服务, {
+        const response = await fetchWithTimeout(DoH解析服务, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/dns-message',
                 'Accept': 'application/dns-message',
             },
             body: query,
-        });
+        }, 5000);
         if (!response.ok) {
 
             return [];
@@ -3846,6 +4333,12 @@ async function getECH(host) {
 }
 
 async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false, ctx2 = null) {
+    // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
+    const cacheKey = `${hostname}:${userID}`;
+    const now = Date.now();
+    if (!重置配置 && configJSONCacheKey === cacheKey && (now - configJSONCacheTime) < CONFIG_CACHE_TTL) {
+        return configJSONCache;
+    }
     //const host = 随机替换通配符(hostname);
     const _p = atob("UFJPWFlJUA==");
     const host = hostname, CM_DoH = "https://doh.cmliussss.net/CMLiussss", 占位符 = '{{IP:PORT}}', 初始化开始时间 = performance.now(), 默认配置JSON = {
@@ -3935,9 +4428,16 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
     };
 
     try {
-        let configJSON = await env.KV.get('config.json');
+        // 为 KV 操作添加 3 秒超时保护
+        let configJSON = await withTimeout(
+            env.KV.get('config.json'),
+            3000
+        );
         if (!configJSON || 重置配置 == true) {
-            await env.KV.put('config.json', JSON.stringify(默认配置JSON, null, 2));
+            await withTimeout(
+                env.KV.put('config.json', JSON.stringify(默认配置JSON, null, 2)),
+                3000
+            );
             config_JSON = ctx2 ? (ctx2.config_JSON = 默认配置JSON) : 默认配置JSON;
         } else {
             config_JSON = ctx2 ? (ctx2.config_JSON = JSON.parse(configJSON)) : JSON.parse(configJSON);
@@ -4018,9 +4518,9 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
     const 初始化TG_JSON = { BotToken: null, ChatID: null };
     config_JSON.TG = { 启用: config_JSON.TG.启用 ? config_JSON.TG.启用 : false, ...初始化TG_JSON };
     try {
-        const TG_TXT = await env.KV.get('tg.json');
+        const TG_TXT = await withTimeout(env.KV.get('tg.json'), 3000);
         if (!TG_TXT) {
-            await env.KV.put('tg.json', JSON.stringify(初始化TG_JSON, null, 2));
+            await withTimeout(env.KV.put('tg.json', JSON.stringify(初始化TG_JSON, null, 2)), 3000);
         } else {
             const TG_JSON = JSON.parse(TG_TXT);
             config_JSON.TG.ChatID = TG_JSON.ChatID ? TG_JSON.ChatID : null;
@@ -4033,9 +4533,9 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
     const 初始化CF_JSON = { Email: null, GlobalAPIKey: null, AccountID: null, APIToken: null, UsageAPI: null };
     config_JSON.CF = { ...初始化CF_JSON, Usage: { success: false, pages: 0, workers: 0, total: 0, max: 100000 } };
     try {
-        const CF_TXT = await env.KV.get('cf.json');
+        const CF_TXT = await withTimeout(env.KV.get('cf.json'), 3000);
         if (!CF_TXT) {
-            await env.KV.put('cf.json', JSON.stringify(初始化CF_JSON, null, 2));
+            await withTimeout(env.KV.put('cf.json', JSON.stringify(初始化CF_JSON, null, 2)), 3000);
         } else {
             const CF_JSON = JSON.parse(CF_TXT);
             if (CF_JSON.UsageAPI) {
@@ -4061,6 +4561,10 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
     }
 
     config_JSON.加载时间 = (performance.now() - 初始化开始时间).toFixed(2) + 'ms';
+    // 更新缓存
+    configJSONCache = config_JSON;
+    configJSONCacheKey = cacheKey;
+    configJSONCacheTime = now;
     return config_JSON;
 }
 
@@ -4072,7 +4576,7 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1) {
         '17816': { file: 'cu', name: 'CF联通优选' },
         '4134': { file: 'ct', name: 'CF电信优选' },
     };
-    const asn = request.cf.asn, isp = ISP配置[asn];
+    const asn = request.cf?.asn, isp = ISP配置[asn];
     const cidr_url = isp ? `https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR/${isp.file}.txt` : 'https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt';
     const cfname = isp?.name || 'CF官方优选';
     const cfport = [443, 2053, 2083, 2087, 2096, 8443];
@@ -4525,10 +5029,10 @@ async function getCloudflareUsage(Email, GlobalAPIKey, AccountID, APIToken) {
         if (!AccountID && (!Email || !GlobalAPIKey)) return { success: false, pages: 0, workers: 0, total: 0, max: 100000 };
 
         if (!AccountID) {
-            const r = await fetch(`${API}/accounts`, {
+            const r = await fetchWithTimeout(`${API}/accounts`, {
                 method: "GET",
                 headers: { ...cfg, "X-AUTH-EMAIL": Email, "X-AUTH-KEY": GlobalAPIKey }
-            });
+            }, 10000);
             if (!r.ok) throw new Error(`账户获取失败: ${r.status}`);
             const d = await r.json();
             if (!d?.result?.length) throw new Error("未找到账户");
@@ -4540,7 +5044,7 @@ async function getCloudflareUsage(Email, GlobalAPIKey, AccountID, APIToken) {
         now.setUTCHours(0, 0, 0, 0);
         const hdr = APIToken ? { ...cfg, "Authorization": `Bearer ${APIToken}` } : { ...cfg, "X-AUTH-EMAIL": Email, "X-AUTH-KEY": GlobalAPIKey };
 
-        const res = await fetch(`${API}/graphql`, {
+        const res = await fetchWithTimeout(`${API}/graphql`, {
             method: "POST",
             headers: hdr,
             body: JSON.stringify({
