@@ -1,4 +1,4 @@
-const Version = '2026-04-22 16:30:32 (Local Enhanced)';
+const Version = '2026-05-03 01:19:25 (Local Enhanced)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -564,7 +564,12 @@ export default {
                                                 其他节点.push(地址备注分离[0] + '#' + encodeURIComponent(decodeURIComponent(地址备注分离[1])));
                                             } else 其他节点.push(元素);
                                         } else {
-                                            优选IP.push(元素);
+                                            const 备注位置 = 元素.indexOf('#');
+                                            const 地址部分 = 备注位置 > -1 ? 元素.slice(0, 备注位置) : 元素;
+                                            if (地址部分.includes('*')) {
+                                                const 备注部分 = 备注位置 > -1 ? 元素.slice(备注位置) : '';
+                                                优选IP.push(随机替换通配符(地址部分) + 备注部分);
+                                            } else 优选IP.push(元素);
                                         }
                                     }
                                 }
