@@ -126,10 +126,17 @@ function sanitizedErrorResponse(message, status = 500) {
 
 // KV 操作超时包装器 - 防止无限等待导致 loadShed
 // 异步超时包装器 - 防止无限等待导致 Worker 挂起
-const withTimeout = (promise, timeoutMs = 3000) => Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('操作超时')), timeoutMs))
-]);
+async function withTimeout(promise, timeoutMs = 3000, message = '操作超时') {
+    let timer;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), timeoutMs) })
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
 
 // Fetch 超时包装器 - 防止外部 API 请求无限挂起
 const fetchWithTimeout = (url, options = {}, timeoutMs = 10000) => {
@@ -3628,18 +3635,6 @@ const TURN_STUN_ATTR = {
 	XOR_PEER_ADDRESS: 0x0012, REALM: 0x0014, NONCE: 0x0015,
 	REQUESTED_TRANSPORT: 0x0019, CONNECTION_ID: 0x002a
 };
-
-async function withTimeout(promise, timeoutMs, message) {
-	let timer;
-	try {
-		return await Promise.race([
-			promise,
-			new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), timeoutMs) })
-		]);
-	} finally {
-		clearTimeout(timer);
-	}
-}
 
 function isIPv4(value) {
 	const parts = String(value || '').split('.');
