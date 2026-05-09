@@ -452,7 +452,7 @@ export default {
                         // 订阅速率限制：单IP 10次/小时
                         if (env.KV) {
                             const subCount = await env.KV.get(`sub_rate:${访问IP}`);
-                            if (Number(subCount) >= 10) {
+                            if (Number(subCount) >= 16) {
                                 return sanitizedErrorResponse('订阅请求过于频繁，请稍后重试', 429);
                             }
                             ctx.waitUntil(env.KV.put(`sub_rate:${访问IP}`, String(Number(subCount) + 1), { expirationTtl: 3600 }));
