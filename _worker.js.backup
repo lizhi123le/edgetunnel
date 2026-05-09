@@ -988,6 +988,24 @@ const 尝试解析木马首包 = (data) => {
         };
     };
 
+    const 尝试解析SS首包 = (data) => {
+        const 加密方法 = url.searchParams.get('enc');
+        if (!加密方法) return { 状态: 'invalid' };
+        
+        // 老版本逻辑：如果有 enc 参数，则判定为 SS 协议
+        return {
+            状态: 'ok',
+            结果: {
+                协议: 'ss',
+                加密方法: 加密方法,
+                rawData: data, // SS 的首包是加密的，直接传给后续流处理
+                reader: reader,
+                isUDP: false, // SS TCP 模式
+                respHeader: null
+            }
+        };
+    };
+
     // 性能优化3: 使用预分配缓冲区（减少扩容）
     let buffer = new Uint8Array(预分配缓冲区大小);
     let offset = 0;
@@ -1016,7 +1034,11 @@ const 尝试解析木马首包 = (data) => {
         const 魏烈思结果 = 尝试解析魏烈思首包(当前数据);
         if (魏烈思结果.状态 === 'ok') return { ...魏烈思结果.结果, reader };
 
-        if (木马结果.状态 === 'invalid' && 魏烈思结果.状态 === 'invalid') return null;
+        // 修复：添加 SS 解析逻辑
+        const SS结果 = 尝试解析SS首包(当前数据);
+        if (SS结果.状态 === 'ok') return { ...SS结果.结果, reader };
+
+        if (木马结果.状态 === 'invalid' && 魏烈思结果.状态 === 'invalid' && SS结果.状态 === 'invalid') return null;
     }
 
     const 最终数据 = buffer.subarray(0, offset);
@@ -1024,6 +1046,8 @@ const 尝试解析木马首包 = (data) => {
     if (最终木马结果.状态 === 'ok') return { ...最终木马结果.结果, reader };
     const 最终魏烈思结果 = 尝试解析魏烈思首包(最终数据);
     if (最终魏烈思结果.状态 === 'ok') return { ...最终魏烈思结果.结果, reader };
+    const 最终SS结果 = 尝试解析SS首包(最终数据);
+    if (最终SS结果.状态 === 'ok') return { ...最终SS结果.结果, reader };
     return null;
 }
 ///////////////////////////////////////////////////////////////////////gRPC传输数据///////////////////////////////////////////////
