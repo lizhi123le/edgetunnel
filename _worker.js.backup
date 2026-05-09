@@ -54,7 +54,7 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 恢复 3 天缓存，节省 KV 读取次数
+const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 60 分钟缓存
 let configJSONCacheTime = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
@@ -448,11 +448,12 @@ export default {
                         MD5MD5(订阅转换后端TOKEN种子 + (当前日序号 - 1)),
                     ]);
                     const 订阅转换后端请求订阅 = 请求TOKEN === 今日订阅转换后端专属TOKEN || 请求TOKEN === 昨日订阅转换后端专属TOKEN;
+
                     if (用户客户端请求订阅 || 订阅转换后端请求订阅 || 作为优选订阅生成器) {
                         // 订阅速率限制：单IP 10次/小时
                         if (env.KV) {
                             const subCount = await env.KV.get(`sub_rate:${访问IP}`);
-                            if (Number(subCount) >= 16) {
+                            if (Number(subCount) >= 10) {
                                 return sanitizedErrorResponse('订阅请求过于频繁，请稍后重试', 429);
                             }
                             ctx.waitUntil(env.KV.put(`sub_rate:${访问IP}`, String(Number(subCount) + 1), { expirationTtl: 3600 }));
@@ -1008,7 +1009,6 @@ const 尝试解析木马首包 = (data) => {
         buffer.set(chunk, offset);
         offset += chunk.byteLength;
 
-        // 移除 16KB 强制限制，改为在后续业务逻辑中按需处理，避免误伤 SS/Trojan 二进制流量
         const 当前数据 = buffer.subarray(0, offset);
         const 木马结果 = 尝试解析木马首包(当前数据);
         if (木马结果.状态 === 'ok') return { ...木马结果.结果, reader };
@@ -3419,6 +3419,8 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = null) {
     const 请求数据 = 数据转Uint8Array(udpChunk);
     const 请求字节数 = 请求数据?.byteLength ?? 请求数据?.length ?? 0;
+    
+    // 稳定性加固：多 DNS 上游冗余 Failover
     const DNS上游列表 = ['8.8.4.4', '1.1.1.1', '8.8.8.8', '1.0.0.1'];
     
     for (const dnsServer of DNS上游列表) {
@@ -3433,6 +3435,7 @@ async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = 
             await tcpSocket.readable.pipeTo(new WritableStream({
                 async write(chunk) {
                     const 原始响应 = 数据转Uint8Array(chunk);
+                    log(`[UDP-DNS] 收到 DNS 响应: ${原始响应.byteLength}B`);
                     const 封装结果 = 响应封装器 ? await 响应封装器(原始响应) : 原始响应;
                     const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
                     if (webSocket.readyState === WebSocket.OPEN) {
@@ -4942,8 +4945,7 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
                 if (tgJSONCache) await sendMessage(tgJSONCache.BotToken, tgJSONCache.ChatID, 日志内容, config_JSON);
             } catch (error) { console.error(`读取tg.json出错: ${error.message}`); }
         }
-        
-        const 是否写入KV日志 = !['1', 'true'].includes(env.OFF_LOG);
+        是否写入KV日志 = ['1', 'true'].includes(env.OFF_LOG) ? false : 是否写入KV日志;
         if (!是否写入KV日志) return;
         
         globalLogQueue.push(日志内容);
@@ -4954,7 +4956,7 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
             lastLogFlushTime = Date.now();
             
             try {
-                // 缓解并发写竞争：增加 0-500ms 随机延迟
+                // 稳定性加固：缓解并发写竞争，增加 0-500ms 随机延迟
                 await new Promise(r => setTimeout(r, Math.random() * 500));
                 const 现有日志 = await withTimeout(env.KV.get('log.json'), 3000);
                 const KV日志条数限制 = 1000;
@@ -4965,12 +4967,12 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
                         if (!Array.isArray(日志数组)) 日志数组 = [];
                     } catch (e) { 日志数组 = []; }
                 }
-                for (const logItem of flushQueue) {
-                    if (logItem.TYPE !== "Get_SUB") {
-                        const 三十分钟前时间戳 = logItem.TIME - 30 * 60 * 1000;
-                        if (日志数组.some(l => l.TYPE !== "Get_SUB" && l.IP === logItem.IP && l.URL === logItem.URL && l.TIME >= 三十分钟前时间戳)) continue;
+                for (const log of flushQueue) {
+                    if (log.TYPE !== "Get_SUB") {
+                        const 三十分钟前时间戳 = log.TIME - 30 * 60 * 1000;
+                        if (日志数组.some(l => l.TYPE !== "Get_SUB" && l.IP === log.IP && l.URL === log.URL && l.TIME >= 三十分钟前时间戳)) continue;
                     }
-                    日志数组.push(logItem);
+                    日志数组.push(log);
                 }
                 while (日志数组.length > KV日志条数限制) 日志数组.shift();
                 await withTimeout(env.KV.put('log.json', JSON.stringify(日志数组, null, 2)), 3000);
@@ -5095,7 +5097,7 @@ function 随机替换通配符(h) {
 async function 批量替换域名(内容, hosts, 每组数量 = 2) {
     const 打乱后数组 = [...hosts].sort(() => Math.random() - 0.5);
     let count = 0;
-    // 使用正则精确匹配域名位置，防止替换 URL 参数或备注中的 example.com
+    // 稳定性加固：使用正则精确匹配域名位置，防止替换 URL 参数或备注中的域名
     const 域名匹配正则 = /(?<=:\/\/|@|^|[^a-zA-Z0-9.-])example\.com(?=[:\/]|$|[^a-zA-Z0-9.-])/g;
     const parts = 内容.split(域名匹配正则);
     if (parts.length <= 1) return 内容;
@@ -5633,6 +5635,7 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
     const 优选订阅生成器URL = `${格式化HOST}/sub?host=example.com&uuid=00000000-0000-4000-8000-000000000000`;
 
     try {
+        // 稳定性加固：增加超时保护
         const response = await withTimeout(fetch(优选订阅生成器URL, {
             headers: { 'User-Agent': 'v2rayN/edge' + 'tunnel (https://github.com/cmliu/edge' + 'tunnel)' }
         }), 10000);
