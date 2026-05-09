@@ -54,7 +54,7 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 60 分钟缓存
+const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 恢复 3 天缓存，节省 KV 读取次数
 let configJSONCacheTime = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
@@ -1008,11 +1008,7 @@ const 尝试解析木马首包 = (data) => {
         buffer.set(chunk, offset);
         offset += chunk.byteLength;
 
-        if (offset > 16384) { // 限制协议头最大 16KB
-            log("[XHTTP] 协议头过长，疑似恶意攻击，断开连接");
-            return null;
-        }
-
+        // 移除 16KB 强制限制，改为在后续业务逻辑中按需处理，避免误伤 SS/Trojan 二进制流量
         const 当前数据 = buffer.subarray(0, offset);
         const 木马结果 = 尝试解析木马首包(当前数据);
         if (木马结果.状态 === 'ok') return { ...木马结果.结果, reader };
@@ -3591,7 +3587,6 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 		try { await reader.cancel(); } catch (e) { }
 		try { reader.releaseLock(); } catch (e) { }
 		try { remoteSocket.close(); } catch (e) { }
-		reader = null; header = null; 
 	}
 	if (!hasData && retryFunc) await retryFunc();
 }
@@ -4947,7 +4942,8 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
                 if (tgJSONCache) await sendMessage(tgJSONCache.BotToken, tgJSONCache.ChatID, 日志内容, config_JSON);
             } catch (error) { console.error(`读取tg.json出错: ${error.message}`); }
         }
-        是否写入KV日志 = ['1', 'true'].includes(env.OFF_LOG) ? false : 是否写入KV日志;
+        
+        const 是否写入KV日志 = !['1', 'true'].includes(env.OFF_LOG);
         if (!是否写入KV日志) return;
         
         globalLogQueue.push(日志内容);
@@ -4969,12 +4965,12 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
                         if (!Array.isArray(日志数组)) 日志数组 = [];
                     } catch (e) { 日志数组 = []; }
                 }
-                for (const log of flushQueue) {
-                    if (log.TYPE !== "Get_SUB") {
-                        const 三十分钟前时间戳 = log.TIME - 30 * 60 * 1000;
-                        if (日志数组.some(l => l.TYPE !== "Get_SUB" && l.IP === log.IP && l.URL === log.URL && l.TIME >= 三十分钟前时间戳)) continue;
+                for (const logItem of flushQueue) {
+                    if (logItem.TYPE !== "Get_SUB") {
+                        const 三十分钟前时间戳 = logItem.TIME - 30 * 60 * 1000;
+                        if (日志数组.some(l => l.TYPE !== "Get_SUB" && l.IP === logItem.IP && l.URL === logItem.URL && l.TIME >= 三十分钟前时间戳)) continue;
                     }
-                    日志数组.push(log);
+                    日志数组.push(logItem);
                 }
                 while (日志数组.length > KV日志条数限制) 日志数组.shift();
                 await withTimeout(env.KV.put('log.json', JSON.stringify(日志数组, null, 2)), 3000);
