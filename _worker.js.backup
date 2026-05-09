@@ -54,7 +54,7 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL =30 * 60 * 60 * 1000; // 30小时缓存
+const CONFIG_CACHE_TTL = 30 * 60 * 60 * 1000; // 30小时缓存
 let configJSONCacheTime = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
@@ -5296,9 +5296,9 @@ async function getECH(host) {
 }
 
 async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false) {
-    // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
     const cacheKey = `${hostname}:${userID}`;
     const now = Date.now();
+    // 完全回退老版本：只要 cacheKey 不匹配或强制重置，就重新读取 KV
     if (!重置配置 && configJSONCacheKey === cacheKey && (now - configJSONCacheTime) < CONFIG_CACHE_TTL) {
         return configJSONCache;
     }
