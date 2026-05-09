@@ -1397,8 +1397,12 @@ async function 处理WS请求(request, yourUUID, url) {
 					return 入站主密钥任务缓存.get(config.method);
 				};
 				const 入站状态 = {
-					buffer: new Uint8Array(0), hasSalt: false, waitPayloadLength: null,
-					decryptKey: null, nonceCounter: new Uint8Array(SSNonce长度), 加密配置: null,
+					buffer: (typeof rawData !== 'undefined' ? SS数据转Uint8Array(rawData) : new Uint8Array(0)), // 核心修复：注入首包
+					hasSalt: false, 
+					waitPayloadLength: null,
+					decryptKey: null, 
+					nonceCounter: new Uint8Array(SSNonce长度), 
+					加密配置: null,
 					cpuYieldByteCounter: 0,
 				};
 				const 初始化入站解密状态 = async () => {
