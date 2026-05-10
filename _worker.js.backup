@@ -54,7 +54,7 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 30 * 60 * 60 * 1000; // 30小时缓存
+const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 60 分钟缓存
 let configJSONCacheTime = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
@@ -448,7 +448,6 @@ export default {
                         MD5MD5(订阅转换后端TOKEN种子 + (当前日序号 - 1)),
                     ]);
                     const 订阅转换后端请求订阅 = 请求TOKEN === 今日订阅转换后端专属TOKEN || 请求TOKEN === 昨日订阅转换后端专属TOKEN;
-
                     if (用户客户端请求订阅 || 订阅转换后端请求订阅 || 作为优选订阅生成器) {
                         // 订阅速率限制：单IP 10次/小时
                         if (env.KV) {
@@ -518,7 +517,9 @@ export default {
 
                             let 完整优选IP = [], 其他节点LINK = '', 反代IP池 = [];
 
-                                const IP转换节点 = (原始地址) => {
+                                const IP转换节点 = (输入元素) => {
+                                    if (typeof 输入元素 === 'object' && 输入元素.type === 'node') return 输入元素.value;
+                                    const 原始地址 = typeof 输入元素 === 'object' ? 输入元素.value : 输入元素;
                                     const ECH_SNI = (config_JSON.ECHConfig.SNI && config_JSON.ECHConfig.SNI !== 'auto') ? config_JSON.ECHConfig.SNI : 随机替换通配符(config_JSON.HOSTS[Math.floor(Math.random() * config_JSON.HOSTS.length)]);
                                     const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}` : '';
                                     const SS_ECH参数 = (config_JSON.ECH && config_JSON.SS.TLS === true && (协议类型 === 'ss' || config_JSON.协议类型 === 'ss')) ? `&echconfiglist=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}&fp=${config_JSON.Fingerprint}` : ECHLINK参数;
@@ -572,7 +573,8 @@ export default {
                                         完整优选列表 = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0];
                                     }
                                 }
-                                const 优选API = [], 优选IP = [], 其他节点 = [];
+                                const 优选API = [];
+                                const 排序元素 = [];
                                 let lastYieldTime = performance.now();
                                 let ipCount = 0;
                                 for (const 元素 of 完整优选列表) {
@@ -582,48 +584,69 @@ export default {
                                     }
                                     if (元素.toLowerCase().startsWith('sub://')) {
                                         优选API.push(元素);
+                                        排序元素.push({ type: 'api', value: 元素 });
                                     } else {
                                         const subMatch = 元素.match(/sub\s*=\s*([^\s&#]+)/i);
                                         if (subMatch && subMatch[1].trim().includes('.')) {
                                             const 优选IP作为反代IP = 元素.toLowerCase().includes('proxyip=true');
-                                            优选API.push('sub://' + subMatch[1].trim() + (优选IP作为反代IP ? "?proxyip=true" : "") + (元素.includes('#') ? ('#' + 元素.split('#')[1]) : ''));
+                                            const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? "?proxyip=true" : "") + (元素.includes('#') ? ('#' + 元素.split('#')[1]) : '');
+                                            优选API.push(apiValue);
+                                            排序元素.push({ type: 'api', value: apiValue });
                                         } else if (元素.toLowerCase().startsWith('https://')) {
                                             优选API.push(元素);
+                                            排序元素.push({ type: 'api', value: 元素 });
                                         } else if (元素.toLowerCase().includes('://')) {
+                                            let nodeValue;
                                             if (元素.includes('#')) {
                                                 const 地址备注分离 = 元素.split('#');
-                                                其他节点.push(地址备注分离[0] + '#' + encodeURIComponent(decodeURIComponent(地址备注分离[1])));
-                                            } else 其他节点.push(元素);
+                                                nodeValue = 地址备注分离[0] + '#' + encodeURIComponent(decodeURIComponent(地址备注分离[1]));
+                                            } else nodeValue = 元素;
+                                            排序元素.push({ type: 'node', value: nodeValue });
                                         } else {
                                             const 备注位置 = 元素.indexOf('#');
                                             const 地址部分 = 备注位置 > -1 ? 元素.slice(0, 备注位置) : 元素;
+                                            let ipValue;
                                             if (地址部分.includes('*')) {
                                                 const 备注部分 = 备注位置 > -1 ? 元素.slice(备注位置) : '';
-                                                优选IP.push(随机替换通配符(地址部分) + 备注部分);
-                                            } else 优选IP.push(元素);
+                                                ipValue = 随机替换通配符(地址部分) + 备注部分;
+                                            } else ipValue = 元素;
+                                            排序元素.push({ type: 'ip', value: ipValue });
                                         }
                                     }
                                 }
 
                                 const [resultsMap, _, api反代IP池] = await 请求优选API(优选API, (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443');
                                 反代IP池 = api反代IP池 || [];
-                                其他节点LINK = 其他节点.length > 0 ? 其他节点.join('\n') + '\n' : '';
 
-                                for (const key of resultsMap.keys()) {
-                                    const res = resultsMap.get(key);
-                                    if (res) {
-                                        if (res.Nodes && res.Nodes.length > 0) 其他节点LINK += res.Nodes.join('\n') + '\n';
-                                        if (res.IPs && res.IPs.length > 0) for (const ip of res.IPs) 完整优选IP.push(ip);
+                                for (const item of 排序元素) {
+                                    if (item.type === 'api') {
+                                        const res = resultsMap.get(item.value);
+                                        if (res) {
+                                            if (res.Nodes && res.Nodes.length > 0) {
+                                                for (const node of res.Nodes) 完整优选IP.push({ type: 'node', value: node });
+                                            }
+                                            if (res.IPs && res.IPs.length > 0) {
+                                                for (const ip of res.IPs) 完整优选IP.push({ type: 'ip', value: ip });
+                                            }
+                                        }
+                                    } else if (item.type === 'node') {
+                                        完整优选IP.push({ type: 'node', value: item.value });
+                                    } else if (item.type === 'ip') {
+                                        完整优选IP.push({ type: 'ip', value: item.value });
                                     }
                                 }
-                                for (const ip of 优选IP) 完整优选IP.push(ip);
                             } else { // 优选订阅生成器
                                 let 优选订阅生成器HOST = url.searchParams.get('sub') || config_JSON.优选订阅生成.SUB;
                                 const [优选生成器IP数组, 优选生成器其他节点] = await 获取优选订阅生成器数据(优选订阅生成器HOST);
-                                完整优选IP = 完整优选IP.concat(优选生成器IP数组);
-                                其他节点LINK += 优选生成器其他节点;
+                                if (优选生成器其他节点) {
+                                    const nodes = 优选生成器其他节点.split('\n').filter(n => n.trim());
+                                    for (const node of nodes) 完整优选IP.push({ type: 'node', value: node });
+                                }
+                                for (const ip of 优选生成器IP数组) {
+                                    完整优选IP.push({ type: 'ip', value: ip });
+                                }
                             }
-                            订阅内容 = 其他节点LINK + await 异步批量转换节点(完整优选IP, IP转换节点);
+                            订阅内容 = await 异步批量转换节点(完整优选IP, IP转换节点) + '\n';
                         } else { // 订阅转换
                             const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + '&asOrg=' + 识别运营商(request) + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
                             try {
@@ -3419,45 +3442,40 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = null) {
     const 请求数据 = 数据转Uint8Array(udpChunk);
     const 请求字节数 = 请求数据?.byteLength ?? 请求数据?.length ?? 0;
-    
-    // 稳定性加固：多 DNS 上游冗余 Failover
-    const DNS上游列表 = ['8.8.4.4', '1.1.1.1', '8.8.8.8', '1.0.0.1'];
-    
-    for (const dnsServer of DNS上游列表) {
-        try {
-            log(`[UDP-DNS] 尝试 DNS 请求: ${请求字节数}B -> ${dnsServer}:53`);
-            const tcpSocket = connect({ hostname: dnsServer, port: 53 });
-            let 魏烈思Header = respHeader;
-            const writer = tcpSocket.writable.getWriter();
-            await writer.write(请求数据);
-            writer.releaseLock();
-            
-            await tcpSocket.readable.pipeTo(new WritableStream({
-                async write(chunk) {
-                    const 原始响应 = 数据转Uint8Array(chunk);
-                    log(`[UDP-DNS] 收到 DNS 响应: ${原始响应.byteLength}B`);
-                    const 封装结果 = 响应封装器 ? await 响应封装器(原始响应) : 原始响应;
-                    const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
-                    if (webSocket.readyState === WebSocket.OPEN) {
-                        for (const fragment of 发送片段列表) {
-                            const 转发响应 = 数据转Uint8Array(fragment);
-                            if (!转发响应.byteLength) continue;
-                            if (魏烈思Header) {
-                                const response = new Uint8Array(魏烈思Header.length + 转发响应.byteLength);
-                                response.set(魏烈思Header, 0);
-                                response.set(转发响应, 魏烈思Header.length);
-                                await WebSocket发送并等待(webSocket, response.buffer);
-                                魏烈思Header = null;
-                            } else await WebSocket发送并等待(webSocket, 转发响应);
+    log(`[UDP-DNS] 收到 DNS 请求: ${请求字节数}B -> 8.8.4.4:53`);
+    try {
+        const tcpSocket = connect({ hostname: '8.8.4.4', port: 53 });
+        let 魏烈思Header = respHeader;
+        const writer = tcpSocket.writable.getWriter();
+        await writer.write(请求数据);
+        log(`[UDP-DNS] DNS 请求已写入上游: ${请求字节数}B`);
+        writer.releaseLock();
+        await tcpSocket.readable.pipeTo(new WritableStream({
+            async write(chunk) {
+                const 原始响应 = 数据转Uint8Array(chunk);
+                log(`[UDP-DNS] 收到 DNS 响应: ${原始响应.byteLength}B`);
+                const 封装结果 = 响应封装器 ? await 响应封装器(原始响应) : 原始响应;
+                const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
+                if (!发送片段列表.length) return;
+                if (webSocket.readyState === WebSocket.OPEN) {
+                    for (const fragment of 发送片段列表) {
+                        const 转发响应 = 数据转Uint8Array(fragment);
+                        if (!转发响应.byteLength) continue;
+                        if (魏烈思Header) {
+                            const response = new Uint8Array(魏烈思Header.length + 转发响应.byteLength);
+                            response.set(魏烈思Header, 0);
+                            response.set(转发响应, 魏烈思Header.length);
+                            await WebSocket发送并等待(webSocket, response.buffer);
+                            魏烈思Header = null;
+                        } else {
+                            await WebSocket发送并等待(webSocket, 转发响应);
                         }
                     }
                 }
-            }));
-            return; // 成功则退出循环
-        } catch (error) {
-            log(`[UDP-DNS] DNS 上游 ${dnsServer} 失败: ${error?.message || error}`);
-            continue; // 尝试下一个
-        }
+            },
+        }));
+    } catch (error) {
+        log(`[UDP-DNS] DNS 转发失败: ${error?.message || error}`);
     }
 }
 
@@ -4956,8 +4974,6 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
             lastLogFlushTime = Date.now();
             
             try {
-                // 稳定性加固：缓解并发写竞争，增加 0-500ms 随机延迟
-                await new Promise(r => setTimeout(r, Math.random() * 500));
                 const 现有日志 = await withTimeout(env.KV.get('log.json'), 3000);
                 const KV日志条数限制 = 1000;
                 let 日志数组 = [];
@@ -5097,9 +5113,7 @@ function 随机替换通配符(h) {
 async function 批量替换域名(内容, hosts, 每组数量 = 2) {
     const 打乱后数组 = [...hosts].sort(() => Math.random() - 0.5);
     let count = 0;
-    // 稳定性加固：使用正则精确匹配域名位置，防止替换 URL 参数或备注中的域名
-    const 域名匹配正则 = /(?<=:\/\/|@|^|[^a-zA-Z0-9.-])example\.com(?=[:\/]|$|[^a-zA-Z0-9.-])/g;
-    const parts = 内容.split(域名匹配正则);
+    const parts = 内容.split('example.com');
     if (parts.length <= 1) return 内容;
 
     const resultArr = [parts[0]];
@@ -5296,9 +5310,9 @@ async function getECH(host) {
 }
 
 async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false) {
+    // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
     const cacheKey = `${hostname}:${userID}`;
     const now = Date.now();
-    // 完全回退老版本：只要 cacheKey 不匹配或强制重置，就重新读取 KV
     if (!重置配置 && configJSONCacheKey === cacheKey && (now - configJSONCacheTime) < CONFIG_CACHE_TTL) {
         return configJSONCache;
     }
@@ -5575,7 +5589,7 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true
     const cfname = 运营商名称映射[运营商文件标识] || 'CF官方优选';
     const cfport = TLS ? [443, 2053, 2083, 2087, 2096, 8443] : [80, 8080, 8880, 2052, 2082, 2086, 2095];
     let cidrList = [];
-    try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13']; } catch { cidrList = ['104.16.0.0/13']; }
+    try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13'] } catch { cidrList = ['104.16.0.0/13'] }
 
     const generateRandomIPFromCIDR = (cidr) => {
         const [baseIP, prefixLength] = cidr.split('/'), prefix = parseInt(prefixLength), hostBits = 32 - prefix;
@@ -5635,10 +5649,9 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
     const 优选订阅生成器URL = `${格式化HOST}/sub?host=example.com&uuid=00000000-0000-4000-8000-000000000000`;
 
     try {
-        // 稳定性加固：增加超时保护
-        const response = await withTimeout(fetch(优选订阅生成器URL, {
+        const response = await fetch(优选订阅生成器URL, {
             headers: { 'User-Agent': 'v2rayN/edge' + 'tunnel (https://github.com/cmliu/edge' + 'tunnel)' }
-        }), 10000);
+        });
 
         if (!response.ok) {
             优选IP.push(`127.0.0.1:1234#${优选订阅生成器HOST}优选订阅生成器异常:${response.statusText}`);
