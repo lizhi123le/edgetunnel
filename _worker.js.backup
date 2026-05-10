@@ -225,10 +225,7 @@ export default {
             ctx2.SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
             SOCKS5白名单正则 = ctx2.SOCKS5白名单正则;
         }
-        if (访问路径 === 'version') {// 版本信息接口（必须提前返回，避免穿透到重型逻辑）
-            if (url.searchParams.get('uuid') === userID) {
-                return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-            }
+        if (访问路径 === 'version' && url.searchParams.get('uuid') === userID) {// 版本信息接口
             return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
         }
         if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
