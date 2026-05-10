@@ -417,12 +417,12 @@ export default {
                             }
                         } else return new Response(JSON.stringify({ error: '不支持的POST请求路径' }), { status: 404, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                     } else if (访问路径 === 'admin/config.json') {// 处理 admin/config.json 请求，返回JSON
-                        return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+                        return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
                     } else if (区分大小写访问路径 === 'admin/ADD.txt') {// 处理 admin/ADD.txt 请求，返回本地优选IP
                         try {
                             let 本地优选IP = await withTimeout(env.KV.get('ADD.txt', { cacheTtl: 5 }), 3000) || 'null';
                             if (本地优选IP == 'null') 本地优选IP = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (config_JSON.协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[1];
-                            return new Response(本地优选IP, { status: 200, headers: { 'Content-Type': 'text/plain;charset=utf-8', 'Cache-Control': 'no-store', 'asn': request.cf?.asn || 'unknown' } });
+                            return new Response(本地优选IP, { status: 200, headers: { 'Content-Type': 'text/plain;charset=utf-8', 'asn': request.cf?.asn || 'unknown' } });
                         } catch (err) {
                             return new Response('ERROR', { status: 504 });
                         }
