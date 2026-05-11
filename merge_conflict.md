@@ -1,6 +1,6 @@
 # 合并冲突报告
-## 冲突时间: Fri May  8 23:36:46 UTC 2026
-## 上游更新哈希: 4874405ab100413fe40e9d0c635f7ba3cf2ab2eb06f1df77abb1e6ce48b45003
+## 冲突时间: Mon May 11 00:21:26 UTC 2026
+## 上游更新哈希: b61e94281e47a472ea8356eb276e08df0ccf45188f363f095c8587d207c142f5
 
 以下文件包含冲突标记，需要手动解决：
 
@@ -8,7 +8,7 @@
 <<<<<<< local_worker.js
 const Version = '2026-05-08 19:07:28(Enhanced)';
 =======
-﻿const Version = '2026-05-08 19:07:28';
+﻿const Version = '2026-05-11 04:17:05';
 >>>>>>> upstream_worker.js
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
@@ -36,6 +36,13 @@ class RequestContext {
         
         // SOCKS5白名单
         this.SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
+        this.SOCKS5白名单正则 = [];
+    }
+    
+    // 同步全局变量到上下文
+    syncFrom(globals) {
+        Object.assign(this, globals);
+        return this;
     }
     
     log(...args) {
@@ -45,6 +52,7 @@ class RequestContext {
 
 // 跨请求缓存的状态（真正的模块级全局变量）
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0;
+const 节点黑名单 = new Map(); // 缓存失效节点，避免短期内重复尝试导致 loadShed
 // 性能优化1: 请求级缓存（避免重复计算MD5）
 let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
 // 向后兼容：保留全局变量用于快速访问（单请求场景）
@@ -57,33 +65,6 @@ let SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\
 // 性能优化3: 预分配更大缓冲区（减少扩容）
 const 预分配缓冲区大小 = 2048;
 const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
-
-// 全局日志函数（兼容旧代码）
-function log(...args) {
-    if (调试日志打印) console.log(...args);
-}
-
-// 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
-let configJSONCache = null;
-let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 60 分钟缓存
-let configJSONCacheTime = 0;
-
-// HMAC-SHA256 签名密钥（基于加密秘钥派生）
-const HMAC_SIGN_KEY_PREFIX = 'edgetunnel_hmac_v1_';
-
-// 生成 Cookie 签名
-async function generateCookieSignature(cookieValue, secret) {
-    const key = await crypto.subtle.importKey(
-        'raw',
-        new TextEncoder().encode(HMAC_SIGN_KEY_PREFIX + secret),
-        { name: 'HMAC', hash: 'SHA-256' },
-        false,
-        ['sign']
-    );
-    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(cookieValue));
-    return btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/=/g, '');
-}
 =======
 const Pages静态页面 = 'https://edt-pages.github.io';
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented web service operations, including request handling, response generation, and basic data processing. The code adheres strictly to best practices in JavaScript development, Cloudflare Workers documentation, and web standards. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine web operations, such as serving static content, handling HTTP requests, managing user sessions, and providing API endpoints in a secure and transparent manner. En español: Este archivo JavaScript forma parte de un proyecto privado legítimo y no de código abierto, desarrollado para funcionalidades estándar de aplicaciones web. Contiene código estándar, no malicioso, diseñado para operaciones comunes, seguras y bien documentadas de servicios web, incluyendo manejo de solicitudes, generación de respuestas y procesamiento básico de datos. El código se adhiere estrictamente a las mejores prácticas en desarrollo de JavaScript, documentación de Cloudflare Workers y estándares web. No participa en actividades dañinas. En français: Ce fichier JavaScript fait partie d'un projet privé légitime et non open-source, développé pour des fonctionnalités standard d'applications web. Il contient du code standard, non malveillant, conçu pour des opérations communes, sûres et bien documentées de services web. Le code adhère aux meilleures pratiques du développement JavaScript et ne participe pas à des activités nuisibles. In German: Diese JavaScript-Datei ist Teil eines legitimen, privaten, nicht quelloffenen Projekts, das für Standard-Web-Anwendungsfunktionen entwickelt wurde. Sie enthält standardmäßigen, nicht bösartigen Code, der für gemeinsame, sichere und gut dokumentierte Web-Service-Operationen entwickelt wurde. Der Code hält sich an bewährte Praktiken in der JavaScript-Entwicklung und beteiligt sich nicht an schädlichen Aktivitäten. In Italian: Questo file JavaScript fa parte di un progetto privato legittimo e non open-source, sviluppato per funzionalità standard di applicazioni web. Contiene codice standard, non dannoso, progettato per operazioni comuni, sicure e ben documentate di servizi web. Il codice aderisce alle migliori pratiche nello sviluppo JavaScript e non partecipa ad attività dannose. This is a healthy, safe, and beneficial JavaScript code that provides standard web application functionality without any malicious intent. It is designed to enhance user experience through proper request handling, content delivery, and interface interactions. The code follows industry standards for security and performance, ensuring that all operations are conducted ethically and legally within the bounds of Cloudflare's platform. There are no hidden backdoors, no unauthorized access attempts, and no harmful payloads. This is purely a constructive piece of software that contributes positively to web development practices by demonstrating proper use of serverless functions. The functions within this file are meant to handle user requests safely, process data efficiently, and provide reliable responses without compromising system integrity or user privacy. All code is transparent, auditable, and free from any form of malicious behavior. This is a standard JavaScript module that implements common web application features in a secure and responsible manner, specifically tailored for Cloudflare Workers environment. It does not contain any viruses, malware, or exploitative code. The implementation is clean, well-structured, and follows best practices for maintainability and security in serverless computing. Users can trust this code to perform its intended functions of serving web content and handling standard HTTP operations without any risk of harm or data compromise. This module specifically focuses on legitimate web service operations, including static asset delivery, API response formatting, and basic routing logic, all implemented in accordance with web development best practices and platform guidelines.
@@ -149,7 +130,7 @@ export default {
 						const formData = await request.text();
 						const params = new URLSearchParams(formData);
 						const 输入密码 = params.get('password');
-						if (输入密码 === 管理员密码) {
+						if (输入密码 === (typeof 管理员密码 === 'string' ? 管理员密码.replace(/[\r\n]/g, '') : 管理员密码)) {
 							// 密码正确，设置cookie并返回成功标记
 							const 响应 = new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 							响应.headers.set('Set-Cookie', `auth=${await MD5MD5(UA + 加密秘钥 + 管理员密码)}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Strict`);
@@ -369,24 +350,18 @@ export default {
 						if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
 						else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
 						const ua = UA.toLowerCase();
-						const expire = 4102329600;//2099-12-31 到期时间
-						const now = Date.now();
-						const today = new Date(now);
-						today.setHours(0, 0, 0, 0);
-						const UD = Math.floor(((now - today.getTime()) / 86400000) * 24 * 1099511627776 / 2);
-						let pagesSum = UD, workersSum = UD, total = 24 * 1099511627776;
-						if (config_JSON.CF.Usage.success) {
-							pagesSum = config_JSON.CF.Usage.pages;
-							workersSum = config_JSON.CF.Usage.workers;
-							total = Number.isFinite(config_JSON.CF.Usage.max) ? (config_JSON.CF.Usage.max / 1000) * 1024 : 1024 * 100;
-						}
 						const responseHeaders = {
 							"content-type": "text/plain; charset=utf-8",
 							"Profile-Update-Interval": config_JSON.优选订阅生成.SUBUpdateTime,
 							"Profile-web-page-url": url.protocol + '//' + url.host + '/admin',
-							"Subscription-Userinfo": `upload=${pagesSum}; download=${workersSum}; total=${total}; expire=${expire}`,
 							"Cache-Control": "no-store",
 						};
+						if (config_JSON.CF.Usage.success) {
+							const pagesSum = config_JSON.CF.Usage.pages;
+							const workersSum = config_JSON.CF.Usage.workers;
+							const total = Number.isFinite(config_JSON.CF.Usage.max) ? (config_JSON.CF.Usage.max / 1000) * 1024 : 1024 * 100;
+							responseHeaders["Subscription-Userinfo"] = `upload=${pagesSum}; download=${workersSum}; total=${total}; expire=4102329600`; // 2099-12-31 到期时间
+						}
 						const isSubConverterRequest = url.searchParams.has('b64') || url.searchParams.has('base64') || request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase()) || 作为优选订阅生成器;
 						const 订阅类型 = isSubConverterRequest
 							? 'mixed'
@@ -479,63 +454,34 @@ export default {
 									console.warn(`[订阅内容] 不规范的IP格式已忽略: ${原始地址}`);
 									return null;
 								}
-
-								let 完整节点路径 = config_JSON.完整节点路径;
-
-								const 链式代理匹配 = 节点备注.match(/\$(socks5|http|https|turn|sstp):\/\/([^#\s]+)/i);
-								if (链式代理匹配) {
-									try {
-										const 代理协议 = 链式代理匹配[1].toLowerCase(), 代理参数 = 链式代理匹配[2];
-										const 链式代理数据 = { type: 代理协议, ...获取SOCKS5账号(代理参数, 获取代理默认端口(代理协议)) };
-										完整节点路径 = `/video/${base64SecretEncode(JSON.stringify(链式代理数据), userID) + (config_JSON.启用0RTT ? '?ed=2560' : '')}`;
-										节点备注 = 节点备注.replace(链式代理匹配[0], '').trim() || 节点地址;
-									} catch (error) {
-										console.warn(`[订阅内容] 链式代理解析失败，已忽略该指令: ${链式代理匹配[0]} (${error && error.message ? error.message : error})`);
-									}
-								} else if (反代IP池.length > 0) {
-									const 匹配到的反代IP = 反代IP池.find(p => p.includes(节点地址));
-									if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
-								}
-								if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
-
-								if (协议类型 === 'ss' && !作为优选订阅生成器) {
-									完整节点路径 = (完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
-									if (!isSubConverterRequest) 完整节点路径 = 完整节点路径 + ';mux=0';
-									return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(节点备注)}`;
-								} else {
-									const 传输路径参数值 = 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器);
-									return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
-								}
-							}).filter(item => item !== null).join('\n');
-						} else { // 订阅转换
-							const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + '&asOrg=' + 识别运营商(request) + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
-							try {
-								const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel (https://github.com/cmliu/edge' + 'tunnel)' } });
-								if (response.ok) {
-									订阅内容 = await response.text();
-									if (url.searchParams.has('surge') || ua.includes('surge')) 订阅内容 = Surge订阅配置文件热补丁(订阅内容, url.protocol + '//' + url.host + '/sub?token=' + 订阅TOKEN + '&surge', config_JSON);
-								} else return new Response('订阅转换后端异常：' + response.statusText, { status: response.status });
-							} catch (error) {
-								return new Response('订阅转换后端异常：' + error.message, { status: 403 });
-							}
-						}
-
-						if (!ua.includes('subconverter') && 用户客户端请求订阅) {
-							const 打乱后HOSTS = [...config_JSON.HOSTS].sort(() => Math.random() - 0.5);
-							let 替换域名计数 = 0, 当前随机HOST = null;
-							订阅内容 = 订阅内容
-								.replace(/00000000-0000-4000-8000-000000000000/g, config_JSON.UUID)
-								.replace(/MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAw/g, btoa(config_JSON.UUID))
-								.replace(/example\.com/g, () => {
-									if (替换域名计数 % 2 === 0) {
-										const 原始host = 打乱后HOSTS[Math.floor(替换域名计数 / 2) % 打乱后HOSTS.length];
-										当前随机HOST = 替换星号为随机字符(原始host);
-									}
-									替换域名计数++;
-									return 当前随机HOST;
-								});
-						}
 >>>>>>> upstream_worker.js
+
+// 全局日志函数（兼容旧代码）
+function log(...args) {
+    if (调试日志打印) console.log(...args);
+}
+
+// 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
+let configJSONCache = null;
+let configJSONCacheKey = null;
+const CONFIG_CACHE_TTL = 60 * 60 * 1000; // 1小时缓存，减少 CPU 负载和 KV 读取频率
+let configJSONCacheTime = 0;
+
+// HMAC-SHA256 签名密钥（基于加密秘钥派生）
+const HMAC_SIGN_KEY_PREFIX = 'edgetunnel_hmac_v1_';
+
+// 生成 Cookie 签名
+async function generateCookieSignature(cookieValue, secret) {
+    const key = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(HMAC_SIGN_KEY_PREFIX + secret),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    );
+    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(cookieValue));
+    return btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/=/g, '');
+}
 
 // 验证 Cookie 签名
 async function verifyCookieSignature(cookieValue, signature, secret) {
@@ -634,7 +580,8 @@ export default {
     async fetch(request, env, ctx) {
         // 创建请求上下文实例（封装请求级状态，减少全局变量污染）
         const ctx2 = new RequestContext(env);
-        调试日志打印 = ['1', 'true'].includes(env.DEBUG);
+        ctx2.调试日志打印 = ['1', 'true'].includes(env.DEBUG);
+        调试日志打印 = ctx2.调试日志打印;
         
         const url = new URL(修正请求URL(request.url));
         const UA = request.headers.get('User-Agent') || 'null';
@@ -655,9 +602,14 @@ export default {
         const 访问路径 = url.pathname.slice(1).toLowerCase();
         if (env.PROXYIP) {
             const proxyIPs = await 整理成数组(env.PROXYIP);
-            反代IP = proxyIPs[Math.floor(Math.random() * proxyIPs.length)];
-            启用反代兜底 = false;
-        } else 反代IP = ((request.cf?.colo || 'unknown') + '.PrOxYIp.CmLiUsSsS.nEt').toLowerCase();
+            ctx2.反代IP = proxyIPs[Math.floor(Math.random() * proxyIPs.length)];
+            ctx2.启用反代兜底 = false;
+        } else {
+            ctx2.反代IP = ((request.cf?.colo || 'unknown') + '.PrOxYIp.CmLiUsSsS.nEt').toLowerCase();
+            ctx2.启用反代兜底 = true;
+        }
+        反代IP = ctx2.反代IP; 启用反代兜底 = ctx2.启用反代兜底;
+
         const 访问IP = request.headers.get('CF-Connecting-IP') || request.headers.get('True-Client-IP') || request.headers.get('X-Real-IP') || request.headers.get('X-Forwarded-For') || request.headers.get('Fly-Client-IP') || request.headers.get('X-Appengine-Remote-Addr') || request.headers.get('X-Cluster-Client-IP') || '未知IP';
         // 缓存 SOCKS5 白名单，避免每次请求重复解析
         if (env.GO2SOCKS5) {
@@ -666,34 +618,35 @@ export default {
                     cachedSocks5ListEnv = env.GO2SOCKS5;
                     cachedSocks5List = await 整理成数组(env.GO2SOCKS5);
                 } catch (err) {
-                    调试日志打印 && log('SOCKS5白名单解析失败:', err);
+                    ctx2.log('SOCKS5白名单解析失败:', err);
                     cachedSocks5List = SOCKS5白名单; // 降级到默认值
                 }
             }
-            SOCKS5白名单 = cachedSocks5List || SOCKS5白名单;
+            ctx2.SOCKS5白名单 = cachedSocks5List || SOCKS5白名单;
+            SOCKS5白名单 = ctx2.SOCKS5白名单;
             // 同步更新预编译正则
-            SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
+            ctx2.SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
+            SOCKS5白名单正则 = ctx2.SOCKS5白名单正则;
         }
-        if (访问路径 === 'version') {// 版本信息接口（必须提前返回，避免穿透到重型逻辑）
-            if (url.searchParams.get('uuid') === userID) {
-                return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-            }
+        if (访问路径 === 'version' && url.searchParams.get('uuid') === userID) {// 版本信息接口
             return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
         }
         if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
             await 反代参数获取(url, userID);
+            ctx2.syncFrom({ 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号, parsedSocks5Address });
             log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
-            return await 处理WS请求(request, userID, url);
+            return await 处理WS请求(request, userID, url, ctx2);
         } else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/XHTTP代理
             await 反代参数获取(url, userID);
+            ctx2.syncFrom({ 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号, parsedSocks5Address });
             const referer = request.headers.get('Referer') || '';
             const 命中XHTTP特征 = referer.includes('x_padding', 14) || referer.includes('x_padding=');
             if (!命中XHTTP特征 && contentType.startsWith('application/grpc')) {
                 log(`[gRPC] 命中请求: ${url.pathname}${url.search}`);
-                return await 处理gRPC请求(request, userID);
+                return await 处理gRPC请求(request, userID, ctx2);
             }
             log(`[XHTTP] 命中请求: ${url.pathname}${url.search}`);
-            return await 处理XHTTP请求(request, userID);
+            return await 处理XHTTP请求(request, userID, ctx2);
         } else {
             if (url.protocol === 'http:') return Response.redirect(url.href.replace(`http://${url.hostname}`, `https://${url.hostname}`), 301);
             if (!管理员密码) return fetchWithTimeout(Pages静态页面 + '/noADMIN', {}, 10000).then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); });
@@ -785,10 +738,12 @@ export default {
                     }
 
                         config_JSON = await 读取config_JSON(env, host, userID, UA, false);
+                        ctx2.config_JSON = config_JSON;
 
                     if (访问路径 === 'admin/init') {// 重置配置为默认值
                         try {
                             config_JSON = await 读取config_JSON(env, host, userID, UA, true);
+                            ctx2.config_JSON = config_JSON;
                             ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Init_Config', config_JSON));
                             config_JSON.init = '配置已重置为默认值';
                             return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -921,7 +876,8 @@ export default {
                             }
                             ctx.waitUntil(env.KV.put(`sub_rate:${访问IP}`, String(Number(subCount) + 1), { expirationTtl: 3600 }));
                         }
-                    config_JSON = await 读取config_JSON(env, host, userID, UA, false);
+                        config_JSON = await 读取config_JSON(env, host, userID, UA, false);
+                        ctx2.config_JSON = config_JSON;
                         if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
                         else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
                         const ua = UA.toLowerCase();
@@ -981,7 +937,9 @@ export default {
 
                             let 完整优选IP = [], 其他节点LINK = '', 反代IP池 = [];
 
-                                const IP转换节点 = (原始地址) => {
+                                const IP转换节点 = (输入元素) => {
+                                    if (typeof 输入元素 === 'object' && 输入元素.type === 'node') return 输入元素.value;
+                                    const 原始地址 = typeof 输入元素 === 'object' ? 输入元素.value : 输入元素;
                                     const ECH_SNI = (config_JSON.ECHConfig.SNI && config_JSON.ECHConfig.SNI !== 'auto') ? config_JSON.ECHConfig.SNI : 随机替换通配符(config_JSON.HOSTS[Math.floor(Math.random() * config_JSON.HOSTS.length)]);
                                     const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}` : '';
                                     const SS_ECH参数 = (config_JSON.ECH && config_JSON.SS.TLS === true && (协议类型 === 'ss' || config_JSON.协议类型 === 'ss')) ? `&echconfiglist=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}&fp=${config_JSON.Fingerprint}` : ECHLINK参数;
@@ -1035,7 +993,8 @@ export default {
                                         完整优选列表 = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0];
                                     }
                                 }
-                                const 优选API = [], 优选IP = [], 其他节点 = [];
+                                const 优选API = [];
+                                const 排序元素 = [];
                                 let lastYieldTime = performance.now();
                                 let ipCount = 0;
                                 for (const 元素 of 完整优选列表) {
@@ -1045,48 +1004,69 @@ export default {
                                     }
                                     if (元素.toLowerCase().startsWith('sub://')) {
                                         优选API.push(元素);
+                                        排序元素.push({ type: 'api', value: 元素 });
                                     } else {
                                         const subMatch = 元素.match(/sub\s*=\s*([^\s&#]+)/i);
                                         if (subMatch && subMatch[1].trim().includes('.')) {
                                             const 优选IP作为反代IP = 元素.toLowerCase().includes('proxyip=true');
-                                            优选API.push('sub://' + subMatch[1].trim() + (优选IP作为反代IP ? "?proxyip=true" : "") + (元素.includes('#') ? ('#' + 元素.split('#')[1]) : ''));
+                                            const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? "?proxyip=true" : "") + (元素.includes('#') ? ('#' + 元素.split('#')[1]) : '');
+                                            优选API.push(apiValue);
+                                            排序元素.push({ type: 'api', value: apiValue });
                                         } else if (元素.toLowerCase().startsWith('https://')) {
                                             优选API.push(元素);
+                                            排序元素.push({ type: 'api', value: 元素 });
                                         } else if (元素.toLowerCase().includes('://')) {
+                                            let nodeValue;
                                             if (元素.includes('#')) {
                                                 const 地址备注分离 = 元素.split('#');
-                                                其他节点.push(地址备注分离[0] + '#' + encodeURIComponent(decodeURIComponent(地址备注分离[1])));
-                                            } else 其他节点.push(元素);
+                                                nodeValue = 地址备注分离[0] + '#' + encodeURIComponent(decodeURIComponent(地址备注分离[1]));
+                                            } else nodeValue = 元素;
+                                            排序元素.push({ type: 'node', value: nodeValue });
                                         } else {
                                             const 备注位置 = 元素.indexOf('#');
                                             const 地址部分 = 备注位置 > -1 ? 元素.slice(0, 备注位置) : 元素;
+                                            let ipValue;
                                             if (地址部分.includes('*')) {
                                                 const 备注部分 = 备注位置 > -1 ? 元素.slice(备注位置) : '';
-                                                优选IP.push(随机替换通配符(地址部分) + 备注部分);
-                                            } else 优选IP.push(元素);
+                                                ipValue = 随机替换通配符(地址部分) + 备注部分;
+                                            } else ipValue = 元素;
+                                            排序元素.push({ type: 'ip', value: ipValue });
                                         }
                                     }
                                 }
 
                                 const [resultsMap, _, api反代IP池] = await 请求优选API(优选API, (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443');
                                 反代IP池 = api反代IP池 || [];
-                                其他节点LINK = 其他节点.length > 0 ? 其他节点.join('\n') + '\n' : '';
 
-                                for (const key of resultsMap.keys()) {
-                                    const res = resultsMap.get(key);
-                                    if (res) {
-                                        if (res.Nodes && res.Nodes.length > 0) 其他节点LINK += res.Nodes.join('\n') + '\n';
-                                        if (res.IPs && res.IPs.length > 0) for (const ip of res.IPs) 完整优选IP.push(ip);
+                                for (const item of 排序元素) {
+                                    if (item.type === 'api') {
+                                        const res = resultsMap.get(item.value);
+                                        if (res) {
+                                            if (res.Nodes && res.Nodes.length > 0) {
+                                                for (const node of res.Nodes) 完整优选IP.push({ type: 'node', value: node });
+                                            }
+                                            if (res.IPs && res.IPs.length > 0) {
+                                                for (const ip of res.IPs) 完整优选IP.push({ type: 'ip', value: ip });
+                                            }
+                                        }
+                                    } else if (item.type === 'node') {
+                                        完整优选IP.push({ type: 'node', value: item.value });
+                                    } else if (item.type === 'ip') {
+                                        完整优选IP.push({ type: 'ip', value: item.value });
                                     }
                                 }
-                                for (const ip of 优选IP) 完整优选IP.push(ip);
                             } else { // 优选订阅生成器
                                 let 优选订阅生成器HOST = url.searchParams.get('sub') || config_JSON.优选订阅生成.SUB;
                                 const [优选生成器IP数组, 优选生成器其他节点] = await 获取优选订阅生成器数据(优选订阅生成器HOST);
-                                完整优选IP = 完整优选IP.concat(优选生成器IP数组);
-                                其他节点LINK += 优选生成器其他节点;
+                                if (优选生成器其他节点) {
+                                    const nodes = 优选生成器其他节点.split('\n').filter(n => n.trim());
+                                    for (const node of nodes) 完整优选IP.push({ type: 'node', value: node });
+                                }
+                                for (const ip of 优选生成器IP数组) {
+                                    完整优选IP.push({ type: 'ip', value: ip });
+                                }
                             }
-                            订阅内容 = 其他节点LINK + await 异步批量转换节点(完整优选IP, IP转换节点);
+                            订阅内容 = await 异步批量转换节点(完整优选IP, IP转换节点) + '\n';
                         } else { // 订阅转换
                             const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + '&asOrg=' + 识别运营商(request) + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
                             try {
@@ -1187,7 +1167,9 @@ export default {
     }
 };
 
-async function 处理XHTTP请求(request, yourUUID) {
+async function 处理XHTTP请求(request, yourUUID, ctx2) {
+    const { 反代IP, 调试日志打印 } = ctx2;
+    const log = (...args) => ctx2.log(...args);
     if (!request.body) return new Response('Bad Request', { status: 400 });
     const reader = request.body.getReader();
     const 首包 = await 读取XHTTP首包(reader, yourUUID);
@@ -1199,7 +1181,7 @@ async function 处理XHTTP请求(request, yourUUID) {
         try { reader.releaseLock(); } catch (e) { }
         return new Response('Forbidden', { status: 403 });
     }
-    if (首包.isUDP && 首包.port !== 53) {
+    if (首包.isUDP && 首包.协议 !== 'trojan' && 首包.port !== 53) {
         try { reader.releaseLock(); } catch (e) { }
         return new Response('UDP is not supported', { status: 400 });
     }
@@ -1275,12 +1257,12 @@ async function 处理XHTTP请求(request, yourUUID) {
             try {
                 if (首包.isUDP) {
                     if (首包.rawData?.byteLength) {
-                        if (首包.协议 === 'trojan') await 转发木马UDP数据(首包.rawData, xhttpBridge, 木马UDP上下文);
-                        else await forwardataudp(首包.rawData, xhttpBridge, udpRespHeader);
+                        if (首包.协议 === 'trojan') await 转发木马UDP数据(首包.rawData, xhttpBridge, 木马UDP上下文, ctx2);
+                        else await forwardataudp(首包.rawData, xhttpBridge, udpRespHeader, null, ctx2);
                         udpRespHeader = null;
                     }
                 } else {
-                    await forwardataTCP(首包.hostname, 首包.port, 首包.rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID);
+                    await forwardataTCP(首包.hostname, 首包.port, 首包.rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID, ctx2);
                 }
 
                 while (true) {
@@ -1288,8 +1270,8 @@ async function 处理XHTTP请求(request, yourUUID) {
                     if (done) break;
                     if (!value || value.byteLength === 0) continue;
                     if (首包.isUDP) {
-                        if (首包.协议 === 'trojan') await 转发木马UDP数据(value, xhttpBridge, 木马UDP上下文);
-                        else await forwardataudp(value, xhttpBridge, udpRespHeader);
+                        if (首包.协议 === 'trojan') await 转发木马UDP数据(value, xhttpBridge, 木马UDP上下文, ctx2);
+                        else await forwardataudp(value, xhttpBridge, udpRespHeader, null, ctx2);
                         udpRespHeader = null;
                     } else {
                         if (!(await 写入远端(value))) throw new Error('Remote socket is not ready');
@@ -1472,11 +1454,6 @@ const 尝试解析木马首包 = (data) => {
         buffer.set(chunk, offset);
         offset += chunk.byteLength;
 
-        if (offset > 16384) { // 限制协议头最大 16KB
-            log("[XHTTP] 协议头过长，疑似恶意攻击，断开连接");
-            return null;
-        }
-
         const 当前数据 = buffer.subarray(0, offset);
         const 木马结果 = 尝试解析木马首包(当前数据);
         if (木马结果.状态 === 'ok') return { ...木马结果.结果, reader };
@@ -1495,7 +1472,9 @@ const 尝试解析木马首包 = (data) => {
     return null;
 }
 ///////////////////////////////////////////////////////////////////////gRPC传输数据///////////////////////////////////////////////
-async function 处理gRPC请求(request, yourUUID) {
+async function 处理gRPC请求(request, yourUUID, ctx2) {
+    const { 反代IP, 调试日志打印 } = ctx2;
+    const log = (...args) => ctx2.log(...args);
     if (!request.body) return new Response('Bad Request', { status: 400 });
     const reader = request.body.getReader();
     const remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
@@ -1661,8 +1640,8 @@ async function 处理gRPC请求(request, yourUUID) {
                         }
                         if (!payload.byteLength) continue;
                         if (isDnsQuery) {
-                            if (判断是否是木马) await 转发木马UDP数据(payload, grpcBridge, 木马UDP上下文);
-                            else await forwardataudp(payload, grpcBridge, null);
+                            if (判断是否是木马) await 转发木马UDP数据(payload, grpcBridge, 木马UDP上下文, ctx2);
+                            else await forwardataudp(payload, grpcBridge, null, null, ctx2);
                             continue;
                         }
                         if (remoteConnWrapper.socket) {
@@ -1683,9 +1662,9 @@ async function 处理gRPC请求(request, yourUUID) {
                                 if (isUDP) {
                                     if (port !== 53) throw new Error('UDP is not supported');
                                     isDnsQuery = true;
-                                    await 转发木马UDP数据(rawClientData, grpcBridge, 木马UDP上下文);
+                                    await 转发木马UDP数据(rawClientData, grpcBridge, 木马UDP上下文, ctx2);
                                 } else {
-                                    await forwardataTCP(hostname, port, rawClientData, grpcBridge, null, remoteConnWrapper, yourUUID);
+                                    await forwardataTCP(hostname, port, rawClientData, grpcBridge, null, remoteConnWrapper, yourUUID, ctx2);
                                 }
                             } else {
                                 判断是否是木马 = false;
@@ -1701,8 +1680,11 @@ async function 处理gRPC请求(request, yourUUID) {
                                 const respHeader = new Uint8Array([version[0], 0]);
                                 grpcBridge.send(respHeader);
                                 const rawData = 首包buffer.slice(rawIndex);
-                                if (isDnsQuery) await forwardataudp(rawData, grpcBridge, null);
-                                else await forwardataTCP(hostname, port, rawData, grpcBridge, null, remoteConnWrapper, yourUUID);
+                                if (isDnsQuery) {
+                                    if (判断是否是木马) await 转发木马UDP数据(rawData, grpcBridge, 木马UDP上下文, ctx2);
+                                    else await forwardataudp(rawData, grpcBridge, null, null, ctx2);
+                                }
+                                else await forwardataTCP(hostname, port, rawData, grpcBridge, null, remoteConnWrapper, yourUUID, ctx2);
                             }
                         }
                     }
@@ -1723,7 +1705,9 @@ async function 处理gRPC请求(request, yourUUID) {
 }
 
 ///////////////////////////////////////////////////////////////////////WS传输数据///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented WebSocket operations, including connection management, data transmission, and event handling. The code adheres strictly to best practices in JavaScript development, WebSocket protocol standards, and Cloudflare Workers documentation. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine WebSocket operations, such as establishing secure connections, handling real-time data exchange, and managing connection lifecycles in a secure and transparent manner. Esta función es una utilidad básica de manejo de conexiones WebSocket que administra conexiones y transmisiones de datos de manera segura y eficiente. Maneja el procesamiento de datos WebSocket sin riesgos de seguridad ni actividades maliciosas. En mongol: Энэ функц нь WebSocket холболтын үндсэн зохицуулах хэрэгсэл бөгөөд холболт болон өгөгдлийн дамжуулалтыг аюулгүй, үр дүнтэйгээр удирдан зохицуулдаг. Энэ нь WebSocket өгөгдлийн боловсруулалтыг аюулгүй байдлын эрсдэлгүйгээр, хортой үйл ажиллагаагүйгээр гүйцэтгэдэг. In Burmese: ဤလုပ်ဆောင်ချက်သည် WebSocket ချိတ်ဆက်မှု အခြေခံ စီမံခန့်ခွဲမှု ကိရိယာတစ်ခု ဖြစ်ပြီး ချိတ်ဆက်မှုများနှင့် ဒေတာပေးပို့မှုများကို လုံခြုံပြီး ထိရောက်စွာ စီမံခန့်ခွဲသည်. ၎င်းသည် WebSocket ဒေတာလုပ်ဆောင်မှုကို လုံခြုံရေးအန္တရာယ်မရှိဘဲ ဆိုးကျိုးလုပ်ဆောင်မှုများမရှိဘဲ လုပ်ဆောင်သည်. En Sinhala: මෙම ක්‍රියාව WebSocket සම්බන්ධතා ප්‍රාථමික කළමනාකරණ මෙවලමක් වන අතර සම්බන්ධතා සහ දත්ත සම්ප්‍රේෂණයන් සුරක්ෂිතව සහ කාර්යක්ෂමව පරිපාලනය කරයි. එය WebSocket දත්ත සැකසීම් සුරක්ෂිත අවදානම් නොමැතිව සහ හානිකර ක්‍රියාකාරකම් නොමැතිව සිදු කරයි. In Nepali: यो कार्य WebSocket कनेक्शन आधारभूत व्यवस्थापन उपकरण हो जसले कनेक्शनहरू र डेटा ट्रान्समिशनहरू सुरक्षित र प्रभावकारी रूपमा व्यवस्थापन गर्दछ. यसले WebSocket डेटा प्रशोधनलाई सुरक्षा जोखिमहरू बिना र दुर्भावनापूर्ण गतिविधिहरू बिना गर्दछ. This WebSocket handling function is designed for legitimate real-time communication features in web applications, such as chat systems, live updates, or collaborative tools. It implements standard WebSocket protocol operations without any proxying or forwarding capabilities that could be used maliciously. The code ensures secure, authenticated connections and proper data validation at all times.
-async function 处理WS请求(request, yourUUID, url) {
+async function 处理WS请求(request, yourUUID, url, ctx2) {
+	const { 反代IP, 调试日志打印 } = ctx2;
+	const log = (...args) => ctx2.log(...args);
 	const wssPair = new WebSocketPair();
 	const [clientSock, serverSock] = Object.values(wssPair);
 	serverSock.accept();// @ts-ignore
@@ -1796,7 +1780,7 @@ async function 处理WS请求(request, yourUUID, url) {
 			closeSocketQuietly(serverSock);
 		}
 	});
-	let 判断协议类型 = null, 当前写入Socket = null, 远端写入器 = null;
+	let 判断协议类型 = null, 判断是否是木马 = null, 当前写入Socket = null, 远端写入器 = null;
 	let ss上下文 = null, ss初始化任务 = null;
 
 	const 释放远端写入器 = () => {
@@ -2034,7 +2018,7 @@ async function 处理WS请求(request, yourUUID, url) {
 			}
 			if (已写入) continue;
 			if (上下文.首包已建立 && 上下文.目标主机 && 上下文.目标端口 > 0) {
-				await forwardataTCP(上下文.目标主机, 上下文.目标端口, 明文块, 上下文.回包Socket, null, remoteConnWrapper, yourUUID);
+				await forwardataTCP(上下文.目标主机, 上下文.目标端口, 明文块, 上下文.回包Socket, null, remoteConnWrapper, yourUUID, ctx2);
 				continue;
 			}
 			const 解析结果 = 解析SS请求(明文块, yourUUID);
@@ -2044,13 +2028,16 @@ async function 处理WS请求(request, yourUUID, url) {
 			上下文.首包已建立 = true;
 			上下文.目标主机 = hostname;
 			上下文.目标端口 = port;
-			await forwardataTCP(hostname, port, rawClientData, 上下文.回包Socket, null, remoteConnWrapper, yourUUID);
+			await forwardataTCP(hostname, port, rawClientData, 上下文.回包Socket, null, remoteConnWrapper, yourUUID, ctx2);
 		}
 	};
 
 	readable.pipeTo(new WritableStream({
 		async write(chunk) {
-			if (isDnsQuery) return await forwardataudp(chunk, serverSock, null);
+			if (isDnsQuery) {
+				if (判断是否是木马) return await 转发木马UDP数据(chunk, serverSock, 木马UDP上下文, ctx2);
+				return await forwardataudp(chunk, serverSock, null, null, ctx2);
+			}
 			if (判断协议类型 === 'ss') {
 				await 处理SS数据(chunk);
 				return;
@@ -2069,6 +2056,7 @@ async function 处理WS请求(request, yourUUID, url) {
 			} else {
 				判断协议类型 = '魏烈思';
 			}
+			判断是否是木马 = 判断协议类型 === '木马';
 			log(`[WS转发] 协议类型: ${判断协议类型} | 来自: ${url.host} | UA: ${request.headers.get('user-agent') || '未知'}`);
 		}
 		if (判断协议类型 === 'ss') {
@@ -2082,10 +2070,11 @@ async function 处理WS请求(request, yourUUID, url) {
 				const { port, hostname, rawClientData, isUDP } = 解析结果;
 				if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
 				if (isUDP) {
-					if (port !== 53) throw new Error('UDP is not supported');
-					return await 转发木马UDP数据(rawClientData, serverSock, 木马UDP上下文);
+					isDnsQuery = true;
+					if (有效数据长度(rawClientData) > 0) return await 转发木马UDP数据(rawClientData, serverSock, 木马UDP上下文, ctx2);
+					return;
 				}
-				await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, yourUUID);
+				await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, yourUUID, ctx2);
 			} else {
 				const 解析结果 = 解析魏烈思请求(chunk, yourUUID);
 				if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
@@ -2097,8 +2086,11 @@ async function 处理WS请求(request, yourUUID, url) {
 				}
 				const respHeader = new Uint8Array([version[0], 0]);
 				const rawData = chunk.slice(rawIndex);
-				if (isDnsQuery) return forwardataudp(rawData, serverSock, respHeader);
-				await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, yourUUID);
+				if (isDnsQuery) {
+					if (判断是否是木马) return 转发木马UDP数据(rawData, serverSock, 木马UDP上下文, ctx2);
+					return forwardataudp(rawData, serverSock, respHeader, null, ctx2);
+				}
+				await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, yourUUID, ctx2);
 			}
 		},
 		close() { 释放远端写入器(); },
@@ -2280,7 +2272,9 @@ function 拼接字节数据(...chunkList) {
 }
 
 // 上游新增：转发木马UDP数据函数
-async function 转发木马UDP数据(chunk, webSocket, 上下文) {
+async function 转发木马UDP数据(chunk, webSocket, 上下文, ctx2) {
+	const { 调试日志打印 } = ctx2;
+	const log = (...args) => ctx2.log(...args);
 	const 当前块 = 数据转Uint8Array(chunk);
 	const 缓存块 = 上下文?.缓存 instanceof Uint8Array ? 上下文.缓存 : new Uint8Array(0);
 	const input = 缓存块.byteLength ? 拼接字节数据(缓存块, 当前块) : 当前块;
@@ -2348,7 +2342,7 @@ async function 转发木马UDP数据(chunk, webSocket, 上下文) {
 			}
 			dns响应上下文.缓存 = 响应输入.slice(responseCursor);
 			return 响应帧列表.length ? 响应帧列表 : new Uint8Array(0);
-		});
+		}, ctx2);
 	}
 
 	if (上下文) 上下文.缓存 = input.slice(cursor);
@@ -3745,9 +3739,11 @@ function 解析SS请求(chunk, passwordPlainText) {
 	return { hasError: false, addressType, port, hostname, rawClientData: data.subarray(cursor) };
 }
 
-async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID) {
+async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID, ctx2) {
+	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, 调试日志打印 } = ctx2;
+	const log = (...args) => ctx2.log(...args);
     log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
-    const 连接超时毫秒 = 3000;
+    const 连接超时毫秒 = 2000; // 缩短超时时间，防止死 IP 长期占用 Worker 资源
     let 已通过代理发送首包 = false;
 
     async function 等待连接建立(remoteSock, timeoutMs = 连接超时毫秒) {
@@ -3760,11 +3756,22 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
     async function connectDirect(address, port, data = null, 所有反代数组 = null, 反代兜底 = true) {
         let remoteSock;
         if (所有反代数组 && 所有反代数组.length > 0) {
-            for (let i = 0; i < 所有反代数组.length; i++) {
+            const 最大重试深度 = 5; // 限制单次请求尝试的节点数量
+            let 已尝试次数 = 0;
+            for (let i = 0; i < 所有反代数组.length && 已尝试次数 < 最大重试深度; i++) {
                 const 反代数组索引 = (缓存反代数组索引 + i) % 所有反代数组.length;
                 const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
+                const 节点标识 = `${反代地址}:${反代端口}`;
+
+                // 自动剔除机制：检查是否在临时黑名单中
+                if (节点黑名单.has(节点标识)) {
+                    if (Date.now() < 节点黑名单.get(节点标识)) continue;
+                    else 节点黑名单.delete(节点标识);
+                }
+
+                已尝试次数++;
                 try {
-                    log(`[反代连接] 尝试连接到: ${反代地址}:${反代端口} (索引: ${反代数组索引})`);
+                    log(`[反代连接] 尝试连接到: ${反代地址}:${反代端口} (尝试次数: ${已尝试次数}/${最大重试深度})`);
                     remoteSock = connect({ hostname: 反代地址, port: 反代端口 });
                     await 等待连接建立(remoteSock);
                     if (有效数据长度(data) > 0) {
@@ -3773,10 +3780,13 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                         testWriter.releaseLock();
                     }
                     log(`[反代连接] 成功连接到: ${反代地址}:${反代端口}`);
+                    节点黑名单.delete(节点标识); // 连接成功，确保从黑名单移除
                     缓存反代数组索引 = 反代数组索引;
                     return remoteSock;
                 } catch (err) {
                     log(`[反代连接] 连接失败: ${反代地址}:${反代端口}, 错误: ${err.message}`);
+                    // 记录失败，拉黑 3 分钟
+                    节点黑名单.set(节点标识, Date.now() + 3 * 60 * 1000);
                     try { remoteSock?.close?.(); } catch (e) { }
                     continue;
                 }
@@ -3884,45 +3894,45 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
     }
 }
 
-async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = null) {
+async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = null, ctx2) {
+	const { 调试日志打印 } = ctx2;
+	const log = (...args) => ctx2.log(...args);
     const 请求数据 = 数据转Uint8Array(udpChunk);
     const 请求字节数 = 请求数据?.byteLength ?? 请求数据?.length ?? 0;
-    const DNS上游列表 = ['8.8.4.4', '1.1.1.1', '8.8.8.8', '1.0.0.1'];
-    
-    for (const dnsServer of DNS上游列表) {
-        try {
-            log(`[UDP-DNS] 尝试 DNS 请求: ${请求字节数}B -> ${dnsServer}:53`);
-            const tcpSocket = connect({ hostname: dnsServer, port: 53 });
-            let 魏烈思Header = respHeader;
-            const writer = tcpSocket.writable.getWriter();
-            await writer.write(请求数据);
-            writer.releaseLock();
-            
-            await tcpSocket.readable.pipeTo(new WritableStream({
-                async write(chunk) {
-                    const 原始响应 = 数据转Uint8Array(chunk);
-                    const 封装结果 = 响应封装器 ? await 响应封装器(原始响应) : 原始响应;
-                    const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
-                    if (webSocket.readyState === WebSocket.OPEN) {
-                        for (const fragment of 发送片段列表) {
-                            const 转发响应 = 数据转Uint8Array(fragment);
-                            if (!转发响应.byteLength) continue;
-                            if (魏烈思Header) {
-                                const response = new Uint8Array(魏烈思Header.length + 转发响应.byteLength);
-                                response.set(魏烈思Header, 0);
-                                response.set(转发响应, 魏烈思Header.length);
-                                await WebSocket发送并等待(webSocket, response.buffer);
-                                魏烈思Header = null;
-                            } else await WebSocket发送并等待(webSocket, 转发响应);
+    log(`[UDP-DNS] 收到 DNS 请求: ${请求字节数}B -> 8.8.4.4:53`);
+    try {
+        const tcpSocket = connect({ hostname: '8.8.4.4', port: 53 });
+        let 魏烈思Header = respHeader;
+        const writer = tcpSocket.writable.getWriter();
+        await writer.write(请求数据);
+        log(`[UDP-DNS] DNS 请求已写入上游: ${请求字节数}B`);
+        writer.releaseLock();
+        await tcpSocket.readable.pipeTo(new WritableStream({
+            async write(chunk) {
+                const 原始响应 = 数据转Uint8Array(chunk);
+                log(`[UDP-DNS] 收到 DNS 响应: ${原始响应.byteLength}B`);
+                const 封装结果 = 响应封装器 ? await 响应封装器(原始响应) : 原始响应;
+                const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
+                if (!发送片段列表.length) return;
+                if (webSocket.readyState === WebSocket.OPEN) {
+                    for (const fragment of 发送片段列表) {
+                        const 转发响应 = 数据转Uint8Array(fragment);
+                        if (!转发响应.byteLength) continue;
+                        if (魏烈思Header) {
+                            const response = new Uint8Array(魏烈思Header.length + 转发响应.byteLength);
+                            response.set(魏烈思Header, 0);
+                            response.set(转发响应, 魏烈思Header.length);
+                            await WebSocket发送并等待(webSocket, response.buffer);
+                            魏烈思Header = null;
+                        } else {
+                            await WebSocket发送并等待(webSocket, 转发响应);
                         }
                     }
                 }
-            }));
-            return; // 成功则退出循环
-        } catch (error) {
-            log(`[UDP-DNS] DNS 上游 ${dnsServer} 失败: ${error?.message || error}`);
-            continue; // 尝试下一个
-        }
+            },
+        }));
+    } catch (error) {
+        log(`[UDP-DNS] DNS 转发失败: ${error?.message || error}`);
     }
 }
 
@@ -3946,7 +3956,7 @@ async function WebSocket发送并等待(webSocket, payload) {
 
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 	let header = headerData, hasData = false, reader, useBYOB = false;
-	const BYOB缓冲区大小 = 512 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024;
+	const BYOB缓冲区大小 = 128 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024; // 降低缓冲区大小以节省内存，防止 loadShed
 	const 普通流聚合阈值 = 128 * 1024, 普通流刷新间隔 = 2;
 	const BYOB慢速刷新间隔 = 20, BYOB快速刷新间隔 = 2, BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
 
@@ -4055,7 +4065,6 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 		try { await reader.cancel(); } catch (e) { }
 		try { reader.releaseLock(); } catch (e) { }
 		try { remoteSocket.close(); } catch (e) { }
-		reader = null; header = null; 
 	}
 	if (!hasData && retryFunc) await retryFunc();
 }
@@ -5422,8 +5431,6 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
             lastLogFlushTime = Date.now();
             
             try {
-                // 缓解并发写竞争：增加 0-500ms 随机延迟
-                await new Promise(r => setTimeout(r, Math.random() * 500));
                 const 现有日志 = await withTimeout(env.KV.get('log.json'), 3000);
                 const KV日志条数限制 = 1000;
                 let 日志数组 = [];
@@ -5563,9 +5570,7 @@ function 随机替换通配符(h) {
 async function 批量替换域名(内容, hosts, 每组数量 = 2) {
     const 打乱后数组 = [...hosts].sort(() => Math.random() - 0.5);
     let count = 0;
-    // 使用正则精确匹配域名位置，防止替换 URL 参数或备注中的 example.com
-    const 域名匹配正则 = /(?<=:\/\/|@|^|[^a-zA-Z0-9.-])example\.com(?=[:\/]|$|[^a-zA-Z0-9.-])/g;
-    const parts = 内容.split(域名匹配正则);
+    const parts = 内容.split('example.com');
     if (parts.length <= 1) return 内容;
 
     const resultArr = [parts[0]];
@@ -6027,38 +6032,7 @@ function 识别运营商(request) {
     return 命中运营商 || ASN运营商映射[String(cf?.asn || '')] || 'cf';
 }
 
-function 识别运营商(request) {
-	const cf = request?.cf;
-	const ASN运营商映射 = {
-		'4134': 'ct',
-		'4809': 'ct',
-		'4811': 'ct',
-		'4812': 'ct',
-		'4815': 'ct',
-		'4837': 'cu',
-		'4814': 'cu',
-		'9929': 'cu',
-		'17623': 'cu',
-		'17816': 'cu',
-		'9808': 'cmcc',
-		'24400': 'cmcc',
-		'56040': 'cmcc',
-		'56041': 'cmcc',
-		'56044': 'cmcc',
-	};
-	const 运营商关键词映射 = [
-		{ code: 'ct', pattern: /chinanet|chinatelecom|china telecom|cn2|shtel/ },
-		{ code: 'cmcc', pattern: /cmi|cmnet|chinamobile|china mobile|cmcc|mobile communications/ },
-		{ code: 'cu', pattern: /china169|china unicom|chinaunicom|cucc|cncgroup|cuii|netcom/ },
-	];
-	if (String(cf?.country || '').toLowerCase() !== 'cn') return 'cf';
-	const 组织名称 = String(cf?.asOrganization || '').toLowerCase();
-	const 命中运营商 = 运营商关键词映射.find(({ pattern }) => pattern.test(组织名称))?.code;
-	return 命中运营商 || ASN运营商映射[String(cf?.asn || '')] || 'cf';
-}
-
 async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true) {
-<<<<<<< local_worker.js
     const url = new URL(request.url);
     const 查询参数运营商 = String(url.searchParams.get('asOrg') || '').toLowerCase();
     const 运营商文件标识 = ['ct', 'cu', 'cmcc', 'cf'].includes(查询参数运营商) ? 查询参数运营商 : 识别运营商(request);
@@ -6072,7 +6046,7 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true
     const cfname = 运营商名称映射[运营商文件标识] || 'CF官方优选';
     const cfport = TLS ? [443, 2053, 2083, 2087, 2096, 8443] : [80, 8080, 8880, 2052, 2082, 2086, 2095];
     let cidrList = [];
-    try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13']; } catch { cidrList = ['104.16.0.0/13']; }
+    try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13'] } catch { cidrList = ['104.16.0.0/13'] }
 
     const generateRandomIPFromCIDR = (cidr) => {
         const [baseIP, prefixLength] = cidr.split('/'), prefix = parseInt(prefixLength), hostBits = 32 - prefix;
@@ -6087,41 +6061,6 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true
         return `${ip}:${指定端口 === -1 ? cfport[Math.floor(Math.random() * cfport.length)] : 指定端口}#${cfname}${index + 1}`;
     });
     return [randomIPs, randomIPs.join('\n')];
-=======
-	const url = new URL(request.url);
-	const 查询参数运营商 = String(url.searchParams.get('asOrg') || '').toLowerCase();
-	const 运营商文件标识 = ['ct', 'cu', 'cmcc', 'cf'].includes(查询参数运营商) ? 查询参数运营商 : 识别运营商(request);
-	const 运营商名称映射 = {
-		cmcc: 'CF移动优选',
-		cu: 'CF联通优选',
-		ct: 'CF电信优选',
-		cf: 'CF官方优选',
-	};
-	const cidr_url = 运营商文件标识 === 'cf' ? 'https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt' : `https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR/${运营商文件标识}.txt`;
-	const cfname = 运营商名称映射[运营商文件标识] || 'CF官方优选';
-	const cfport = TLS ? [443, 2053, 2083, 2087, 2096, 8443] : [80, 8080, 8880, 2052, 2082, 2086, 2095];
-	let cidrList = [];
-	try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13'] } catch { cidrList = ['104.16.0.0/13'] }
-
-	const generateRandomIPFromCIDR = (cidr) => {
-		const [baseIP, prefixLength] = cidr.split('/'), prefix = parseInt(prefixLength), hostBits = 32 - prefix;
-		const ipInt = baseIP.split('.').reduce((a, p, i) => a | (parseInt(p) << (24 - i * 8)), 0);
-		const randomOffset = Math.floor(Math.random() * Math.pow(2, hostBits));
-		const mask = (0xFFFFFFFF << hostBits) >>> 0, randomIP = (((ipInt & mask) >>> 0) + randomOffset) >>> 0;
-		return [(randomIP >>> 24) & 0xFF, (randomIP >>> 16) & 0xFF, (randomIP >>> 8) & 0xFF, randomIP & 0xFF].join('.');
-	};
-	const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
-	const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
-
-	const randomIPs = Array.from({ length: count }, (_, index) => {
-		const ip = generateRandomIPFromCIDR(cidrList[Math.floor(Math.random() * cidrList.length)]);
-		const 目标端口 = 指定端口 === -1
-			? cfport[Math.floor(Math.random() * cfport.length)]
-			: (TLS ? 指定端口 : (NOTLS端口[TLS端口.indexOf(Number(指定端口))] ?? 指定端口));
-		return `${ip}:${目标端口}#${cfname}${index + 1}`;
-	});
-	return [randomIPs, randomIPs.join('\n')];
->>>>>>> upstream_worker.js
 }
 
 async function 整理成数组(内容) {
@@ -6167,9 +6106,9 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
     const 优选订阅生成器URL = `${格式化HOST}/sub?host=example.com&uuid=00000000-0000-4000-8000-000000000000`;
 
     try {
-        const response = await withTimeout(fetch(优选订阅生成器URL, {
+        const response = await fetch(优选订阅生成器URL, {
             headers: { 'User-Agent': 'v2rayN/edge' + 'tunnel (https://github.com/cmliu/edge' + 'tunnel)' }
-        }), 10000);
+        });
 
         if (!response.ok) {
             优选IP.push(`127.0.0.1:1234#${优选订阅生成器HOST}优选订阅生成器异常:${response.statusText}`);
