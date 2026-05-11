@@ -1,4 +1,4 @@
-const Version = '2026-05-11 04:17:05(Enhanced)';
+const Version = '2026-05-08 19:07:28(Enhanced)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -62,8 +62,10 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 60 * 60 * 1000; // 1小时缓存，减少 CPU 负载和 KV 读取频率
+const CONFIG_CACHE_TTL = 10 * 60 * 1000; // 10分钟缓存，平衡稳定性和配置实时性
 let configJSONCacheTime = 0;
+let configVersion = null;
+let configVersionTime = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
 const HMAC_SIGN_KEY_PREFIX = 'edgetunnel_hmac_v1_';
@@ -270,7 +272,7 @@ export default {
                         const params = new URLSearchParams(formData);
                         const 输入密码 = params.get('password');
                         // 使用 timingSafeEqual 防时序攻击
-                        if (输入密码 === (typeof 管理员密码 === 'string' ? 管理员密码.replace(/[\r\n]/g, '') : 管理员密码)) {
+                        if (输入密码 && secureCompare(输入密码, 管理员密码)) {
                             // 清除失败计数
                             if (env.KV) ctx.waitUntil(env.KV.delete(`login_fail:${访问IP}`));
                             const authValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
@@ -358,10 +360,13 @@ export default {
 
                                 // 保存到 KV（带超时保护）
                                 await withTimeout(env.KV.put('config.json', JSON.stringify(newConfig, null, 2)), 3000);
-                                // 清除缓存，确保下次请求读取最新配置
+                                // 更新版本号以通知全球节点清除 Cache API 缓存
+                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+                                // 清除当前实例缓存
                                 configJSONCache = null;
                                 configJSONCacheKey = null;
                                 configJSONCacheTime = 0;
+                                configVersion = null;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
@@ -388,10 +393,13 @@ export default {
 
                                 // 保存到 KV（带超时保护）
                                 await withTimeout(env.KV.put('cf.json', JSON.stringify(CF_JSON, null, 2)), 3000);
-                                // 清除缓存，确保下次请求读取最新CF配置
+                                // 更新版本号以通知全球节点清除 Cache API 缓存
+                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+                                // 清除当前实例缓存
                                 configJSONCache = null;
                                 configJSONCacheKey = null;
                                 configJSONCacheTime = 0;
+                                configVersion = null;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
@@ -408,11 +416,14 @@ export default {
                                     if (!newConfig.BotToken || !newConfig.ChatID) return new Response(JSON.stringify({ error: '配置不完整' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                                     await withTimeout(env.KV.put('tg.json', JSON.stringify(newConfig, null, 2)), 3000);
                                 }
-                                ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
-                                // 清除缓存，确保下次请求读取最新TG配置
+                                // 更新版本号以通知全球节点清除 Cache API 缓存
+                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+                                // 清除当前实例缓存
                                 configJSONCache = null;
                                 configJSONCacheKey = null;
                                 configJSONCacheTime = 0;
+                                configVersion = null;
+                                ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
                                 console.error('保存TG配置失败:', error.message);
@@ -422,10 +433,13 @@ export default {
                             try {
                                 const customIPs = await request.text();
                                 await withTimeout(env.KV.put('ADD.txt', customIPs), 3000);// 保存到 KV（带超时保护）
-                                // 清除缓存，确保下次请求读取最新配置
+                                // 更新版本号以通知全球节点清除 Cache API 缓存
+                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+                                // 清除当前实例缓存
                                 configJSONCache = null;
                                 configJSONCacheKey = null;
                                 configJSONCacheTime = 0;
+                                configVersion = null;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Custom_IPs', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '自定义IP已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
@@ -481,6 +495,15 @@ export default {
                         const ua = UA.toLowerCase();
                         const cache = caches.default;
                         const cacheUrl = new URL(request.url);
+
+                        // 性能优化：使用 config_version 刷新全球节点缓存
+                        if (!configVersion || Date.now() - configVersionTime > 60000) {
+                            try {
+                                configVersion = await withTimeout(env.KV.get('config_version'), 2000) || '0';
+                                configVersionTime = Date.now();
+                            } catch (e) { configVersion = configVersion || '0'; }
+                        }
+                        cacheUrl.searchParams.set('v', configVersion);
                         cacheUrl.searchParams.set('_client_ua', ua);
                         const cacheKey = new Request(cacheUrl.toString(), request);
                         let cachedResponse = await cache.match(cacheKey);
