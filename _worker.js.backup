@@ -272,7 +272,7 @@ export default {
                         const params = new URLSearchParams(formData);
                         const 输入密码 = params.get('password');
                         // 使用 timingSafeEqual 防时序攻击
-                        if (输入密码 && secureCompare(输入密码, 管理员密码)) {
+                        if (输入密码 === (typeof 管理员密码 === 'string' ? 管理员密码.replace(/[\r\n]/g, '') : 管理员密码)) {
                             // 清除失败计数
                             if (env.KV) ctx.waitUntil(env.KV.delete(`login_fail:${访问IP}`));
                             const authValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
