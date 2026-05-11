@@ -41,6 +41,7 @@ class RequestContext {
 
 // 跨请求缓存的状态（真正的模块级全局变量）
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0;
+const 节点黑名单 = new Map(); // 缓存失效节点，避免短期内重复尝试导致 loadShed
 // 性能优化1: 请求级缓存（避免重复计算MD5）
 let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
 // 向后兼容：保留全局变量用于快速访问（单请求场景）
@@ -61,7 +62,7 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 12 * 60 * 1000; // 12分钟缓存，确保多实例同步
+const CONFIG_CACHE_TTL = 60 * 60 * 1000; // 1小时缓存，减少 CPU 负载和 KV 读取频率
 let configJSONCacheTime = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
@@ -3340,7 +3341,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, 调试日志打印 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
     log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
-    const 连接超时毫秒 = 3000;
+    const 连接超时毫秒 = 2000; // 缩短超时时间，防止死 IP 长期占用 Worker 资源
     let 已通过代理发送首包 = false;
 
     async function 等待连接建立(remoteSock, timeoutMs = 连接超时毫秒) {
@@ -3353,11 +3354,22 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
     async function connectDirect(address, port, data = null, 所有反代数组 = null, 反代兜底 = true) {
         let remoteSock;
         if (所有反代数组 && 所有反代数组.length > 0) {
-            for (let i = 0; i < 所有反代数组.length; i++) {
+            const 最大重试深度 = 5; // 限制单次请求尝试的节点数量
+            let 已尝试次数 = 0;
+            for (let i = 0; i < 所有反代数组.length && 已尝试次数 < 最大重试深度; i++) {
                 const 反代数组索引 = (缓存反代数组索引 + i) % 所有反代数组.length;
                 const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
+                const 节点标识 = `${反代地址}:${反代端口}`;
+
+                // 自动剔除机制：检查是否在临时黑名单中
+                if (节点黑名单.has(节点标识)) {
+                    if (Date.now() < 节点黑名单.get(节点标识)) continue;
+                    else 节点黑名单.delete(节点标识);
+                }
+
+                已尝试次数++;
                 try {
-                    log(`[反代连接] 尝试连接到: ${反代地址}:${反代端口} (索引: ${反代数组索引})`);
+                    log(`[反代连接] 尝试连接到: ${反代地址}:${反代端口} (尝试次数: ${已尝试次数}/${最大重试深度})`);
                     remoteSock = connect({ hostname: 反代地址, port: 反代端口 });
                     await 等待连接建立(remoteSock);
                     if (有效数据长度(data) > 0) {
@@ -3366,10 +3378,13 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                         testWriter.releaseLock();
                     }
                     log(`[反代连接] 成功连接到: ${反代地址}:${反代端口}`);
+                    节点黑名单.delete(节点标识); // 连接成功，确保从黑名单移除
                     缓存反代数组索引 = 反代数组索引;
                     return remoteSock;
                 } catch (err) {
                     log(`[反代连接] 连接失败: ${反代地址}:${反代端口}, 错误: ${err.message}`);
+                    // 记录失败，拉黑 3 分钟
+                    节点黑名单.set(节点标识, Date.now() + 3 * 60 * 1000);
                     try { remoteSock?.close?.(); } catch (e) { }
                     continue;
                 }
@@ -3539,7 +3554,7 @@ async function WebSocket发送并等待(webSocket, payload) {
 
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 	let header = headerData, hasData = false, reader, useBYOB = false;
-	const BYOB缓冲区大小 = 512 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024;
+	const BYOB缓冲区大小 = 128 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024; // 降低缓冲区大小以节省内存，防止 loadShed
 	const 普通流聚合阈值 = 128 * 1024, 普通流刷新间隔 = 2;
 	const BYOB慢速刷新间隔 = 20, BYOB快速刷新间隔 = 2, BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
 
