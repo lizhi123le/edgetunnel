@@ -65,7 +65,6 @@ let configJSONCacheKey = null;
 const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 3天缓存，平衡稳定性和配置实时性
 let configJSONCacheTime = 0;
 let configVersion = null;
-let configVersionTime = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
 const HMAC_SIGN_KEY_PREFIX = 'edgetunnel_hmac_v1_';
@@ -495,18 +494,26 @@ export default {
                         const cache = caches.default;
                         const cacheUrl = new URL(request.url);
 
-                        // 性能优化：使用 config_version 刷新全球节点缓存
-                        if (!configVersion || Date.now() - configVersionTime > 60000) {
-                            try {
-                                configVersion = await withTimeout(env.KV.get('config_version'), 2000) || '0';
-                                configVersionTime = Date.now();
-                            } catch (e) { configVersion = configVersion || '0'; }
-                        }
-                        cacheUrl.searchParams.set('v', configVersion);
+                        // Cache API 缓存查询 — 仅在缓存未命中时读取 config_version，避免轮询 KV
+                        if (configVersion) cacheUrl.searchParams.set('v', configVersion);
                         cacheUrl.searchParams.set('_client_ua', ua);
-                        const cacheKey = new Request(cacheUrl.toString(), request);
+                        let cacheKey = new Request(cacheUrl.toString(), request);
                         let cachedResponse = await cache.match(cacheKey);
                         if (cachedResponse) return cachedResponse;
+                        
+                        // 缓存未命中 → 读取最新 config_version，更新缓存键后重试
+                        try {
+                            const v = await withTimeout(env.KV.get('config_version'), 2000);
+                            if (v && v !== configVersion) {
+                                configVersion = v;
+                                const vUrl = new URL(request.url);
+                                vUrl.searchParams.set('v', configVersion);
+                                vUrl.searchParams.set('_client_ua', ua);
+                                cacheKey = new Request(vUrl.toString(), request);
+                                const vHit = await cache.match(cacheKey);
+                                if (vHit) return vHit;
+                            }
+                        } catch (e) { /* 读取失败则静默继续，使用无版本键生成 */ }
 
                         const expire = 4102329600;//2099-12-31 到期时间
                         const now = Date.now();
