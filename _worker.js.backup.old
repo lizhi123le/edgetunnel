@@ -1,4 +1,4 @@
-const Version = '2026-05-08 19:07:28(Enhanced)';
+const Version = '2026-05-11 04:17:05(Enhanced)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -62,8 +62,14 @@ function log(...args) {
 // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
 let configJSONCache = null;
 let configJSONCacheKey = null;
-const CONFIG_CACHE_TTL = 60 * 60 * 1000; // 1小时缓存，减少 CPU 负载和 KV 读取频率
+const CONFIG_CACHE_TTL = 3 * 24 * 60 * 60 * 1000; // 3天缓存，平衡稳定性和配置实时性
 let configJSONCacheTime = 0;
+let configVersion = null;
+
+// xhttp 连接控制（增强稳定性）
+const XHTTP最大并发 = 32;
+const XHTTP空闲超时 = 45000;
+let xhttp活动连接数 = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
 const HMAC_SIGN_KEY_PREFIX = 'edgetunnel_hmac_v1_';
@@ -132,7 +138,6 @@ function sanitizedErrorResponse(message, status = 500) {
     });
 }
 
-// KV 操作超时包装器 - 防止无限等待导致 loadShed
 // 异步超时包装器 - 防止无限等待导致 Worker 挂起
 async function withTimeout(promise, timeoutMs = 3000, message = '操作超时') {
     let timer;
@@ -270,7 +275,7 @@ export default {
                         const params = new URLSearchParams(formData);
                         const 输入密码 = params.get('password');
                         // 使用 timingSafeEqual 防时序攻击
-                        if (输入密码 && secureCompare(输入密码, 管理员密码)) {
+                        if (输入密码 === (typeof 管理员密码 === 'string' ? 管理员密码.replace(/[\r\n]/g, '') : 管理员密码)) {
                             // 清除失败计数
                             if (env.KV) ctx.waitUntil(env.KV.delete(`login_fail:${访问IP}`));
                             const authValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
@@ -358,10 +363,13 @@ export default {
 
                                 // 保存到 KV（带超时保护）
                                 await withTimeout(env.KV.put('config.json', JSON.stringify(newConfig, null, 2)), 3000);
-                                // 清除缓存，确保下次请求读取最新配置
+                                // 更新版本号以通知全球节点清除 Cache API 缓存
+                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+                                // 清除当前实例缓存
                                 configJSONCache = null;
                                 configJSONCacheKey = null;
                                 configJSONCacheTime = 0;
+                                configVersion = null;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
@@ -388,10 +396,13 @@ export default {
 
                                 // 保存到 KV（带超时保护）
                                 await withTimeout(env.KV.put('cf.json', JSON.stringify(CF_JSON, null, 2)), 3000);
-                                // 清除缓存，确保下次请求读取最新CF配置
+                                // 更新版本号以通知全球节点清除 Cache API 缓存
+                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+                                // 清除当前实例缓存
                                 configJSONCache = null;
                                 configJSONCacheKey = null;
                                 configJSONCacheTime = 0;
+                                configVersion = null;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
@@ -408,11 +419,14 @@ export default {
                                     if (!newConfig.BotToken || !newConfig.ChatID) return new Response(JSON.stringify({ error: '配置不完整' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                                     await withTimeout(env.KV.put('tg.json', JSON.stringify(newConfig, null, 2)), 3000);
                                 }
-                                ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
-                                // 清除缓存，确保下次请求读取最新TG配置
+                                // 更新版本号以通知全球节点清除 Cache API 缓存
+                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+                                // 清除当前实例缓存
                                 configJSONCache = null;
                                 configJSONCacheKey = null;
                                 configJSONCacheTime = 0;
+                                configVersion = null;
+                                ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
                                 console.error('保存TG配置失败:', error.message);
@@ -422,10 +436,13 @@ export default {
                             try {
                                 const customIPs = await request.text();
                                 await withTimeout(env.KV.put('ADD.txt', customIPs), 3000);// 保存到 KV（带超时保护）
-                                // 清除缓存，确保下次请求读取最新配置
+                                // 更新版本号以通知全球节点清除 Cache API 缓存
+                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+                                // 清除当前实例缓存
                                 configJSONCache = null;
                                 configJSONCacheKey = null;
                                 configJSONCacheTime = 0;
+                                configVersion = null;
                                 ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Custom_IPs', config_JSON));
                                 return new Response(JSON.stringify({ success: true, message: '自定义IP已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
@@ -481,10 +498,27 @@ export default {
                         const ua = UA.toLowerCase();
                         const cache = caches.default;
                         const cacheUrl = new URL(request.url);
+
+                        // Cache API 缓存查询 — 仅在缓存未命中时读取 config_version，避免轮询 KV
+                        if (configVersion) cacheUrl.searchParams.set('v', configVersion);
                         cacheUrl.searchParams.set('_client_ua', ua);
-                        const cacheKey = new Request(cacheUrl.toString(), request);
+                        let cacheKey = new Request(cacheUrl.toString(), request);
                         let cachedResponse = await cache.match(cacheKey);
                         if (cachedResponse) return cachedResponse;
+                        
+                        // 缓存未命中 → 读取最新 config_version，更新缓存键后重试
+                        try {
+                            const v = await withTimeout(env.KV.get('config_version'), 2000);
+                            if (v && v !== configVersion) {
+                                configVersion = v;
+                                const vUrl = new URL(request.url);
+                                vUrl.searchParams.set('v', configVersion);
+                                vUrl.searchParams.set('_client_ua', ua);
+                                cacheKey = new Request(vUrl.toString(), request);
+                                const vHit = await cache.match(cacheKey);
+                                if (vHit) return vHit;
+                            }
+                        } catch (e) { /* 读取失败则静默继续，使用无版本键生成 */ }
 
                         const expire = 4102329600;//2099-12-31 到期时间
                         const now = Date.now();
@@ -502,7 +536,7 @@ export default {
                             "Profile-Update-Interval": config_JSON.优选订阅生成.SUBUpdateTime,
                             "Profile-web-page-url": url.protocol + '//' + url.host + '/admin',
                             "Subscription-Userinfo": `upload=${pagesSum}; download=${workersSum}; total=${total}; expire=${expire}`,
-                            "Cache-Control": "public, max-age=180, s-maxage=180",
+                            "Cache-Control": "public, max-age=360, s-maxage=360",
                         };
                         const isSubConverterRequest = url.searchParams.has('b64') || url.searchParams.has('base64') || request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase()) || 作为优选订阅生成器;
                         const 订阅类型 = isSubConverterRequest
@@ -775,6 +809,12 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
         try { reader.releaseLock(); } catch (e) { }
         return new Response('Invalid request', { status: 400 });
     }
+    // 并发限制，防止资源耗尽
+    if (xhttp活动连接数 >= XHTTP最大并发) {
+        try { reader.releaseLock(); } catch (e) { }
+        return new Response('Too many connections', { status: 429 });
+    }
+    xhttp活动连接数++;
     if (isSpeedTestSite(首包.hostname)) {
         try { reader.releaseLock(); } catch (e) { }
         return new Response('Forbidden', { status: 403 });
@@ -815,12 +855,21 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
     return new Response(new ReadableStream({
         async start(controller) {
             let 已关闭 = false;
+            let 最后活动时间 = Date.now();
+            const 空闲定时器 = setInterval(() => {
+                if (已关闭) { clearInterval(空闲定时器); return; }
+                if (Date.now() - 最后活动时间 > XHTTP空闲超时) {
+                    log('[xhttp] 空闲超时，自动关闭连接');
+                    closeSocketQuietly(xhttpBridge); // 内部调用 xhttpBridge.close() 已清理定时器
+                }
+            }, 8000);
             let udpRespHeader = 首包.respHeader;
             const 木马UDP上下文 = { 缓存: new Uint8Array(0) };
             const xhttpBridge = {
                 readyState: WebSocket.OPEN,
                 send(data) {
                     if (已关闭) return;
+                    最后活动时间 = Date.now();
                     try {
                         controller.enqueue(XHTTP数据转Uint8Array(data));
                     } catch (e) {
@@ -832,6 +881,7 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
                     if (已关闭) return;
                     已关闭 = true;
                     this.readyState = WebSocket.CLOSED;
+                    clearInterval(空闲定时器);
                     try { controller.close(); } catch (e) { }
                 }
             };
@@ -886,8 +936,10 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
                 log(`[XHTTP转发] 处理失败: ${err?.message || err}`);
                 closeSocketQuietly(xhttpBridge);
             } finally {
+                clearInterval(空闲定时器);
                 释放远端写入器();
                 try { reader.releaseLock(); } catch (e) { }
+                xhttp活动连接数--;
             }
         },
         cancel() {
@@ -3554,7 +3606,7 @@ async function WebSocket发送并等待(webSocket, payload) {
 
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 	let header = headerData, hasData = false, reader, useBYOB = false;
-	const BYOB缓冲区大小 = 128 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024; // 降低缓冲区大小以节省内存，防止 loadShed
+	const BYOB缓冲区大小 = 512 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024; // 降低缓冲区大小以节省内存，防止 loadShed
 	const 普通流聚合阈值 = 128 * 1024, 普通流刷新间隔 = 2;
 	const BYOB慢速刷新间隔 = 20, BYOB快速刷新间隔 = 2, BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
 
@@ -6462,7 +6514,6 @@ async function html1101(host, 访问IP) {
 
      <script>
     window._cf_translation = {};
-    
     
   </script> 
 </body>
