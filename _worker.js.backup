@@ -353,6 +353,9 @@ export default {
                         try {
                             config_JSON = await 读取config_JSON(env, host, userID, UA, true);
                             ctx2.config_JSON = config_JSON;
+                            // 更新版本号以通知全球节点清除 Cache API 缓存
+                            ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+                            configVersion = null;
                             ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Init_Config', config_JSON));
                             config_JSON.init = '配置已重置为默认值';
                             return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
