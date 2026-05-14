@@ -1863,7 +1863,7 @@ function 解析木马请求(buffer, passwordPlainText) {
 		case 1:
 			addressLength = 4;
 			if (data.byteLength < addressIndex + addressLength + 4) return { hasError: true, message: "invalid S5 request data" };
-			address = ${data[addressIndex]}...;
+			address = `${data[addressIndex]}.${data[addressIndex + 1]}.${data[addressIndex + 2]}.${data[addressIndex + 3]}`;
 			break;
 		case 3:
 			if (data.byteLength < addressIndex + 1) return { hasError: true, message: "invalid S5 request data" };
@@ -1883,11 +1883,11 @@ function 解析木马请求(buffer, passwordPlainText) {
 			address = ipv6.join(":");
 			break;
 		default:
-			return { hasError: true, message: invalid addressType is  };
+			return { hasError: true, message: `invalid addressType is ${atype}` };
 	}
 
 	if (!address) {
-		return { hasError: true, message: ddress is empty, addressType is  };
+		return { hasError: true, message: `address is empty, addressType is ${atype}` };
 	}
 
 	const portIndex = addressIndex + addressLength;
@@ -1967,7 +1967,7 @@ function 解析魏烈思请求(chunk, token) {
 		case 1:
 			addrLen = 4;
 			if (length < addrValIdx + addrLen) return { hasError: true, message: 'Invalid IPv4 address length' };
-			hostname = ${data[addrValIdx]}...;
+			hostname = `${data[addrValIdx]}.${data[addrValIdx + 1]}.${data[addrValIdx + 2]}.${data[addrValIdx + 3]}`;
 			break;
 		case 2:
 			if (length < addrValIdx + 1) return { hasError: true, message: 'Invalid domain length' };
@@ -1987,9 +1987,9 @@ function 解析魏烈思请求(chunk, token) {
 			hostname = ipv6.join(':');
 			break;
 		default:
-			return { hasError: true, message: Invalid address type:  };
+			return { hasError: true, message: `Invalid address type: ${addressType}` };
 	}
-	if (!hostname) return { hasError: true, message: Invalid address:  };
+	if (!hostname) return { hasError: true, message: `Invalid address: ${addressType}` };
 	const rawIndex = addrValIdx + addrLen;
 	return { hasError: false, addressType, port, hostname, isUDP, rawClientData: data.subarray(rawIndex), version };
 }
