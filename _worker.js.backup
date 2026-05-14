@@ -4016,7 +4016,7 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 		}
 		await 下行发送器.flush();
 	} catch (err) { closeSocketQuietly(webSocket) }
-	finally { try { reader.cancel() } catch (e) { } try { reader.releaseLock() } catch (e) { } }
+	finally { try { reader.cancel() } catch (e) { } try { reader.releaseLock() } catch (e) { } try { remoteSocket.close() } catch (e) { } }
 	if (!hasData && retryFunc) await retryFunc();
 }
 
