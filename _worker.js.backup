@@ -1,4 +1,4 @@
-const Version = '2026-05-13 04:28:03(Enhanced)';
+const Version = '2026-05-15 18:51:29(Enhanced)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -499,7 +499,7 @@ export default {
                     } else if (区分大小写访问路径 === 'admin/ADD.txt') {// 处理 admin/ADD.txt 请求，返回本地优选IP
                         try {
                             let 本地优选IP = await withTimeout(env.KV.get('ADD.txt'), 3000) || 'null';
-                            if (本地优选IP == 'null') 本地优选IP = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (config_JSON.协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[1];
+                            if (本地优选IP == 'null') 本地优选IP = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口))[1];
                             return new Response(本地优选IP, { status: 200, headers: { 'Content-Type': 'text/plain;charset=utf-8', 'asn': request.cf?.asn || 'unknown' } });
                         } catch (err) {
                             return new Response('ERROR', { status: 504 });
@@ -622,7 +622,7 @@ export default {
                                 const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
                                 const match = 原始地址.match(regex);
                                 if (!match) return null;
-                                let 节点地址 = match[1], 节点端口 = match[2] ? match[2] : (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443', 节点备注 = match[3] || 节点地址;
+                                let 节点地址 = match[1], 节点端口 = match[2] ? match[2] : '443', 节点备注 = match[3] || 节点地址;
                                 let 完整节点路径 = config_JSON.完整节点路径;
 
                                 const 链式代理匹配 = 节点备注.match(/\$(socks5|http|https|turn|sstp):\/\/([^#\s]+)/i);
@@ -643,6 +643,11 @@ export default {
 
                                 const uuidToUse = 作为优选订阅生成器 ? '00000000-0000-4000-8000-000000000000' : config_JSON.UUID;
                                 if (协议类型 === 'ss') {
+                                    if (!config_JSON.SS.TLS && !作为优选订阅生成器) {
+                                        const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
+                                        const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
+                                        节点端口 = String(NOTLS端口[TLS端口.indexOf(Number(节点端口))] ?? 节点端口);
+                                    }
                                     完整节点路径 = (完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
                                     if (!isSubConverterRequest) 完整节点路径 = 完整节点路径 + ';mux=0';
                                     let ssPath = config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径;
@@ -659,14 +664,14 @@ export default {
                             if (!url.searchParams.has('sub') && config_JSON.优选订阅生成.local) { // 本地生成订阅
                                 // 优化：避免重复读取 ADD.txt，只读一次后复用
                                 let 完整优选列表;
-                                if (config_JSON.优选订阅生成.本地IP库.随机IP) {
-                                    完整优选列表 = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0];
-                                } else {
-                                    const addTxtContent = await withTimeout(env.KV.get('ADD.txt'), 3000);
-                                    if (addTxtContent) {
-                                        完整优选列表 = await 整理成数组(addTxtContent);
-                                    } else {
-                                        完整优选列表 = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口, (协议类型 === 'ss' ? config_JSON.SS.TLS : true)))[0];
+                                 if (config_JSON.优选订阅生成.本地IP库.随机IP) {
+                                     完整优选列表 = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口))[0];
+                                 } else {
+                                     const addTxtContent = await withTimeout(env.KV.get('ADD.txt'), 3000);
+                                     if (addTxtContent) {
+                                         完整优选列表 = await 整理成数组(addTxtContent);
+                                     } else {
+                                         完整优选列表 = (await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口))[0];
                                     }
                                 }
                                 const 优选API = [];
@@ -707,7 +712,7 @@ export default {
                                     }
                                 }
 
-                                const [resultsMap, _, api反代IP池] = await 请求优选API(优选API, (协议类型 === 'ss' && !config_JSON.SS.TLS) ? '80' : '443');
+                                const [resultsMap, _, api反代IP池] = await 请求优选API(优选API, '443');
                                 反代IP池 = api反代IP池 || [];
 
                                 for (const item of 排序元素) {
@@ -6075,7 +6080,7 @@ function 识别运营商(request) {
     return 命中运营商 || ASN运营商映射[String(cf?.asn || '')] || 'cf';
 }
 
-async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true) {
+async function 生成随机IP(request, count = 16, 指定端口 = -1) {
     const url = new URL(request.url);
     const 查询参数运营商 = String(url.searchParams.get('asOrg') || '').toLowerCase();
     const 运营商文件标识 = ['ct', 'cu', 'cmcc', 'cf'].includes(查询参数运营商) ? 查询参数运营商 : 识别运营商(request);
@@ -6087,7 +6092,7 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1, TLS = true
     };
     const cidr_url = 运营商文件标识 === 'cf' ? 'https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt' : `https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR/${运营商文件标识}.txt`;
     const cfname = 运营商名称映射[运营商文件标识] || 'CF官方优选';
-    const cfport = TLS ? [443, 2053, 2083, 2087, 2096, 8443] : [80, 8080, 8880, 2052, 2082, 2086, 2095];
+    const cfport = [443, 2053, 2083, 2087, 2096, 8443];
     let cidrList = [];
     try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13'] } catch { cidrList = ['104.16.0.0/13'] }
 
