@@ -41,7 +41,17 @@ class RequestContext {
 
 // 跨请求缓存的状态（真正的模块级全局变量）
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0;
-const 节点黑名单 = new Map(); // 缓存失效节点，避免短期内重复尝试导致 loadShed
+const 节点黑名单 = new Map(); // 缓存失效节点，避免短期内重复尝试导致 loadShed（指数退避: 30s→1min→2min→4min→...→30min）
+// 节点黑名单指数退避常量
+const 节点黑名单基础拉黑时间 = 30 * 1000; // 30秒
+const 节点黑名单最大拉黑时间 = 30 * 60 * 1000; // 30分钟
+const 节点黑名单退避系数 = 2; // 指数退避系数
+
+// 计算节点黑名单过期时间（指数退避：failCount 从 1 开始）
+function 节点黑名单计算过期时间(failCount) {
+    const 拉黑时间 = Math.min(节点黑名单基础拉黑时间 * Math.pow(节点黑名单退避系数, failCount - 1), 节点黑名单最大拉黑时间);
+    return Date.now() + 拉黑时间;
+}
 // 性能优化1: 请求级缓存（避免重复计算MD5）
 let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
 // 向后兼容：保留全局变量用于快速访问（单请求场景）
@@ -62,7 +72,7 @@ const TCP并发拨号数 = 4;
 
 // === 统一 CPU Yield 策略 ===
 // 使用 performance.now() + intervalMs 间隔，避免长时间循环导致 Cloudflare Workers CPU 超时
-function createYieldStrategy(intervalMs = 5) {
+function createYieldStrategy(intervalMs = 3) {
     let lastYield = 0;
     return async function yieldToEventLoop() {
         const now = performance.now();
@@ -183,7 +193,7 @@ async function withTimeout(promise, timeoutMs = 3000, message = '操作超时') 
 }
 
 // Fetch 超时包装器 - 防止外部 API 请求无限挂起
-const fetchWithTimeout = (url, options = {}, timeoutMs = 10000) => {
+const fetchWithTimeout = (url, options = {}, timeoutMs = 30000) => {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
     return fetch(url, { ...options, signal: controller.signal })
@@ -805,7 +815,7 @@ export default {
             // GET 请求不应传入 body，否则 fetch 可能挂起
             if (request.method !== 'GET' && request.body) fetchOptions.body = request.body;
             try {
-                const 反代响应 = await fetchWithTimeout(反代URL.origin + url.pathname + url.search, fetchOptions, 10000);
+                const 反代响应 = await fetchWithTimeout(反代URL.origin + url.pathname + url.search, fetchOptions, 30000);
                 const 内容类型 = 反代响应.headers.get('content-type') || '';
                 const 内容长度 = parseInt(反代响应.headers.get('content-length') || '0', 10);
                 // 优化：只有文本类型且大小小于 2MB 才进行全量缓冲和替换，否则直接流式转发避免挂起
@@ -3572,9 +3582,10 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                 const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
                 const 节点标识 = `${反代地址}:${反代端口}`;
 
-                // 自动剔除机制：检查是否在临时黑名单中
+                // 自动剔除机制：检查是否在临时黑名单中（指数退避）
                 if (节点黑名单.has(节点标识)) {
-                    if (Date.now() < 节点黑名单.get(节点标识)) continue;
+                    const 黑名单记录 = 节点黑名单.get(节点标识);
+                    if (Date.now() < 黑名单记录.expiresAt) continue;
                     else 节点黑名单.delete(节点标识);
                 }
 
@@ -3594,8 +3605,10 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                     return remoteSock;
                 } catch (err) {
                     log(`[反代连接] 连接失败: ${反代地址}:${反代端口}, 错误: ${err.message}`);
-                    // 记录失败，拉黑 3 分钟
-                    节点黑名单.set(节点标识, Date.now() + 3 * 60 * 1000);
+                    // 记录失败，指数退避拉黑（首次30s，逐次翻倍，最长30min）
+                    const 已有记录 = 节点黑名单.get(节点标识);
+                    const 失败次数 = 已有记录 ? 已有记录.failCount + 1 : 1;
+                    节点黑名单.set(节点标识, { expiresAt: 节点黑名单计算过期时间(失败次数), failCount: 失败次数 });
                     try { remoteSock?.close?.(); } catch (e) { }
                     continue;
                 }
