@@ -2444,7 +2444,7 @@ async function ChaCha20XOR(key, nonce, data) {
             return output;
         }
 
-// Poly1305 MAC
+        // Poly1305 MAC
         async function Poly1305Mac(key, message) {
             const rKey = (() => {
                 const clamped = new Uint8Array(key);
@@ -2458,26 +2458,26 @@ async function ChaCha20XOR(key, nonce, data) {
                 0x3ffffffn & BigInt(rKey[9] >> 6 | rKey[10] << 2 | rKey[11] << 10 | rKey[12] << 18),
                 0x3ffffffn & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
             ];
-const polyYield = createYieldStrategy(5);
-for (let offset = 0; offset < message.length; offset += 16) {
-    await polyYield();
-    const chunk = message.slice(offset, offset + 16);
-    const paddedChunk = new Uint8Array(17);
-    paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
-    accumulator[0] += BigInt(paddedChunk[0] | paddedChunk[1] << 8 | paddedChunk[2] << 16 | (3 & paddedChunk[3]) << 24);
-    accumulator[1] += BigInt(paddedChunk[3] >> 2 | paddedChunk[4] << 6 | paddedChunk[5] << 14 | (15 & paddedChunk[6]) << 22);
-    accumulator[2] += BigInt(paddedChunk[6] >> 4 | paddedChunk[7] << 4 | paddedChunk[8] << 12 | (63 & paddedChunk[9]) << 20);
-    accumulator[3] += BigInt(paddedChunk[9] >> 6 | paddedChunk[10] << 2 | paddedChunk[11] << 10 | paddedChunk[12] << 18);
-    accumulator[4] += BigInt(paddedChunk[13] | paddedChunk[14] << 8 | paddedChunk[15] << 16 | paddedChunk[16] << 24);
-    const product = [0n, 0n, 0n, 0n, 0n];
-    for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
-        const limbIndex = accIndex + rIndex;
-        limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
-    }
-    let carry = 0n;
-    for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
-    accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
-}
+            const polyYield = createYieldStrategy(3);
+            for (let offset = 0; offset < message.length; offset += 16) {
+                await polyYield();
+                const chunk = message.slice(offset, offset + 16);
+                const paddedChunk = new Uint8Array(17);
+                paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
+                accumulator[0] += BigInt(paddedChunk[0] | paddedChunk[1] << 8 | paddedChunk[2] << 16 | (3 & paddedChunk[3]) << 24);
+                accumulator[1] += BigInt(paddedChunk[3] >> 2 | paddedChunk[4] << 6 | paddedChunk[5] << 14 | (15 & paddedChunk[6]) << 22);
+                accumulator[2] += BigInt(paddedChunk[6] >> 4 | paddedChunk[7] << 4 | paddedChunk[8] << 12 | (63 & paddedChunk[9]) << 20);
+                accumulator[3] += BigInt(paddedChunk[9] >> 6 | paddedChunk[10] << 2 | paddedChunk[11] << 10 | paddedChunk[12] << 18);
+                accumulator[4] += BigInt(paddedChunk[13] | paddedChunk[14] << 8 | paddedChunk[15] << 16 | paddedChunk[16] << 24);
+                const product = [0n, 0n, 0n, 0n, 0n];
+                for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
+                    const limbIndex = accIndex + rIndex;
+                    limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
+                }
+                let carry = 0n;
+                for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
+                accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
+            }
             let tagValue = accumulator[0] | accumulator[1] << 26n | accumulator[2] << 52n | accumulator[3] << 78n | accumulator[4] << 104n;
             tagValue = tagValue + sKey.reduce(((total, byte, index) => total + (BigInt(byte) << BigInt(8 * index))), 0n) & (1n << 128n) - 1n;
             const tag = new Uint8Array(16);
