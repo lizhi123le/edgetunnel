@@ -1458,8 +1458,9 @@ function 是有效WS早期数据(bytes, token) {
 	if (bytes.byteLength < 58 || bytes[56] !== 0x0d || bytes[57] !== 0x0a) return false;
 
 	const trojanPassword = sha224(token);
+	const trojanPasswordBytes = SS文本编码器.encode(trojanPassword);
 	for (let i = 0; i < 56; i++) {
-		if (bytes[i] !== trojanPassword.charCodeAt(i)) return false;
+		if (bytes[i] !== trojanPasswordBytes[i]) return false;
 	}
 	return true;
 }
