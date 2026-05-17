@@ -5,6 +5,12 @@ const Version = '2026-05-17 18:52:03(Enhanced)';
     'cloudflare\u003asockets';
 
 // ============================================================
+// 全局 TextEncoder/TextDecoder 复用提升性能
+// ============================================================
+const $encoder = new TextEncoder();
+const $decoder = new TextDecoder();
+
+// ============================================================
 // 请求上下文类 - 封装请求级状态，减少全局变量污染
 // ============================================================
 class RequestContext {
@@ -68,7 +74,7 @@ const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
 const 上行合包目标字节 = 16 * 1024, 上行队列最大字节 = 16 * 1024 * 1024, 上行队列最大条目 = 4096;
 const 下行Grain包字节 = 32 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
-const TCP并发拨号数 = 4;
+const TCP并发拨号数 = 3;
 
 // === 统一 CPU Yield 策略 ===
 // 使用 performance.now() + intervalMs 间隔，避免长时间循环导致 Cloudflare Workers CPU 超时
@@ -108,28 +114,34 @@ const HMAC_SIGN_KEY_PREFIX = 'edgetunnel_hmac_v1_';
 async function generateCookieSignature(cookieValue, secret) {
     const key = await crypto.subtle.importKey(
         'raw',
-        new TextEncoder().encode(HMAC_SIGN_KEY_PREFIX + secret),
+        $encoder.encode(HMAC_SIGN_KEY_PREFIX + secret),
         { name: 'HMAC', hash: 'SHA-256' },
         false,
         ['sign']
     );
-    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(cookieValue));
+    const signature = await crypto.subtle.sign('HMAC', key, $encoder.encode(cookieValue));
     return btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/=/g, '');
 }
 
 // 验证 Cookie 签名
 async function verifyCookieSignature(cookieValue, signature, secret) {
-    const expected = await generateCookieSignature(cookieValue, secret);
-    const expectedBytes = new TextEncoder().encode(expected);
-    const providedBytes = new TextEncoder().encode(signature);
-    if (expectedBytes.length !== providedBytes.length) return false;
-    return crypto.subtle.timingSafeEqual(expectedBytes, providedBytes);
+    if (!cookieValue || !signature || !secret) return false;
+    try {
+        const expected = await generateCookieSignature(cookieValue, secret);
+        const expectedBytes = $encoder.encode(expected);
+        const providedBytes = $encoder.encode(signature);
+        if (expectedBytes.length !== providedBytes.length) return false;
+        return crypto.subtle.timingSafeEqual(expectedBytes, providedBytes);
+    } catch (e) {
+        console.warn('Cookie 签名验证异常:', e.message);
+        return false;
+    }
 }
 
 // 安全比较两个字符串（防时序攻击）
 function secureCompare(a, b) {
-    const aBytes = new TextEncoder().encode(a);
-    const bBytes = new TextEncoder().encode(b);
+    const aBytes = $encoder.encode(a);
+    const bBytes = $encoder.encode(b);
     if (aBytes.length !== bBytes.length) return false;
     return crypto.subtle.timingSafeEqual(aBytes, bBytes);
 }
@@ -231,7 +243,12 @@ export default {
         const url = new URL(修正请求URL(request.url));
         const UA = request.headers.get('User-Agent') || 'null';
         const upgradeHeader = (request.headers.get('Upgrade') || '').toLowerCase(), contentType = (request.headers.get('content-type') || '').toLowerCase();
-        const 管理员密码 = env.ADMIN || env.admin || env.PASSWORD || env.password || env.pswd || env.TOKEN || env.KEY || env.UUID || env.uuid;
+        const UUID密码 = env.UUID || env.uuid;
+        const 管理员密码独立 = env.ADMIN || env.admin || env.PASSWORD || env.password || env.pswd || env.TOKEN || env.KEY;
+        const 管理员密码 = 管理员密码独立 || UUID密码;
+        if (!管理员密码独立 && UUID密码) {
+            console.warn('[安全警告] 管理员密码回退到 UUID。强烈建议设置独立 ADMIN 环境变量');
+        }
         const 加密秘钥 = env.KEY || '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
         // 性能优化1: 缓存userIDMD5（相同密钥无需重复计算）
         if (缓存加密秘钥 !== 加密秘钥) {
@@ -523,7 +540,7 @@ export default {
                     const 请求TOKEN = url.searchParams.get('token');
                     const 用户客户端请求订阅 = 请求TOKEN === 订阅TOKEN;
                     const 当前日序号 = Math.floor(Date.now() / 86400000);
-                    const 订阅转换后端TOKEN种子 = base64SecretEncode(订阅TOKEN, userID);
+                    const 订阅转换后端TOKEN种子 = await generateSubscriptionToken(订阅TOKEN, userID);
                     const [今日订阅转换后端专属TOKEN, 昨日订阅转换后端专属TOKEN] = await Promise.all([
                         MD5MD5(订阅转换后端TOKEN种子 + 当前日序号),
                         MD5MD5(订阅转换后端TOKEN种子 + (当前日序号 - 1)),
@@ -633,7 +650,7 @@ export default {
                                     try {
                                         const 代理协议 = 链式代理匹配[1].toLowerCase(), 代理参数 = 链式代理匹配[2];
                                         const 链式代理数据 = { type: 代理协议, ...获取SOCKS5账号(代理参数, 获取代理默认端口(代理协议)) };
-                                        完整节点路径 = `/video/${base64SecretEncode(JSON.stringify(链式代理数据), userID) + (config_JSON.启用0RTT ? '?ed=2560' : '')}`;
+                                        完整节点路径 = `/video/${encodeChainProxyData(链式代理数据, userID) + (config_JSON.启用0RTT ? '?ed=2560' : '')}`;
                                         节点备注 = 节点备注.replace(链式代理匹配[0], '').trim() || 节点地址;
                                     } catch (error) {
                                         console.warn(`[订阅内容] 链式代理解析失败，已忽略该指令: ${链式代理匹配[0]} (${error && error.message ? error.message : error})`);
@@ -904,6 +921,8 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
     return new Response(new ReadableStream({
         async start(controller) {
             let 已关闭 = false;
+            let 连接数已递减 = false;
+            const 递减连接数 = () => { if (!连接数已递减) { 连接数已递减 = true; xhttp活动连接数--; } };
             let 最后活动时间 = Date.now();
             const 空闲定时器 = setInterval(() => {
                 if (已关闭) { clearInterval(空闲定时器); return; }
@@ -986,13 +1005,13 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
                 XHTTP上行写入队列?.清空();
                 释放远端写入器();
                 try { reader.releaseLock(); } catch (e) { }
-                xhttp活动连接数--;
+                递减连接数();
             }
         },
         cancel() {
             XHTTP上行写入队列?.清空();
             释放远端写入器();
-            xhttp活动连接数--;
+            递减连接数();
             try { remoteConnWrapper.socket?.close(); } catch (e) { }
             try { reader.releaseLock(); } catch (e) { }
         }
@@ -1877,7 +1896,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	return new Response(null, { status: 101, webSocket: clientSock, headers: { 'Sec-WebSocket-Extensions': '' } });
 }
 
-const 木马文本解码器 = new TextDecoder();
+const 木马文本解码器 = $decoder;
 
 function 解析木马请求(buffer, passwordPlainText) {
 	const data = 数据转Uint8Array(buffer);
@@ -1946,7 +1965,7 @@ function 解析木马请求(buffer, passwordPlainText) {
 }
 
 const UUID字节缓存 = new Map();
-const VLESS文本解码器 = new TextDecoder();
+const VLESS文本解码器 = $decoder;
 
 function 读取十六进制半字节(code) {
 	if (code >= 48 && code <= 57) return code - 48;
@@ -2053,10 +2072,13 @@ const SS支持加密配置 = {
 
 const SSAEAD标签长度 = 16;
 const SSNonce长度 = 12;
-const SS子密钥信息 = new TextEncoder().encode('ss-subkey');
-const SS文本编码器 = new TextEncoder();
-const SS文本解码器 = new TextDecoder();
+const SS子密钥信息 = $encoder.encode('ss-subkey');
+const SS文本编码器 = $encoder;
+const SS文本解码器 = $decoder;
 const SS主密钥缓存 = new Map();
+// ECH 缓存：带 TTL 和大小上限
+const ECH_CACHE_MAX = 128;
+const ECH_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
 const ECH_CACHE = new Map();
 
 
@@ -2314,8 +2336,8 @@ const HANDSHAKE_TYPE_CLIENT_HELLO = 1, HANDSHAKE_TYPE_SERVER_HELLO = 2, HANDSHAK
 const EXT_SERVER_NAME = 0, EXT_SUPPORTED_GROUPS = 10, EXT_EC_POINT_FORMATS = 11, EXT_SIGNATURE_ALGORITHMS = 13, EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION = 16, EXT_SUPPORTED_VERSIONS = 43, EXT_PSK_KEY_EXCHANGE_MODES = 45, EXT_KEY_SHARE = 51;
 const ALERT_CLOSE_NOTIFY = 0, ALERT_LEVEL_WARNING = 1, ALERT_UNRECOGNIZED_NAME = 112;
 const shouldIgnoreTlsAlert = fragment => fragment?.[0] === ALERT_LEVEL_WARNING && fragment?.[1] === ALERT_UNRECOGNIZED_NAME;
-const TLS文本编码器 = new TextEncoder();
-const TLS文本解码器 = new TextDecoder();
+const TLS文本编码器 = $encoder;
+const TLS文本解码器 = $decoder;
 const TLS_EMPTY_BYTES = new Uint8Array(0);
 
 // TLS 密码套件定义 (包含 ChaCha20 支持)
@@ -2462,6 +2484,9 @@ async function ChaCha20XOR(key, nonce, data) {
         }
 
         // Poly1305 MAC
+        const POLY1305_LIMB_MASK = 0x3ffffffn;
+        const POLY1305_MUL5 = 5n;
+        const poly1305Yield = createYieldStrategy(3);
         async function Poly1305Mac(key, message) {
             const rKey = (() => {
                 const clamped = new Uint8Array(key);
@@ -2469,15 +2494,14 @@ async function ChaCha20XOR(key, nonce, data) {
             })(key.slice(0, 16)), sKey = key.slice(16, 32);
             let accumulator = [0n, 0n, 0n, 0n, 0n];
             const rLimbs = [
-                0x3ffffffn & BigInt(rKey[0] | rKey[1] << 8 | rKey[2] << 16 | rKey[3] << 24),
-                0x3ffffffn & BigInt(rKey[3] >> 2 | rKey[4] << 6 | rKey[5] << 14 | rKey[6] << 22),
-                0x3ffffffn & BigInt(rKey[6] >> 4 | rKey[7] << 4 | rKey[8] << 12 | rKey[9] << 20),
-                0x3ffffffn & BigInt(rKey[9] >> 6 | rKey[10] << 2 | rKey[11] << 10 | rKey[12] << 18),
-                0x3ffffffn & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
+                POLY1305_LIMB_MASK & BigInt(rKey[0] | rKey[1] << 8 | rKey[2] << 16 | rKey[3] << 24),
+                POLY1305_LIMB_MASK & BigInt(rKey[3] >> 2 | rKey[4] << 6 | rKey[5] << 14 | rKey[6] << 22),
+                POLY1305_LIMB_MASK & BigInt(rKey[6] >> 4 | rKey[7] << 4 | rKey[8] << 12 | rKey[9] << 20),
+                POLY1305_LIMB_MASK & BigInt(rKey[9] >> 6 | rKey[10] << 2 | rKey[11] << 10 | rKey[12] << 18),
+                POLY1305_LIMB_MASK & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
             ];
-            const polyYield = createYieldStrategy(3);
             for (let offset = 0; offset < message.length; offset += 16) {
-                await polyYield();
+                await poly1305Yield();
                 const chunk = message.slice(offset, offset + 16);
                 const paddedChunk = new Uint8Array(17);
                 paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
@@ -2489,11 +2513,11 @@ async function ChaCha20XOR(key, nonce, data) {
                 const product = [0n, 0n, 0n, 0n, 0n];
                 for (let accIndex = 0; accIndex < 5; accIndex++) for (let rIndex = 0; rIndex < 5; rIndex++) {
                     const limbIndex = accIndex + rIndex;
-                    limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * 5n;
+                    limbIndex < 5 ? product[limbIndex] += accumulator[accIndex] * rLimbs[rIndex] : product[limbIndex - 5] += accumulator[accIndex] * rLimbs[rIndex] * POLY1305_MUL5;
                 }
                 let carry = 0n;
-                for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = 0x3ffffffn & product[index], carry = product[index] >> 26n;
-                accumulator[0] += 5n * carry, carry = accumulator[0] >> 26n, accumulator[0] &= 0x3ffffffn, accumulator[1] += carry;
+                for (let index = 0; index < 5; index++) product[index] += carry, accumulator[index] = POLY1305_LIMB_MASK & product[index], carry = product[index] >> 26n;
+                accumulator[0] += POLY1305_MUL5 * carry, carry = accumulator[0] >> 26n, accumulator[0] &= POLY1305_LIMB_MASK, accumulator[1] += carry;
             }
             let tagValue = accumulator[0] | accumulator[1] << 26n | accumulator[2] << 52n | accumulator[3] << 78n | accumulator[4] << 104n;
             tagValue = tagValue + sKey.reduce(((total, byte, index) => total + (BigInt(byte) << BigInt(8 * index))), 0n) & (1n << 128n) - 1n;
@@ -3063,20 +3087,25 @@ class TlsClient {
 	// 读取数据
 	async read() {
 		if (!this.handshakeComplete) throw new Error('Handshake not complete');
-		while (true) {
-			const { value, done } = await this.readChunk(this.socket.readable.getReader());
-			if (done || !value || !value.byteLength) return value;
-			this.recordParser.feed(value);
-			let record;
-			while (record = this.recordParser.next()) {
-				if (record.type === CONTENT_TYPE_ALERT) {
-					if (record.fragment[1] === ALERT_CLOSE_NOTIFY) return null;
-					throw new Error(`TLS Alert: ${record.fragment[1]}`);
+		const reader = this.socket.readable.getReader();
+		try {
+			while (true) {
+				const { value, done } = await this.readChunk(reader);
+				if (done || !value || !value.byteLength) return value;
+				this.recordParser.feed(value);
+				let record;
+				while (record = this.recordParser.next()) {
+					if (record.type === CONTENT_TYPE_ALERT) {
+						if (record.fragment[1] === ALERT_CLOSE_NOTIFY) return null;
+						throw new Error(`TLS Alert: ${record.fragment[1]}`);
+					}
+					if (record.type !== CONTENT_TYPE_APPLICATION_DATA) continue;
+					const plaintext = this.isTls13 ? await this.decryptTls13(record.fragment) : await this.decryptTls12(record.fragment, record.type);
+					return plaintext;
 				}
-				if (record.type !== CONTENT_TYPE_APPLICATION_DATA) continue;
-				const plaintext = this.isTls13 ? await this.decryptTls13(record.fragment) : await this.decryptTls12(record.fragment, record.type);
-				return plaintext;
 			}
+		} finally {
+			reader.releaseLock();
 		}
 	}
 }
@@ -3215,8 +3244,28 @@ function extractLeafCertificate(body, hasContext = 0) {
 	return certificateLength ? body.slice(offset, offset + certificateLength) : null;
 }
 
+// 证书解析缓存（避免同证书重复解析 ASN.1 DER）
+const certParseCache = new Map();
+const CERT_CACHE_MAX = 64;
+function certCacheKey(certDer) {
+	const len = certDer.length;
+	let hash = 0;
+	const scanLen = Math.min(len, 64);
+	for (let i = 0; i < scanLen; i++) {
+		hash = ((hash << 5) - hash) + certDer[i];
+		hash |= 0;
+	}
+	return hash + '_' + len;
+}
+
 // 简化的 X.509 证书解析（仅解析基本信息，含容错）
 function parseX509Certificate(certDer) {
+	// 缓存查找（hash + length + 中部字节三重校验防碰撞）
+	const key = certCacheKey(certDer);
+	const cached = certParseCache.get(key);
+	if (cached && cached.len === certDer.length && cached.midByte === certDer[certDer.length >> 1]) {
+		return cached.result;
+	}
 	try {
 		const view = new DataView(certDer.buffer, certDer.byteOffset, certDer.byteLength);
 		let offset = 0;
@@ -3289,11 +3338,22 @@ function parseX509Certificate(certDer) {
 				const notAfterStart = offset;
 				offset += tLen;
 				// 提取 notAfter 时间字节用于验证
-				return { notAfterBytes: certDer.slice(notAfterStart, notAfterStart + tLen) };
+				const 解析结果 = { notAfterBytes: certDer.slice(notAfterStart, notAfterStart + tLen) };
+				certParseCache.set(key, { result: 解析结果, len: certDer.length, midByte: certDer[certDer.length >> 1] });
+				if (certParseCache.size > CERT_CACHE_MAX) certParseCache.delete(certParseCache.keys().next().value);
+				return 解析结果;
 			}
 		}
+		certParseCache.set(key, { result: null, len: certDer.length, midByte: certDer[certDer.length >> 1] });
+		if (certParseCache.size > CERT_CACHE_MAX) certParseCache.delete(certParseCache.keys().next().value);
 		return null;
 	} catch (e) {
+		if (certDer && typeof certDer.length === 'number') {
+			certParseCache.set(key, { result: null, len: certDer.length, midByte: certDer[certDer.length >> 1] || 0 });
+		} else {
+			certParseCache.set(key, { result: null, len: 0, midByte: 0 });
+		}
+		if (certParseCache.size > CERT_CACHE_MAX) certParseCache.delete(certParseCache.keys().next().value);
 		return null;
 	}
 }
@@ -3590,10 +3650,23 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
         }
     }
 
-    async function 打开TCP连接(address, port) {
+    async function 打开TCP连接(address, port, signal = null) {
         const remoteSock = TCP连接({ hostname: address, port });
         try {
-            await 等待连接建立(remoteSock);
+            if (signal) {
+                let settled = false;
+                await Promise.race([
+                    等待连接建立(remoteSock).then(() => { settled = true; }),
+                    new Promise((_, reject) => {
+                        if (signal.aborted) return reject(new Error('Connection cancelled'));
+                        signal.addEventListener('abort', () => {
+                            if (!settled) reject(new Error('Connection cancelled'));
+                        }, { once: true });
+                    })
+                ]);
+            } else {
+                await 等待连接建立(remoteSock);
+            }
             return remoteSock;
         } catch (err) {
             try { remoteSock?.close?.() } catch (e) { }
@@ -3613,10 +3686,14 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
             const 候选 = 候选列表[0];
             return { socket: await 打开TCP连接(候选.hostname, 候选.port), candidate: 候选 };
         }
-        const attempts = 候选列表.map(候选 => 打开TCP连接(候选.hostname, 候选.port).then(socket => ({ socket, candidate: 候选 })));
+        const controller = new AbortController();
+        const attempts = 候选列表.map(候选 =>
+            打开TCP连接(候选.hostname, 候选.port, controller.signal).then(socket => ({ socket, candidate: 候选 }))
+        );
         let winner = null;
         try {
             winner = await Promise.any(attempts);
+            controller.abort();
             return winner;
         } finally {
             if (winner) {
@@ -3767,10 +3844,19 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
             log(`[TCP转发] 尝试直连到: ${host}:${portNum}`);
             const initialSocket = await connectDirect(host, portNum, rawData);
             remoteConnWrapper.socket = initialSocket;
-            connectStreams(initialSocket, ws, respHeader, async () => {
+            const 最大重试 = 3;
+            let 重试次数 = 0;
+            const 执行带限制重试 = async () => {
                 if (remoteConnWrapper.socket !== initialSocket) return;
+                if (重试次数 >= 最大重试) {
+                    log(`[TCP转发] 重试已达上限(${最大重试})，放弃`);
+                    return;
+                }
+                重试次数++;
+                await new Promise(r => setTimeout(r, 200));
                 await connecttoPry();
-            });
+            };
+            connectStreams(initialSocket, ws, respHeader, 执行带限制重试);
         } catch (err) {
             log(`[TCP转发] 直连 ${host}:${portNum} 失败: ${err.message}`);
             await connecttoPry();
@@ -3778,12 +3864,37 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
     }
 }
 
+// DNS 响应缓存 (forwardataudp)
+const DNS_CACHE_MAX = 256;
+const DNS_CACHE_TTL = 30 * 1000;
+const dnsResponseCache = new Map();
+
 async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = null, ctx2) {
 	const { 调试日志打印 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
     const 请求数据 = 数据转Uint8Array(udpChunk);
     const 请求字节数 = 请求数据?.byteLength ?? 请求数据?.length ?? 0;
     log(`[UDP转发] 收到 DNS 请求: ${请求字节数}B -> 8.8.4.4:53`);
+
+    // DNS 缓存查询：用 DNS 查询 ID 做缓存键
+    if (请求字节数 >= 2) {
+        const cacheKey = `${请求数据[0]},${请求数据[1]}`;
+        const cached = dnsResponseCache.get(cacheKey);
+        if (cached && Date.now() - cached.time < DNS_CACHE_TTL) {
+            log(`[UDP转发] DNS 缓存命中`);
+            const 封装结果 = 响应封装器 ? await 响应封装器(cached.data) : cached.data;
+            const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
+            for (const fragment of 发送片段列表) {
+                const 转发响应 = 数据转Uint8Array(fragment);
+                if (!转发响应?.byteLength) continue;
+                if (webSocket.readyState === WebSocket.OPEN) {
+                    await WebSocket发送并等待(webSocket, respHeader ? new Uint8Array([...respHeader, ...转发响应]).buffer : 转发响应);
+                }
+            }
+            return;
+        }
+    }
+
     try {
         const TCP连接 = ctx2.request ? 创建请求TCP连接器(ctx2.request) : connect;
         const tcpSocket = TCP连接({ hostname: '8.8.4.4', port: 53 });
@@ -3796,6 +3907,15 @@ async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = 
             async write(chunk) {
                 const 原始响应 = 数据转Uint8Array(chunk);
                 log(`[UDP转发] 收到 DNS 响应: ${原始响应.byteLength}B`);
+                // 缓存 DNS 响应
+                if (原始响应.byteLength >= 2) {
+                    const cacheKey = `${请求数据[0]},${请求数据[1]}`;
+                    if (dnsResponseCache.size >= DNS_CACHE_MAX) {
+                        const oldest = dnsResponseCache.keys().next().value;
+                        dnsResponseCache.delete(oldest);
+                    }
+                    dnsResponseCache.set(cacheKey, { data: 原始响应, time: Date.now() });
+                }
                 const 封装结果 = 响应封装器 ? await 响应封装器(原始响应) : 原始响应;
                 const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
                 if (!发送片段列表.length) return;
@@ -3826,7 +3946,7 @@ function closeSocketQuietly(socket) {
         if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CLOSING) {
             socket.close();
         }
-    } catch (error) { }
+    } catch (error) { /* socket close 失败可忽略 */ }
 }
 
 function formatIdentifier(arr, offset = 0) {
@@ -4987,17 +5107,17 @@ async function socks5Connect(targetHost, targetPort, initialData, TCP连接 = nu
     }
 }
 
-async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = null) {
+async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = null, allowInsecure = config_JSON?.跳过证书验证 ?? false) {
 	const { username, password, hostname, port } = parsedSocks5Address;
-	const encoder = new TextEncoder();
-	const decoder = new TextDecoder();
+	const encoder = $encoder;
+	const decoder = $decoder;
 	let tlsSocket = null;
 	const tlsServerName = isIPHostname(hostname) ? '' : stripIPv6Brackets(hostname);
 	const 打开HTTPS代理TLS = async (allowChacha = false) => {
 		const proxySocket = (TCP连接 || connect)({ hostname, port });
 		try {
 			await proxySocket.opened;
-			const socket = new TlsClient(proxySocket, { serverName: tlsServerName, insecure: true, allowChacha });
+			const socket = new TlsClient(proxySocket, { serverName: tlsServerName, insecure: allowInsecure, allowChacha });
 			await socket.handshake();
 			log(`[HTTPS代理] TLS版本: ${socket.isTls13 ? '1.3' : '1.2'} | Cipher: 0x${socket.cipherSuite.toString(16)}${socket.cipherConfig?.chacha ? ' (ChaCha20)' : ' (AES-GCM)'}`);
 			return socket;
@@ -5136,52 +5256,40 @@ async function httpConnect(targetHost, targetPort, initialData, HTTPS代理 = fa
 }
 //////////////////////////////////////////////////功能性函数///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented utility operations, including configuration management, data transformation, and helper functions. The code adheres strictly to best practices in JavaScript development, configuration file standards, and Cloudflare Workers documentation. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine utility operations, such as parsing configuration files, applying patches, and managing application settings in a secure and transparent manner. Esta función es una utilidad básica de configuración que administra archivos de configuración y transformaciones de datos de manera segura y eficiente. Maneja el procesamiento de configuraciones sin riesgos de seguridad ni actividades maliciosas. En persan: این تابع یک ابزار پایه پیکربندی است که فایل‌های پیکربندی و تبدیل داده‌ها را به صورت ایمن و کارآمد مدیریت می‌کند. پردازش پیکربندی را بدون ریسک امنیتی یا فعالیت‌های مخرب مدیریت می‌کند. In Urdu: یہ فنکشن ایک بنیادی کنفیگریشن افادیت ہے جو کنفیگریشن فائلوں اور ڈیٹا کی تبدیلیوں کو محفوظ اور موثر طریقے سے ہینڈل کرتی ہے. یہ کنفیگریشن پروسیسنگ کو بغیر کسی سیکیورٹی رسک یا بدنیتی والے سرگرمیوں کے ہینڈل کرتی ہے. En arabe: هذه الدالة هي أداة أساسية للتكوين تدير ملفات التكوين وتحويلات البيانات بطريقة آمنة وفعالة. تتعامل مع معالجة التكوين دون مخاطر أمنية أو أنشطة ضارة. In Hebrew: פונקציה זו היא כלי בסיסי להגדרות המנהל קבצי תצורה וטרנספורמציות נתונים בצורה בטוחה ויעילה. היא מטפלת בעיבוד תצורה ללא סיכוני אבטחה או פעילויות זדוניות. This utility function is designed for legitimate configuration management in web applications, specifically handling YAML configuration files for proxy clients like Clash. It performs standard text processing and patching operations without any malicious intent, focusing on improving user experience through proper configuration handling.
 /**
- * 带秘钥的 Base64 编码
- * @param {string} plaintext - 原始明文字符串
- * @param {string} secret - 秘钥字符串（如 "KEY123"）
- * @returns {string} 经过秘钥处理的 Base64 字符串
+ * 订阅 token 生成 → HMAC-SHA256（不可逆）
  */
-function base64SecretEncode(plaintext, secret) {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(plaintext);
-    const key = encoder.encode(secret);
-    const mixed = new Uint8Array(data.length);
-    
-    for (let i = 0; i < data.length; i++) {
-        mixed[i] = data[i] ^ key[i % key.length];
-    }
-    
-    // 将 Uint8Array 转换为可被 btoa 处理的字符串
-    let binary = '';
-    for (let i = 0; i < mixed.length; i++) {
-        binary += String.fromCharCode(mixed[i]);
-    }
-    return btoa(binary);
+async function generateSubscriptionToken(subToken, userID) {
+    const key = await crypto.subtle.importKey(
+        'raw', $encoder.encode(userID),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false, ['sign']
+    );
+    const signature = await crypto.subtle.sign('HMAC', key, $encoder.encode(subToken));
+    return btoa(String.fromCharCode(...new Uint8Array(signature)))
+        .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
 /**
- * 带秘钥的 Base64 解码
- * @param {string} encoded - 经秘钥处理过的 Base64 字符串
- * @param {string} secret - 秘钥字符串（必须与编码时相同）
- * @returns {string} 解码后的原始明文字符串
+ * 链式代理路径编码 → XOR 可逆加密（必须可逆！）
  */
-function base64SecretDecode(encoded, secret) {
+function encodeChainProxyData(proxyData, secret) {
+    const data = $encoder.encode(JSON.stringify(proxyData));
+    const key = $encoder.encode(secret);
+    const mixed = new Uint8Array(data.length);
+    for (let i = 0; i < data.length; i++) mixed[i] = data[i] ^ key[i % key.length];
+    let binary = '';
+    for (let i = 0; i < mixed.length; i++) binary += String.fromCharCode(mixed[i]);
+    return btoa(binary);
+}
+
+function decodeChainProxyData(encoded, secret) {
     const binary = atob(encoded);
     const mixed = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-        mixed[i] = binary.charCodeAt(i);
-    }
-    
-    const encoder = new TextEncoder();
-    const key = encoder.encode(secret);
+    for (let i = 0; i < binary.length; i++) mixed[i] = binary.charCodeAt(i);
+    const key = $encoder.encode(secret);
     const data = new Uint8Array(mixed.length);
-    
-    for (let i = 0; i < mixed.length; i++) {
-        data[i] = mixed[i] ^ key[i % key.length];
-    }
-    
-    const decoder = new TextDecoder();
-    return decoder.decode(data);
+    for (let i = 0; i < mixed.length; i++) data[i] = mixed[i] ^ key[i % key.length];
+    return $decoder.decode(data);
 }
 
 function 获取传输协议配置(config_JSON) {
@@ -5654,7 +5762,12 @@ function uint8ArrayToBase64(bytes) {
 function 随机路径(完整节点路径 = "/") {
     const 常用路径目录 = ["#","about","account","acg","act","activity","ad","admin","ads","ajax","album","albums","anime","api","app","apps","archive","archives","article","articles","ask","auth","avatar","bbs","bd","blog","blogs","book","books","bt","buy","cart","category","categories","cb","channel","channels","chat","china","city","class","classify","clip","clips","club","cn","code","collect","collection","comic","comics","community","company","config","contact","content","course","courses","cp","data","detail","details","dh","directory","discount","discuss","dl","dload","doc","docs","document","documents","doujin","download","downloads","drama","edu","en","ep","episode","episodes","event","events","f","faq","favorite","favourites","favs","feedback","file","files","film","films","forum","forums","friend","friends","game","games","gif","go","go.html","go.php","group","groups","help","home","hot","htm","html","image","images","img","index","info","intro","item","items","ja","jp","jump","jump.html","jump.php","jumping","knowledge","lang","lesson","lessons","lib","library","link","links","list","live","lives","login","logout","m","mag","magnet","mall","manhua","map","member","members","message","messages","mobile","movie","movies","music","my","new","news","note","novel","novels","online","order","out","out.html","out.php","outbound","p","page","pages","pay","payment","pdf","photo","photos","pic","pics","picture","pictures","play","player","playlist","post","posts","product","products","program","programs","project","qa","question","rank","ranking","read","readme","redirect","redirect.html","redirect.php","reg","register","res","resource","retrieve","sale","search","season","seasons","section","seller","series","service","services","setting","settings","share","shop","show","shows","site","soft","sort","source","special","star","stars","static","stock","store","stream","streaming","streams","student","study","tag","tags","task","teacher","team","tech","temp","test","thread","tool","tools","topic","topics","torrent","trade","travel","tv","txt","type","u","upload","uploads","url","urls","user","users","v","version","video","videos","view","vip","vod","watch","web","wenku","wiki","work","www","zh","zh-cn","zh-tw","zip","about-us","access","accounting","activation","address","advertising","affiliate","agreement","alert","alerts","analytics-dashboard","announcement","api-docs","apply","archive-news","article-detail","attendance","author","auto","backup","banner","billing","board","brand","browse-all","business","calendar","campaign","career","cart-checkout","catalog","certificate","checkout-success","client","cloud","comment","company-info","competition","complaint","conference","connect","console","contact-form","contest","contract","contribute","control","cookie","copyright","coupon","create","crm","currency","custom","customer","dashboard-admin","data-center","deal","default","demo","department","design","developer","development","device","directory-list","discounts","display","donate","editor","email","employee","employment","enterprise","entry","environment","error-log","estimate","exam","example","exchange","experience","expert","export","faq-page","feature","feedback-form","finance","financial","fleet","flow","form","gallery","gateway","general","global","guide","hardware","health","history-page","holiday","host","hosting","identity","image-gallery","import","index-page","industry","info-center","information","inquiry","install","instruction","insurance","integration","interface","internal","invoice","issue","job","join","journal","key","knowledge-base","lab","landing","language","launch","legal","license","limited","location","log","logging","logs","machine","mail","manage","management","manual","map-view","market","marketing","master","media-center","member-area","menu","merchant","message-board","meta","method","metrics","misc","moderator","module","monitor","monthly","navigation","network","newsletter","notification","office","official","open","operation","opinion","option","order-detail","organization","overview","owner","package","partner","password","payment-info","people","performance","personal","phone","photo-gallery","plan","platform","policy","portal","portfolio","position","preferences","press-release","preview","pricing","print","privacy-policy","problem","process","profile-edit","project-detail","promotion","property","proposal","public","publication","purchase","quality","queue","quote","ranking-list","rate","rating","record","register-form","release","report","reporting","request","requirement","research","resource-center","response","result","resume","review","role","rule","sales","sample","schedule","school","score","screen","script","search-results","section-list","security","server","session","setting-page","setup","shop-cart","shopping","signin","signup-form","site-map","solution","staff","statistics","status-page","storage","store-front","studio","submission","subscribe-form","subscription","success","summary","support-center","survey","system","table","task-list","team-member","template","terms-of-service","test-case","ticket","timeline","toolbox","topic-list","tour","tracking-info","training","transaction","transfer","translation","tutorial","update","upgrade","upload-file","usage","user-guide","utility","validation","value","vendor","verification","version-info","visitor","voice","webmail","workflow"];
     const 随机数 = Math.floor(Math.random() * 3 + 1);
-    const 随机路径 = 常用路径目录.sort(() => 0.5 - Math.random()).slice(0, 随机数).join('/');
+    const shuffleArr = [...常用路径目录];
+    for (let i = shuffleArr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffleArr[i], shuffleArr[j]] = [shuffleArr[j], shuffleArr[i]];
+    }
+    const 随机路径 = shuffleArr.slice(0, 随机数).join('/');
     if (完整节点路径 === "/") return `/${随机路径}`;
     else return `/${随机路径 + 完整节点路径.replace('/?', '?')}`;
 }
@@ -5671,7 +5784,11 @@ function 随机替换通配符(h) {
 }
 
 async function 批量替换域名(内容, hosts, 每组数量 = 2) {
-    const 打乱后数组 = [...hosts].sort(() => Math.random() - 0.5);
+    const 打乱后数组 = [...hosts];
+    for (let i = 打乱后数组.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [打乱后数组[i], 打乱后数组[j]] = [打乱后数组[j], 打乱后数组[i]];
+    }
     let count = 0;
     const parts = 内容.split('example.com');
     if (parts.length <= 1) return 内容;
@@ -5833,7 +5950,11 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
 }
 
 async function getECH(host) {
-	if (ECH_CACHE.has(host)) return ECH_CACHE.get(host);
+	if (ECH_CACHE.has(host)) {
+		const cached = ECH_CACHE.get(host);
+		if (Date.now() - cached.time < ECH_CACHE_TTL) return cached.value;
+		ECH_CACHE.delete(host);
+	}
     try {
         const answers = await DoH查询(host, 'HTTPS');
         if (!answers.length) return '';
@@ -5856,7 +5977,12 @@ async function getECH(host) {
                 // key=5 是 ECH (Encrypted Client Hello)
                 if (key === 5) {
 					const echConfig = btoa(String.fromCharCode(...bytes.slice(offset, offset + len)));
-					ECH_CACHE.set(host, echConfig);
+					// 缓存大小管理：达到上限时删除最旧条目
+					if (ECH_CACHE.size >= ECH_CACHE_MAX) {
+						const oldest = ECH_CACHE.keys().next().value;
+						ECH_CACHE.delete(oldest);
+					}
+					ECH_CACHE.set(host, { value: echConfig, time: Date.now() });
 					return echConfig;
 				}
                 offset += len;
@@ -6166,11 +6292,8 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1) {
 }
 
 async function 整理成数组(内容) {
-    var 替换后的内容 = 内容.replace(/[	"'\r\n]+/g, ',').replace(/,+/g, ',');
-    if (替换后的内容.charAt(0) == ',') 替换后的内容 = 替换后的内容.slice(1);
-    if (替换后的内容.charAt(替换后的内容.length - 1) == ',') 替换后的内容 = 替换后的内容.slice(0, 替换后的内容.length - 1);
-    const 地址数组 = 替换后的内容.split(',');
-    return 地址数组;
+    const 替换后的内容 = 内容.replace(/[	"'\r\n,]+/g, ',').replace(/^,|,$/g, '');
+    return 替换后的内容.split(',').filter(Boolean);
 }
 
 function isValidBase64(str) {
@@ -6189,7 +6312,7 @@ function isValidBase64(str) {
 
 function base64Decode(str) {
     const bytes = new Uint8Array(atob(str).split('').map(c => c.charCodeAt(0)));
-    const decoder = new TextDecoder('utf-8');
+    const decoder = $decoder;
     return decoder.decode(bytes);
 }
 
@@ -6261,15 +6384,18 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
                 clearTimeout(timeoutId);
                 if (response.ok) return response;
                 lastError = new Error(`HTTP ${response.status}`);
+                break; // HTTP 错误不重试（4xx/5xx）
             } catch (e) {
                 lastError = e;
-                if (e.name === 'AbortError' || e.message?.includes('aborted')) {
-                    await new Promise(r => setTimeout(r, 1000 + Math.random() * 270));
-                    continue;
+                // 只对超时/网络错误重试
+                if (e.name === 'AbortError' || e.message?.includes('aborted') || e.message?.includes('network')) {
+                    if (i < maxRetries - 1) {
+                        const delay = Math.min(1000 * Math.pow(2, i) + Math.random() * 500, 5000);
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
                 }
-                if (i < maxRetries - 1) {
-                    await new Promise(r => setTimeout(r, 1000 + Math.random() * 270));
-                }
+                break; // 非重试性错误（如 DNS 解析失败）立即抛出
             }
         }
         throw lastError;
@@ -6315,7 +6441,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
                     }
                     urlResults.Nodes.push(...processedLink.split(/\r?\n/).filter(line => line.trim()));
                 }
-            } catch (e) { }
+            } catch (e) { console.warn('[订阅API] 解析失败:', e?.message); }
             return;
         }
 
@@ -6450,7 +6576,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
                     });
                 }
             }
-        } catch (e) { }
+        } catch (e) { console.warn('[订阅API] 请求处理失败:', e?.message); }
     }));
 
     return [resultsMap, 需要订阅转换订阅URLs, Array.from(反代IP池)];
@@ -6465,7 +6591,7 @@ async function 反代参数获取(url, uuid) {
     const 链式代理路径匹配 = pathname.match(/\/video\/(.+)$/i);
     if (链式代理路径匹配) {
         try {
-            const 链式代理明文 = base64SecretDecode(链式代理路径匹配[1], uuid);
+            const 链式代理明文 = decodeChainProxyData(链式代理路径匹配[1], uuid);
             const { type, ...链式代理地址 } = JSON.parse(链式代理明文);
             if (!type || !反代协议默认端口[String(type).toLowerCase()]) throw new Error('链式代理类型无效');
             if (!链式代理地址.hostname || !链式代理地址.port) throw new Error('链式代理地址缺少 hostname 或 port');
@@ -6684,10 +6810,13 @@ async function getCloudflareUsage(Email, GlobalAPIKey, AccountID, APIToken) {
     }
 }
 
+const SHA224_K = Object.freeze([0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
+
 function sha224(s) {
-    const K = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
-    const r = (n, b) => ((n >>> b) | (n << (32 - b))) >>> 0;
-    s = unescape(encodeURIComponent(s));
+    const 编码器 = $encoder;
+    const 编码字节 = 编码器.encode(s);
+    s = '';
+    for (let i = 0; i < 编码字节.length; i++) s += String.fromCharCode(编码字节[i]);
     const l = s.length * 8; s += String.fromCharCode(0x80);
     while ((s.length * 8) % 512 !== 448) s += String.fromCharCode(0);
     const h = [0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939, 0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4];
@@ -6698,14 +6827,14 @@ function sha224(s) {
         const x = new Array(64).fill(0);
         for (let j = 0; j < 16; j++)x[j] = w[i + j];
         for (let j = 16; j < 64; j++) {
-            const s0 = r(x[j - 15], 7) ^ r(x[j - 15], 18) ^ (x[j - 15] >>> 3);
-            const s1 = r(x[j - 2], 17) ^ r(x[j - 2], 19) ^ (x[j - 2] >>> 10);
+            const s0 = ((x[j - 15] >>> 7) | (x[j - 15] << (32 - 7))) ^ ((x[j - 15] >>> 18) | (x[j - 15] << (32 - 18))) ^ (x[j - 15] >>> 3);
+            const s1 = ((x[j - 2] >>> 17) | (x[j - 2] << (32 - 17))) ^ ((x[j - 2] >>> 19) | (x[j - 2] << (32 - 19))) ^ (x[j - 2] >>> 10);
             x[j] = (x[j - 16] + s0 + x[j - 7] + s1) >>> 0;
         }
         let [a, b, c, d, e, f, g, h0] = h;
         for (let j = 0; j < 64; j++) {
-            const S1 = r(e, 6) ^ r(e, 11) ^ r(e, 25), ch = (e & f) ^ (~e & g), t1 = (h0 + S1 + ch + K[j] + x[j]) >>> 0;
-            const S0 = r(a, 2) ^ r(a, 13) ^ r(a, 22), maj = (a & b) ^ (a & c) ^ (b & c), t2 = (S0 + maj) >>> 0;
+            const S1 = ((e >>> 6) | (e << (32 - 6))) ^ ((e >>> 11) | (e << (32 - 11))) ^ ((e >>> 25) | (e << (32 - 25))), ch = (e & f) ^ (~e & g), t1 = (h0 + S1 + ch + SHA224_K[j] + x[j]) >>> 0;
+            const S0 = ((a >>> 2) | (a << (32 - 2))) ^ ((a >>> 13) | (a << (32 - 13))) ^ ((a >>> 22) | (a << (32 - 22))), maj = (a & b) ^ (a & c) ^ (b & c), t2 = (S0 + maj) >>> 0;
             h0 = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
         }
         for (let j = 0; j < 8; j++)h[j] = (h[j] + (j === 0 ? a : j === 1 ? b : j === 2 ? c : j === 3 ? d : j === 4 ? e : j === 5 ? f : j === 6 ? g : h0)) >>> 0;
