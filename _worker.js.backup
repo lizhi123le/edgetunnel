@@ -152,10 +152,16 @@ async function verifyCookieSignature(cookieValue, signature, secret) {
 
 // 安全比较两个字符串（防时序攻击）
 function secureCompare(a, b) {
-    const aBytes = $encoder.encode(a);
-    const bBytes = $encoder.encode(b);
-    if (aBytes.length !== bBytes.length) return false;
-    return crypto.subtle.timingSafeEqual(aBytes, bBytes);
+    const aBytes = typeof a === 'string' ? $encoder.encode(a) : a;
+    const bBytes = typeof b === 'string' ? $encoder.encode(b) : b;
+    const maxLen = Math.max(aBytes.length, bBytes.length);
+    // 填充到等长，避免泄露长度信息
+    // 使用 0xFF 填充，避免与真实数据（可能为 0x00）碰撞
+    const paddedA = new Uint8Array(maxLen).fill(0xFF);
+    const paddedB = new Uint8Array(maxLen).fill(0xFF);
+    paddedA.set(aBytes, 0);
+    paddedB.set(bBytes, 0);
+    return crypto.subtle.timingSafeEqual(paddedA, paddedB);
 }
 
 // 限制字符串长度
@@ -643,7 +649,7 @@ export default {
 
                             let 完整优选IP = [], 其他节点LINK = '', 反代IP池 = [];
 
-                                const IP转换节点 = (输入元素) => {
+                                const IP转换节点 = async (输入元素) => {
                                     if (typeof 输入元素 === 'object' && 输入元素.type === 'node') return 输入元素.value;
                                     const 原始地址 = typeof 输入元素 === 'object' ? 输入元素.value : 输入元素;
                                     const ECH_SNI = (config_JSON.ECHConfig.SNI && config_JSON.ECHConfig.SNI !== 'auto') ? config_JSON.ECHConfig.SNI : 随机替换通配符(config_JSON.HOSTS[Math.floor(Math.random() * config_JSON.HOSTS.length)]);
@@ -660,7 +666,7 @@ export default {
                                     try {
                                         const 代理协议 = 链式代理匹配[1].toLowerCase(), 代理参数 = 链式代理匹配[2];
                                         const 链式代理数据 = { type: 代理协议, ...获取SOCKS5账号(代理参数, 获取代理默认端口(代理协议)) };
-                                        完整节点路径 = `/video/${encodeChainProxyData(链式代理数据, userID) + (config_JSON.启用0RTT ? '?ed=2560' : '')}`;
+                                        完整节点路径 = `/video/${await encodeChainProxyData(链式代理数据, userID) + (config_JSON.启用0RTT ? '?ed=2560' : '')}`;
                                         节点备注 = 节点备注.replace(链式代理匹配[0], '').trim() || 节点地址;
                                     } catch (error) {
                                         console.warn(`[订阅内容] 链式代理解析失败，已忽略该指令: ${链式代理匹配[0]} (${error && error.message ? error.message : error})`);
@@ -1459,10 +1465,11 @@ function 是有效WS早期数据(bytes, token) {
 
 	const trojanPassword = sha224(token);
 	const trojanPasswordBytes = SS文本编码器.encode(trojanPassword);
+	let diff = 0;
 	for (let i = 0; i < 56; i++) {
-		if (bytes[i] !== trojanPasswordBytes[i]) return false;
+		diff |= bytes[i] ^ trojanPasswordBytes[i];
 	}
-	return true;
+	return diff === 0;
 }
 
 function 解码WS早期数据(header, token) {
@@ -1556,10 +1563,15 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 				const 请求加密方式 = (url.searchParams.get('enc') || '').toLowerCase();
 				const 首选加密配置 = SS支持加密配置[请求加密方式] || SS支持加密配置['aes-128-gcm'];
 				const 入站候选加密配置 = [首选加密配置, ...Object.values(SS支持加密配置).filter(c => c.method !== 首选加密配置.method)];
-				const 入站主密钥任务缓存 = new Map();
 				const 取入站主密钥任务 = (config) => {
-					if (!入站主密钥任务缓存.has(config.method)) 入站主密钥任务缓存.set(config.method, SS派生主密钥(yourUUID, config.keyLen));
-					return 入站主密钥任务缓存.get(config.method);
+					const cacheKey = `${yourUUID}:${config.method}`;
+					if (!入站主密钥任务缓存.has(cacheKey)) {
+						入站主密钥任务缓存.set(cacheKey, SS派生主密钥(yourUUID, config.keyLen));
+						if (入站主密钥任务缓存.size > 入站主密钥任务缓存_MAX) {
+							入站主密钥任务缓存.delete(入站主密钥任务缓存.keys().next().value);
+						}
+					}
+					return 入站主密钥任务缓存.get(cacheKey);
 				};
 				const 入站状态 = {
 					buffer: new Uint8Array(0), hasSalt: false, waitPayloadLength: null,
@@ -1915,9 +1927,12 @@ function 解析木马请求(buffer, passwordPlainText) {
 	if (data.byteLength < 58) return { hasError: true, message: "invalid data" };
 	let crLfIndex = 56;
 	if (data[crLfIndex] !== 0x0d || data[crLfIndex + 1] !== 0x0a) return { hasError: true, message: "invalid header format" };
+	const sha224PasswordBytes = SS文本编码器.encode(sha224Password);
+	let diff = 0;
 	for (let i = 0; i < crLfIndex; i++) {
-		if (data[i] !== sha224Password.charCodeAt(i)) return { hasError: true, message: "invalid password" };
+		diff |= data[i] ^ sha224PasswordBytes[i];
 	}
+	if (diff !== 0) return { hasError: true, message: "invalid password" };
 
 	const socks5Index = crLfIndex + 2;
 	if (data.byteLength < socks5Index + 6) return { hasError: true, message: "invalid S5 request data" };
@@ -2087,6 +2102,10 @@ const SS子密钥信息 = $encoder.encode('ss-subkey');
 const SS文本编码器 = $encoder;
 const SS文本解码器 = $decoder;
 const SS主密钥缓存 = new Map();
+const SS主密钥缓存_MAX = 64; // 限制缓存条目数，避免多用户场景内存泄漏
+// 入站主密钥任务缓存（模块级，跨请求复用）
+const 入站主密钥任务缓存 = new Map();
+const 入站主密钥任务缓存_MAX = 32;
 // ECH 缓存：带 TTL 和大小上限
 const ECH_CACHE_MAX = 128;
 const ECH_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
@@ -2246,6 +2265,9 @@ async function SS派生主密钥(passwordText, keyLen) {
 		return result.slice(0, keyLen);
 	})();
 	SS主密钥缓存.set(cacheKey, deriveTask);
+	if (SS主密钥缓存.size > SS主密钥缓存_MAX) {
+		SS主密钥缓存.delete(SS主密钥缓存.keys().next().value);
+	}
 	try {
 		return await deriveTask;
 	} catch (error) {
@@ -3257,6 +3279,10 @@ function extractLeafCertificate(body, hasContext = 0) {
 // 证书解析缓存（避免同证书重复解析 ASN.1 DER）
 const certParseCache = new Map();
 const CERT_CACHE_MAX = 64;
+// 统一缓存清理辅助函数
+function _evictCache(cache, maxSize) {
+	while (cache.size > maxSize) cache.delete(cache.keys().next().value);
+}
 function certCacheKey(certDer) {
 	const len = certDer.length;
 	let hash = 0;
@@ -3350,12 +3376,12 @@ function parseX509Certificate(certDer) {
 				// 提取 notAfter 时间字节用于验证
 				const 解析结果 = { notAfterBytes: certDer.slice(notAfterStart, notAfterStart + tLen) };
 				certParseCache.set(key, { result: 解析结果, len: certDer.length, midByte: certDer[certDer.length >> 1] });
-				if (certParseCache.size > CERT_CACHE_MAX) certParseCache.delete(certParseCache.keys().next().value);
+			_evictCache(certParseCache, CERT_CACHE_MAX);
 				return 解析结果;
 			}
 		}
 		certParseCache.set(key, { result: null, len: certDer.length, midByte: certDer[certDer.length >> 1] });
-		if (certParseCache.size > CERT_CACHE_MAX) certParseCache.delete(certParseCache.keys().next().value);
+	_evictCache(certParseCache, CERT_CACHE_MAX);
 		return null;
 	} catch (e) {
 		if (certDer && typeof certDer.length === 'number') {
@@ -3363,7 +3389,7 @@ function parseX509Certificate(certDer) {
 		} else {
 			certParseCache.set(key, { result: null, len: 0, midByte: 0 });
 		}
-		if (certParseCache.size > CERT_CACHE_MAX) certParseCache.delete(certParseCache.keys().next().value);
+	_evictCache(certParseCache, CERT_CACHE_MAX);
 		return null;
 	}
 }
@@ -5286,25 +5312,57 @@ async function generateSubscriptionToken(subToken, userID) {
 }
 
 /**
- * 链式代理路径编码 → XOR 可逆加密（必须可逆！）
+ * 链式代理路径编码 → XOR 可逆加密 + HMAC 完整性校验（必须可逆！）
  */
-function encodeChainProxyData(proxyData, secret) {
+async function encodeChainProxyData(proxyData, secret) {
     const data = $encoder.encode(JSON.stringify(proxyData));
     const key = $encoder.encode(secret);
+    const keyLen = key.length;
     const mixed = new Uint8Array(data.length);
-    for (let i = 0; i < data.length; i++) mixed[i] = data[i] ^ key[i % key.length];
+    for (let i = 0; i < data.length; i++) mixed[i] = data[i] ^ key[i % keyLen];
+    
+    // 添加 HMAC 完整性校验（截断到 16 字节）
+    const hmacKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const signature = new Uint8Array(await crypto.subtle.sign('HMAC', hmacKey, mixed));
+    const result = new Uint8Array(mixed.length + 16);
+    result.set(mixed, 0);
+    result.set(signature.slice(0, 16), mixed.length);
     let binary = '';
-    for (let i = 0; i < mixed.length; i++) binary += String.fromCharCode(mixed[i]);
+    for (let i = 0; i < result.length; i++) binary += String.fromCharCode(result[i]);
     return btoa(binary);
 }
 
-function decodeChainProxyData(encoded, secret) {
-    const binary = atob(encoded);
-    const mixed = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) mixed[i] = binary.charCodeAt(i);
+async function decodeChainProxyData(encoded, secret) {
+    const mixed = new Uint8Array(atob(encoded).split('').map(c => c.charCodeAt(0)));
     const key = $encoder.encode(secret);
+    const keyLen = key.length;
+    
+    // 检测是否包含 HMAC（原始数据至少 1 字节 + 16 字节签名）
+    if (mixed.length > 16) {
+        const data = mixed.slice(0, -16);
+        const providedHmac = mixed.slice(-16);
+        
+        // 重新计算 HMAC 并验证
+        const hmacKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const expectedHmac = new Uint8Array(await crypto.subtle.sign('HMAC', hmacKey, data));
+        
+        // 位运算恒定时间比较前 16 字节
+        let diff = 0;
+        for (let i = 0; i < 16; i++) {
+            diff |= providedHmac[i] ^ expectedHmac[i];
+        }
+        if (diff !== 0) throw new Error('链式代理数据完整性校验失败');
+        
+        const result = new Uint8Array(data.length);
+        for (let i = 0; i < data.length; i++) result[i] = data[i] ^ key[i % keyLen];
+        return $decoder.decode(result);
+    }
+    
+    // 旧格式回退（兼容未升级的旧版本编码数据）
+    // 链式代理数据通常 > 50 字节（JSON 编码后的代理配置），< 10 字节视为异常
+    if (mixed.length < 10) throw new Error('链式代理数据长度异常');
     const data = new Uint8Array(mixed.length);
-    for (let i = 0; i < mixed.length; i++) data[i] = mixed[i] ^ key[i % key.length];
+    for (let i = 0; i < mixed.length; i++) data[i] = mixed[i] ^ key[i % keyLen];
     return $decoder.decode(data);
 }
 
@@ -5732,6 +5790,10 @@ const hexEncode = (buffer) => [...new Uint8Array(buffer)].map(b => b.toString(16
 // MD5MD5 结果缓存（热路径优化）
 const MD5MD5缓存 = new Map();
 const MD5MD5_CACHE_MAX = 128; // 增大至 128 条目，覆盖高频调用场景（订阅生成、登录验证、Token 生成等）
+// AES 密钥缓存（AESEncrypt 热路径优化）
+const AES密钥缓存 = new Map();
+const AES密钥缓存_MAX = 32;
+const AES_DERIVE_SALT = new Uint8Array([0xed, 0x67, 0x2a, 0x1f, 0x8b, 0xc3, 0x4d, 0x90]); // 8字节固定盐
 
 async function MD5MD5(文本) {
     // 检查缓存
@@ -5759,8 +5821,27 @@ async function MD5MD5(文本) {
 async function AESEncrypt(plaintext, password) {
     if (!plaintext || !password) return null;
     try {
-        const keyHash = await crypto.subtle.digest('MD5', SS文本编码器.encode(password));
-        const keyBytes = new Uint8Array(keyHash);
+        let keyBytes = AES密钥缓存.get(password);
+        if (!keyBytes) {
+            const keyMaterial = await crypto.subtle.importKey(
+                'raw',
+                SS文本编码器.encode(password),
+                'PBKDF2',
+                false,
+                ['deriveBits']
+            );
+            const derivedBits = await crypto.subtle.deriveBits({
+                name: 'PBKDF2',
+                salt: AES_DERIVE_SALT,
+                iterations: 1000,
+                hash: 'SHA-256'
+            }, keyMaterial, 128); // 128 bits = 16 bytes (AES-128)
+            keyBytes = new Uint8Array(derivedBits);
+            AES密钥缓存.set(password, keyBytes);
+            if (AES密钥缓存.size > AES密钥缓存_MAX) {
+                AES密钥缓存.delete(AES密钥缓存.keys().next().value);
+            }
+        }
         const iv = crypto.getRandomValues(new Uint8Array(16));
         const cryptoKey = await crypto.subtle.importKey(
             'raw',
@@ -5850,7 +5931,7 @@ async function 异步批量转换节点(ips, 转换函数) {
     const batchYield = createYieldStrategy();
     let result = [];
     for (let i = 0; i < ips.length; i++) {
-        const node = 转换函数(ips[i]);
+        const node = await 转换函数(ips[i]);
         if (node) result.push(node);
         await batchYield();
     }
@@ -6316,7 +6397,11 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1) {
     const cfname = 运营商名称映射[运营商文件标识] || 'CF官方优选';
     const cfport = [443, 2053, 2083, 2087, 2096, 8443];
     let cidrList = [];
-    try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13'] } catch { cidrList = ['104.16.0.0/13'] }
+    try {
+        const res = await fetch(cidr_url);
+        if (!res.ok) { cidrList = ['104.16.0.0/13']; }
+        else { const text = await res.text(); cidrList = await 整理成数组(text); }
+    } catch { cidrList = ['104.16.0.0/13']; }
 
     const generateRandomIPFromCIDR = (cidr) => {
         const [baseIP, prefixLength] = cidr.split('/'), prefix = parseInt(prefixLength), hostBits = 32 - prefix;
@@ -6633,7 +6718,7 @@ async function 反代参数获取(url, uuid, ctx2) {
     const 链式代理路径匹配 = pathname.match(/\/video\/(.+)$/i);
     if (链式代理路径匹配) {
         try {
-            const 链式代理明文 = decodeChainProxyData(链式代理路径匹配[1], uuid);
+            const 链式代理明文 = await decodeChainProxyData(链式代理路径匹配[1], uuid);
             const { type, ...链式代理地址 } = JSON.parse(链式代理明文);
             if (!type || !反代协议默认端口[String(type).toLowerCase()]) throw new Error('链式代理类型无效');
             if (!链式代理地址.hostname || !链式代理地址.port) throw new Error('链式代理地址缺少 hostname 或 port');
@@ -6986,20 +7071,17 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
 
                         // 写入缓存
                         doh解析缓存.set(cacheKey, { result: ipAddresses, time: Date.now() });
-                        // 清理过期缓存 + 限制最大条目数
+                        // 清理过期条目 + 限制最大条目数
                         if (doh解析缓存.size > DOH_CACHE_MAX) {
                             const now = Date.now();
-                            const keysToDelete = [];
+                            // 第一步: 删除所有过期条目
                             for (const [key, value] of doh解析缓存) {
-                                if (now - value.time >= DOH_CACHE_TTL) keysToDelete.push(key);
+                                if (now - value.time >= DOH_CACHE_TTL) doh解析缓存.delete(key);
                             }
-                            // 如果过期条目不足，额外删除最旧的一半
-                            if (keysToDelete.length < doh解析缓存.size - DOH_CACHE_MAX) {
-                                const entries = [...doh解析缓存.entries()].sort((a, b) => a[1].time - b[1].time);
-                                const extraDelete = entries.slice(0, doh解析缓存.size - DOH_CACHE_MAX - keysToDelete.length);
-                                for (const [key] of extraDelete) keysToDelete.push(key);
+                            // 第二步: 如果仍然超出上限，仅删除最旧的条目直到达标
+                            while (doh解析缓存.size > DOH_CACHE_MAX) {
+                                doh解析缓存.delete(doh解析缓存.keys().next().value);
                             }
-                            for (const key of keysToDelete) doh解析缓存.delete(key);
                         }
                     }
 
