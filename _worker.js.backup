@@ -1,4 +1,4 @@
-const Version = '2026-05-15 18:51:29(Enhanced)';
+const Version = '2026-05-17 18:52:03(Enhanced)';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -66,7 +66,7 @@ const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 
 // GrainTCP 性能优化常量
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
-const 上行合包目标字节 = 16 * 1024, 上行队列最大字节 = 256 * 1024, 上行队列最大条目 = 上行队列最大字节 >> 8;
+const 上行合包目标字节 = 16 * 1024, 上行队列最大字节 = 16 * 1024 * 1024, 上行队列最大条目 = 4096;
 const 下行Grain包字节 = 32 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
 const TCP并发拨号数 = 4;
 
@@ -937,7 +937,7 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
 
             const 写入远端 = (payload, allowRetry = true) => {
                 if (!XHTTP上行写入队列) return false;
-                return XHTTP上行写入队列.写入(payload, allowRetry);
+                return XHTTP上行写入队列.写入并等待(payload, allowRetry);
             };
 
             try {
@@ -1322,7 +1322,7 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
             });
 
             const 写入远端 = async (payload, allowRetry = true) => {
-                return 上行写入队列.写入(payload, allowRetry);
+                return 上行写入队列.写入并等待(payload, allowRetry);
             };
 
             try {
@@ -1516,7 +1516,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	});
 
 	const 写入远端 = async (chunk, allowRetry = true) => {
-		return 上行写入队列.写入(chunk, allowRetry);
+		return 上行写入队列.写入并等待(chunk, allowRetry);
 	};
 
 	const 获取SS上下文 = async () => {
@@ -1826,12 +1826,14 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	const 入队WS显式传输 = (data) => {
 		if (WS显式传输停止接收 || WS显式传输失败) return;
 		const chunkSize = Math.max(0, 有效数据长度(data));
-		WS显式队列字节 += chunkSize;
-		WS显式队列条目++;
-		if (WS显式队列字节 > 上行队列最大字节 || WS显式队列条目 > 上行队列最大条目) {
-			处理WS显式传输错误(new Error(`[WS显式传输] 队列溢出: ${WS显式队列字节}B/${WS显式队列条目}`));
+		const nextBytes = WS显式队列字节 + chunkSize;
+		const nextItems = WS显式队列条目 + 1;
+		if (nextBytes > 上行队列最大字节 || nextItems > 上行队列最大条目) {
+			处理WS显式传输错误(new Error(`[WS显式传输] 队列溢出: ${nextBytes}B/${nextItems}`));
 			return;
 		}
+		WS显式队列字节 = nextBytes;
+		WS显式队列条目 = nextItems;
 		追加WS显式传输任务(async () => {
 			WS显式队列字节 = Math.max(0, WS显式队列字节 - chunkSize);
 			WS显式队列条目 = Math.max(0, WS显式队列条目 - 1);
@@ -3845,6 +3847,22 @@ function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连�
 	let closed = false;
 	let bundleBuffer = null;
 	let idleResolvers = [];
+	let activeCompletions = null;
+
+	const settleCompletions = (completions, err = null) => {
+		if (!completions) return;
+		for (const completion of completions) {
+			if (err) completion.reject(err);
+			else completion.resolve();
+		}
+	};
+
+	const rejectQueued = (err) => {
+		for (let i = head; i < chunks.length; i++) {
+			const item = chunks[i];
+			if (item?.completions) settleCompletions(item.completions, err);
+		}
+	};
 
 	const compact = () => {
 		if (head > 32 && head * 2 >= chunks.length) {
@@ -3860,7 +3878,13 @@ function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连�
 		for (const resolve of resolvers) resolve();
 	};
 
-	const clear = () => {
+	const clear = (err = null) => {
+		const closeErr = err || (closed ? new Error(`${名称}: queue closed`) : null);
+		if (closeErr) {
+			rejectQueued(closeErr);
+			settleCompletions(activeCompletions, closeErr);
+			activeCompletions = null;
+		}
 		chunks = [];
 		head = 0;
 		queuedBytes = 0;
@@ -3884,12 +3908,14 @@ function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连�
 		let byteLength = first.chunk.byteLength;
 		let end = head;
 		let allowRetry = first.allowRetry;
+		let completions = first.completions || null;
 		while (end < chunks.length) {
 			const next = chunks[end];
 			const nextLength = byteLength + next.chunk.byteLength;
 			if (nextLength > 上行合包目标字节) break;
 			byteLength = nextLength;
 			allowRetry = allowRetry && next.allowRetry;
+			if (next.completions) completions = completions ? completions.concat(next.completions) : next.completions;
 			end++;
 		}
 		if (end === head) return first;
@@ -3905,7 +3931,7 @@ function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连�
 			offset += next.chunk.byteLength;
 		}
 		compact();
-		return { chunk: output.subarray(0, byteLength), allowRetry };
+		return { chunk: output.subarray(0, byteLength), allowRetry, completions };
 	};
 
 	const drain = async () => {
@@ -3918,20 +3944,30 @@ function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连�
 				if (!item) break;
 				let writer = 获取写入器();
 				if (!writer) throw new Error(`${名称}: remote writer unavailable`);
+				const completions = item.completions || null;
+				activeCompletions = completions;
 				try {
-					await writer.write(item.chunk);
+					try {
+						await writer.write(item.chunk);
+					} catch (err) {
+						释放写入器?.();
+						if (!item.allowRetry || typeof 重试连接 !== 'function') throw err;
+						await 重试连接();
+						writer = 获取写入器();
+						if (!writer) throw err;
+						await writer.write(item.chunk);
+					}
+					settleCompletions(completions);
 				} catch (err) {
-					释放写入器?.();
-					if (!item.allowRetry || typeof 重试连接 !== 'function') throw err;
-					await 重试连接();
-					writer = 获取写入器();
-					if (!writer) throw err;
-					await writer.write(item.chunk);
+					settleCompletions(completions, err);
+					throw err;
+				} finally {
+					if (activeCompletions === completions) activeCompletions = null;
 				}
 			}
 		} catch (err) {
 			closed = true;
-			clear();
+			clear(err);
 			log(`[${名称}] 写入失败: ${err?.message || err}`);
 			try { 关闭连接?.(err) } catch (_) { }
 		} finally {
@@ -3941,24 +3977,39 @@ function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连�
 		}
 	};
 
+	const enqueue = (data, allowRetry = true, waitForFlush = false) => {
+		if (closed) return false;
+		if (!获取写入器()) return false;
+		const chunk = 数据转Uint8Array(data);
+		if (!chunk.byteLength) return true;
+		const nextBytes = queuedBytes + chunk.byteLength;
+		const nextItems = chunks.length - head + 1;
+		if (nextBytes > 上行队列最大字节 || nextItems > 上行队列最大条目) {
+			closed = true;
+			const err = Object.assign(new Error(`${名称}: upload queue overflow (${nextBytes}B/${nextItems})`), { isQueueOverflow: true });
+			clear(err);
+			log(`[${名称}] 队列超限，关闭连接`);
+			try { 关闭连接?.(err) } catch (_) { }
+			throw err;
+		}
+		let completionPromise = null;
+		let completions = null;
+		if (waitForFlush) {
+			completions = [];
+			completionPromise = new Promise((resolve, reject) => completions.push({ resolve, reject }));
+		}
+		chunks.push({ chunk, allowRetry, completions });
+		queuedBytes = nextBytes;
+		if (!draining) queueMicrotask(drain);
+		return waitForFlush ? completionPromise.then(() => true) : true;
+	};
+
 	return {
 		写入(data, allowRetry = true) {
-			if (closed) return false;
-			if (!获取写入器()) return false;
-			const chunk = 数据转Uint8Array(data);
-			if (!chunk.byteLength) return true;
-			if (queuedBytes + chunk.byteLength > 上行队列最大字节 || chunks.length - head >= 上行队列最大条目) {
-				closed = true;
-				clear();
-				const err = Object.assign(new Error(`${名称}: upload queue overflow`), { isQueueOverflow: true });
-				log(`[${名称}] 队列超限，关闭连接`);
-				try { 关闭连接?.(err) } catch (_) { }
-				throw err;
-			}
-			chunks.push({ chunk, allowRetry });
-			queuedBytes += chunk.byteLength;
-			if (!draining) queueMicrotask(drain);
-			return true;
+			return enqueue(data, allowRetry, false);
+		},
+		写入并等待(data, allowRetry = true) {
+			return enqueue(data, allowRetry, true);
 		},
 		async 等待空() {
 			if (!queuedBytes && !draining) return;
