@@ -61,9 +61,9 @@ const 节点黑名单退避系数 = 2; // 指数退避系数
 const sha224缓存 = new Map();
 const SHA224_CACHE_MAX = 16;
 // DNS 解析结果缓存（避免重复 DoH 查询）
-const dns解析缓存 = new Map();
-const DNS_CACHE_TTL = 10 * 60 * 1000; // 10分钟（CF IP 变化频率低，10min 平衡性能与 freshness）
-const DNS_CACHE_MAX = 200; // 限制缓存条目数，避免内存泄漏
+const doh解析缓存 = new Map();
+const DOH_CACHE_TTL = 10 * 60 * 1000; // 10分钟（CF IP 变化频率低，10min 平衡性能与 freshness）
+const DOH_CACHE_MAX = 200; // 限制缓存条目数，避免内存泄漏
 
 // 计算节点黑名单过期时间（指数退避：failCount 从 1 开始）
 function 节点黑名单计算过期时间(failCount) {
@@ -6937,11 +6937,11 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
                 const ipv6Regex = /^\[?([a-fA-F0-9:]+)\]?$/;
 
                 if (!ipv4Regex.test(地址) && !ipv6Regex.test(地址)) {
-                    // DNS 缓存查找
+                    // DoH 缓存查找
                     const cacheKey = `${地址}:${端口}`;
-                    const cached = dns解析缓存.get(cacheKey);
+                    const cached = doh解析缓存.get(cacheKey);
                     let ipAddresses = null;
-                    if (cached && Date.now() - cached.time < DNS_CACHE_TTL) {
+                    if (cached && Date.now() - cached.time < DOH_CACHE_TTL) {
                         ipAddresses = cached.result;
                     } else {
                         // 并行查询 A 和 AAAA 记录
@@ -6966,21 +6966,21 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
                         }
 
                         // 写入缓存
-                        dns解析缓存.set(cacheKey, { result: ipAddresses, time: Date.now() });
+                        doh解析缓存.set(cacheKey, { result: ipAddresses, time: Date.now() });
                         // 清理过期缓存 + 限制最大条目数
-                        if (dns解析缓存.size > DNS_CACHE_MAX) {
+                        if (doh解析缓存.size > DOH_CACHE_MAX) {
                             const now = Date.now();
                             const keysToDelete = [];
-                            for (const [key, value] of dns解析缓存) {
-                                if (now - value.time >= DNS_CACHE_TTL) keysToDelete.push(key);
+                            for (const [key, value] of doh解析缓存) {
+                                if (now - value.time >= DOH_CACHE_TTL) keysToDelete.push(key);
                             }
                             // 如果过期条目不足，额外删除最旧的一半
-                            if (keysToDelete.length < dns解析缓存.size - DNS_CACHE_MAX) {
-                                const entries = [...dns解析缓存.entries()].sort((a, b) => a[1].time - b[1].time);
-                                const extraDelete = entries.slice(0, dns解析缓存.size - DNS_CACHE_MAX - keysToDelete.length);
+                            if (keysToDelete.length < doh解析缓存.size - DOH_CACHE_MAX) {
+                                const entries = [...doh解析缓存.entries()].sort((a, b) => a[1].time - b[1].time);
+                                const extraDelete = entries.slice(0, doh解析缓存.size - DOH_CACHE_MAX - keysToDelete.length);
                                 for (const [key] of extraDelete) keysToDelete.push(key);
                             }
-                            for (const key of keysToDelete) dns解析缓存.delete(key);
+                            for (const key of keysToDelete) doh解析缓存.delete(key);
                         }
                     }
 
