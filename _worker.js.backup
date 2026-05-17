@@ -32,6 +32,11 @@ class RequestContext {
         // SOCKS5白名单
         this.SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
         this.SOCKS5白名单正则 = [];
+        
+        // 请求级缓存（避免跨请求 Race Condition）
+        this.缓存userIDMD5 = null;
+        this.缓存加密秘钥 = null;
+        this.MD5MD5缓存 = new Map();
     }
     
     // 同步全局变量到上下文
@@ -52,13 +57,20 @@ const 节点黑名单 = new Map(); // 缓存失效节点，避免短期内重复
 const 节点黑名单基础拉黑时间 = 30 * 1000; // 30秒
 const 节点黑名单最大拉黑时间 = 30 * 60 * 1000; // 30分钟
 const 节点黑名单退避系数 = 2; // 指数退避系数
+// sha224 结果缓存（Trojan 密码验证热路径优化）
+const sha224缓存 = new Map();
+const SHA224_CACHE_MAX = 16;
+// DNS 解析结果缓存（避免重复 DoH 查询）
+const dns解析缓存 = new Map();
+const DNS_CACHE_TTL = 10 * 60 * 1000; // 10分钟（CF IP 变化频率低，10min 平衡性能与 freshness）
+const DNS_CACHE_MAX = 200; // 限制缓存条目数，避免内存泄漏
 
 // 计算节点黑名单过期时间（指数退避：failCount 从 1 开始）
 function 节点黑名单计算过期时间(failCount) {
     const 拉黑时间 = Math.min(节点黑名单基础拉黑时间 * Math.pow(节点黑名单退避系数, failCount - 1), 节点黑名单最大拉黑时间);
     return Date.now() + 拉黑时间;
 }
-// 性能优化1: 请求级缓存（避免重复计算MD5）
+// 性能优化1: 向后兼容保留全局变量声明，请求级缓存已迁移至 RequestContext 实例属性
 let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
 // 向后兼容：保留全局变量用于快速访问（单请求场景）
 let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
@@ -250,12 +262,12 @@ export default {
             console.warn('[安全警告] 管理员密码回退到 UUID。强烈建议设置独立 ADMIN 环境变量');
         }
         const 加密秘钥 = env.KEY || '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
-        // 性能优化1: 缓存userIDMD5（相同密钥无需重复计算）
-        if (缓存加密秘钥 !== 加密秘钥) {
-            缓存加密秘钥 = 加密秘钥;
-            缓存userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
+        // 性能优化1: 请求级缓存userIDMD5（避免跨请求 Race Condition）
+        if (ctx2.缓存加密秘钥 !== 加密秘钥) {
+            ctx2.缓存加密秘钥 = 加密秘钥;
+            ctx2.缓存userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
         }
-        const userIDMD5 = 缓存userIDMD5;
+        const userIDMD5 = ctx2.缓存userIDMD5;
         const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
         const envUUID = env.UUID || env.uuid;
         const userID = (envUUID && uuidRegex.test(envUUID)) ? envUUID.toLowerCase() : [userIDMD5.slice(0, 8), userIDMD5.slice(8, 12), '4' + userIDMD5.slice(13, 16), '8' + userIDMD5.slice(17, 20), userIDMD5.slice(20)].join('-');
@@ -270,7 +282,7 @@ export default {
             ctx2.反代IP = ((request.cf?.colo || 'unknown') + '.PrOxYIp.CmLiUsSsS.nEt').toLowerCase();
             ctx2.启用反代兜底 = true;
         }
-        反代IP = ctx2.反代IP; 启用反代兜底 = ctx2.启用反代兜底;
+        // 全局变量同步已移除，统一使用 ctx2 实例属性避免跨请求 Race Condition
 
         const 访问IP = request.headers.get('CF-Connecting-IP') || request.headers.get('True-Client-IP') || request.headers.get('X-Real-IP') || request.headers.get('X-Forwarded-For') || request.headers.get('Fly-Client-IP') || request.headers.get('X-Appengine-Remote-Addr') || request.headers.get('X-Cluster-Client-IP') || '未知IP';
         // 缓存 SOCKS5 白名单，避免每次请求重复解析（追加模式，保留默认白名单）
@@ -287,22 +299,20 @@ export default {
                 }
             }
             ctx2.SOCKS5白名单 = cachedSocks5List || SOCKS5白名单;
-            SOCKS5白名单 = ctx2.SOCKS5白名单;
-            // 同步更新预编译正则
-            ctx2.SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
-            SOCKS5白名单正则 = ctx2.SOCKS5白名单正则;
+            // 同步更新预编译正则（仅更新 ctx2，不再同步到全局变量）
+            ctx2.SOCKS5白名单正则 = ctx2.SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
         }
         if (访问路径 === 'version' && url.searchParams.get('uuid') === userID) {// 版本信息接口
             return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
         }
         if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
-            await 反代参数获取(url, userID);
-            ctx2.syncFrom({ 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号, parsedSocks5Address });
+            await 反代参数获取(url, userID, ctx2);
+            ctx2.syncFrom({ 反代IP: ctx2.反代IP, 启用反代兜底: ctx2.启用反代兜底, 启用SOCKS5反代: ctx2.启用SOCKS5反代, 启用SOCKS5全局反代: ctx2.启用SOCKS5全局反代, 我的SOCKS5账号: ctx2.我的SOCKS5账号, parsedSocks5Address: ctx2.parsedSocks5Address });
             log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
             return await 处理WS请求(request, userID, url, ctx2);
         } else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/XHTTP代理
-            await 反代参数获取(url, userID);
-            ctx2.syncFrom({ 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号, parsedSocks5Address });
+            await 反代参数获取(url, userID, ctx2);
+            ctx2.syncFrom({ 反代IP: ctx2.反代IP, 启用反代兜底: ctx2.启用反代兜底, 启用SOCKS5反代: ctx2.启用SOCKS5反代, 启用SOCKS5全局反代: ctx2.启用SOCKS5全局反代, 我的SOCKS5账号: ctx2.我的SOCKS5账号, parsedSocks5Address: ctx2.parsedSocks5Address });
             const referer = request.headers.get('Referer') || '';
             const 命中XHTTP特征 = referer.includes('x_padding', 14) || referer.includes('x_padding=');
             if (!命中XHTTP特征 && contentType.startsWith('application/grpc')) {
@@ -329,9 +339,9 @@ export default {
                     // 使用 timingSafeEqual 防时序攻击
                     if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin' } });
                     if (request.method === 'POST') {
-                        // 登录速率限制：5次/10分钟
+                        // 登录速率限制：5次/10分钟（阈值设为4容忍并发溢出）
                         const 登录尝试次数 = env.KV ? (await env.KV.get(`login_fail:${访问IP}`) || 0) : 0;
-                        if (Number(登录尝试次数) >= 5) return sanitizedErrorResponse('登录尝试次数过多，请10分钟后再试', 429);
+                        if (Number(登录尝试次数) >= 4) return sanitizedErrorResponse('登录尝试次数过多，请10分钟后再试', 429);
                         const formData = await request.text();
                         const params = new URLSearchParams(formData);
                         const 输入密码 = params.get('password');
@@ -1770,23 +1780,6 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			return;
 		}
 		if (await 写入远端(chunk)) return;
-
-		if (判断协议类型 === null) {
-			if (url.searchParams.get('enc')) 判断协议类型 = 'ss';
-			else {
-				当前块字节 = 当前块字节 || 数据转Uint8Array(chunk);
-				const bytes = 当前块字节;
-				判断协议类型 = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a ? '木马' : '魏烈思';
-			}
-			判断是否是木马 = 判断协议类型 === '木马';
-			log(`[WS转发] 协议类型: ${判断协议类型} | 来自: ${url.host} | UA: ${request.headers.get('user-agent') || '未知'}`);
-		}
-
-		if (判断协议类型 === 'ss') {
-			await 处理SS数据(chunk);
-			return;
-		}
-		if (await 写入远端(chunk)) return;
 		if (判断协议类型 === '木马') {
 			const 解析结果 = 解析木马请求(chunk, yourUUID);
 			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
@@ -2461,11 +2454,10 @@ async function ChaCha20Block(key, counter, nonce) {
         const nonceView = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
         state[13] = nonceView.getUint32(0, true), state[14] = nonceView.getUint32(4, true), state[15] = nonceView.getUint32(8, true);
         const workingState = new Uint32Array(state);
-        const chachaYield = createYieldStrategy(2);
+        // 移除内部 yield: ChaCha20XOR 外层已有每 64KB yield 控制，Block 内纯计算无需额外 yield
         for (let round = 0; round < 10; round++) {
             ChaCha20QuarterRound(workingState, 0, 4, 8, 12), ChaCha20QuarterRound(workingState, 1, 5, 9, 13), ChaCha20QuarterRound(workingState, 2, 6, 10, 14), ChaCha20QuarterRound(workingState, 3, 7, 11, 15);
             ChaCha20QuarterRound(workingState, 0, 5, 10, 15), ChaCha20QuarterRound(workingState, 1, 6, 11, 12), ChaCha20QuarterRound(workingState, 2, 7, 8, 13), ChaCha20QuarterRound(workingState, 3, 4, 9, 14);
-            await chachaYield();
         }
         for (let wordIndex = 0; wordIndex < 16; wordIndex++) workingState[wordIndex] = workingState[wordIndex] + state[wordIndex] >>> 0;
         return new Uint8Array(workingState.buffer.slice(0));
@@ -4149,6 +4141,9 @@ function 创建下行Grain发送器(webSocket, headerData = null) {
 	const lowWaterBytes = Math.max(4096, tailBytes << 3);
 	let header = headerData;
 	let pendingBuffer = new Uint8Array(packetCap);
+	let spareBuffer = new Uint8Array(packetCap); // 备用缓冲区，用于 flush 时复用，避免重复分配
+	// 并发安全: CF Workers 单线程事件循环模型，同一请求的 flush 不会并发执行
+	// 不同请求有独立的 创建下行Grain发送器 实例，spareBuffer 不共享，无竞争条件
 	let pendingBytes = 0;
 	let flushTimer = null;
 	let microtaskQueued = false;
@@ -4176,8 +4171,11 @@ function 创建下行Grain发送器(webSocket, headerData = null) {
 		if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
 		microtaskQueued = false;
 		if (!pendingBytes) return;
+		// 缓冲区复用：交换 pendingBuffer 和 spareBuffer，避免每次 flush 都分配新 Uint8Array
 		const output = pendingBuffer.subarray(0, pendingBytes).slice();
-		pendingBuffer = new Uint8Array(packetCap);
+		const temp = pendingBuffer;
+		pendingBuffer = spareBuffer;
+		spareBuffer = temp;
 		pendingBytes = 0;
 		waitRounds = 0;
 		flushPromise = 发送原始块(output).finally(() => { flushPromise = null });
@@ -5427,13 +5425,18 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     const lines = clash_yaml.split('\n');
     const processedLines = [];
     let i = 0;
+    let yieldCounter = 0;
+    const yieldInterval = 50; // 每 50 行 yield 一次，避免逐行 yield 开销
 
     while (i < lines.length) {
         const line = lines[i];
         const trimmedLine = line.trim();
         
-        // 动态让出CPU
-        await yieldToEventLoop();
+        // 批量 yield：每 N 行让出一次 CPU
+        if (++yieldCounter >= yieldInterval) {
+            await yieldToEventLoop();
+            yieldCounter = 0;
+        }
 
         // 处理行格式（Flow）：- {name: ..., uuid: ..., ...}
         if (trimmedLine.startsWith('- {') && (trimmedLine.includes('uuid:') || trimmedLine.includes('password:'))) {
@@ -5708,9 +5711,30 @@ function 掩码敏感信息(文本, 前缀长度 = 3, 后缀长度 = 2) {
 // 辅助函数：将 ArrayBuffer 或 Uint8Array 转十六进制字符串
 const hexEncode = (buffer) => [...new Uint8Array(buffer)].map(b => b.toString(16).padStart(2, '0')).join('');
 
+// MD5MD5 结果缓存（热路径优化）
+const MD5MD5缓存 = new Map();
+const MD5MD5_CACHE_MAX = 128; // 增大至 128 条目，覆盖高频调用场景（订阅生成、登录验证、Token 生成等）
+
 async function MD5MD5(文本) {
+    // 检查缓存
+    const cached = MD5MD5缓存.get(文本);
+    if (cached !== undefined) return cached;
+    
     const 第一次十六进制 = hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(文本)));
-    return hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(第一次十六进制.slice(7, 27)))).toLowerCase();
+    const result = hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(第一次十六进制.slice(7, 27)))).toLowerCase();
+    
+    // 写入缓存
+    MD5MD5缓存.set(文本, result);
+    if (MD5MD5缓存.size > MD5MD5_CACHE_MAX) {
+        // 删除最早的一半（简单 LRQ 策略）
+        const entries = [...MD5MD5缓存.entries()];
+        MD5MD5缓存.clear();
+        for (let i = Math.floor(entries.length / 2); i < entries.length; i++) {
+            MD5MD5缓存.set(entries[i][0], entries[i][1]);
+        }
+    }
+    
+    return result;
 }
 
 // AES-128-CBC 加密函数 (用于订阅内容加密)
@@ -5763,8 +5787,10 @@ function 随机路径(完整节点路径 = "/") {
     const 常用路径目录 = ["#","about","account","acg","act","activity","ad","admin","ads","ajax","album","albums","anime","api","app","apps","archive","archives","article","articles","ask","auth","avatar","bbs","bd","blog","blogs","book","books","bt","buy","cart","category","categories","cb","channel","channels","chat","china","city","class","classify","clip","clips","club","cn","code","collect","collection","comic","comics","community","company","config","contact","content","course","courses","cp","data","detail","details","dh","directory","discount","discuss","dl","dload","doc","docs","document","documents","doujin","download","downloads","drama","edu","en","ep","episode","episodes","event","events","f","faq","favorite","favourites","favs","feedback","file","files","film","films","forum","forums","friend","friends","game","games","gif","go","go.html","go.php","group","groups","help","home","hot","htm","html","image","images","img","index","info","intro","item","items","ja","jp","jump","jump.html","jump.php","jumping","knowledge","lang","lesson","lessons","lib","library","link","links","list","live","lives","login","logout","m","mag","magnet","mall","manhua","map","member","members","message","messages","mobile","movie","movies","music","my","new","news","note","novel","novels","online","order","out","out.html","out.php","outbound","p","page","pages","pay","payment","pdf","photo","photos","pic","pics","picture","pictures","play","player","playlist","post","posts","product","products","program","programs","project","qa","question","rank","ranking","read","readme","redirect","redirect.html","redirect.php","reg","register","res","resource","retrieve","sale","search","season","seasons","section","seller","series","service","services","setting","settings","share","shop","show","shows","site","soft","sort","source","special","star","stars","static","stock","store","stream","streaming","streams","student","study","tag","tags","task","teacher","team","tech","temp","test","thread","tool","tools","topic","topics","torrent","trade","travel","tv","txt","type","u","upload","uploads","url","urls","user","users","v","version","video","videos","view","vip","vod","watch","web","wenku","wiki","work","www","zh","zh-cn","zh-tw","zip","about-us","access","accounting","activation","address","advertising","affiliate","agreement","alert","alerts","analytics-dashboard","announcement","api-docs","apply","archive-news","article-detail","attendance","author","auto","backup","banner","billing","board","brand","browse-all","business","calendar","campaign","career","cart-checkout","catalog","certificate","checkout-success","client","cloud","comment","company-info","competition","complaint","conference","connect","console","contact-form","contest","contract","contribute","control","cookie","copyright","coupon","create","crm","currency","custom","customer","dashboard-admin","data-center","deal","default","demo","department","design","developer","development","device","directory-list","discounts","display","donate","editor","email","employee","employment","enterprise","entry","environment","error-log","estimate","exam","example","exchange","experience","expert","export","faq-page","feature","feedback-form","finance","financial","fleet","flow","form","gallery","gateway","general","global","guide","hardware","health","history-page","holiday","host","hosting","identity","image-gallery","import","index-page","industry","info-center","information","inquiry","install","instruction","insurance","integration","interface","internal","invoice","issue","job","join","journal","key","knowledge-base","lab","landing","language","launch","legal","license","limited","location","log","logging","logs","machine","mail","manage","management","manual","map-view","market","marketing","master","media-center","member-area","menu","merchant","message-board","meta","method","metrics","misc","moderator","module","monitor","monthly","navigation","network","newsletter","notification","office","official","open","operation","opinion","option","order-detail","organization","overview","owner","package","partner","password","payment-info","people","performance","personal","phone","photo-gallery","plan","platform","policy","portal","portfolio","position","preferences","press-release","preview","pricing","print","privacy-policy","problem","process","profile-edit","project-detail","promotion","property","proposal","public","publication","purchase","quality","queue","quote","ranking-list","rate","rating","record","register-form","release","report","reporting","request","requirement","research","resource-center","response","result","resume","review","role","rule","sales","sample","schedule","school","score","screen","script","search-results","section-list","security","server","session","setting-page","setup","shop-cart","shopping","signin","signup-form","site-map","solution","staff","statistics","status-page","storage","store-front","studio","submission","subscribe-form","subscription","success","summary","support-center","survey","system","table","task-list","team-member","template","terms-of-service","test-case","ticket","timeline","toolbox","topic-list","tour","tracking-info","training","transaction","transfer","translation","tutorial","update","upgrade","upload-file","usage","user-guide","utility","validation","value","vendor","verification","version-info","visitor","voice","webmail","workflow"];
     const 随机数 = Math.floor(Math.random() * 3 + 1);
     const shuffleArr = [...常用路径目录];
-    for (let i = shuffleArr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+    // 部分洗牌: 只随机选取前 k 个元素，O(k) 替代 O(n)
+    const len = shuffleArr.length;
+    for (let i = 0; i < 随机数 && i < len; i++) {
+        const j = i + Math.floor(Math.random() * (len - i));
         [shuffleArr[i], shuffleArr[j]] = [shuffleArr[j], shuffleArr[i]];
     }
     const 随机路径 = shuffleArr.slice(0, 随机数).join('/');
@@ -5790,18 +5816,16 @@ async function 批量替换域名(内容, hosts, 每组数量 = 2) {
         [打乱后数组[i], 打乱后数组[j]] = [打乱后数组[j], 打乱后数组[i]];
     }
     let count = 0;
-    const parts = 内容.split('example.com');
-    if (parts.length <= 1) return 内容;
-
-    const resultArr = [parts[0]];
     let currentRandomHost = null;
-    for (let i = 1; i < parts.length; i++) {
-        if (count % 每组数量 === 0) currentRandomHost = 随机替换通配符(打乱后数组[Math.floor(count / 每组数量) % 打乱后数组.length]);
+    // 使用 replace 替代 split+join，避免创建大量中间字符串
+    const result = 内容.replace(/example\.com/g, (match) => {
+        if (count % 每组数量 === 0) {
+            currentRandomHost = 随机替换通配符(打乱后数组[Math.floor(count / 每组数量) % 打乱后数组.length]);
+        }
         count++;
-        resultArr.push(currentRandomHost + parts[i]);
-        await yieldToEventLoop();
-    }
-    return resultArr.join('');
+        return currentRandomHost;
+    });
+    return result;
 }
 
 async function 异步批量转换节点(ips, 转换函数) {
@@ -6583,7 +6607,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
 }
 
 
-async function 反代参数获取(url, uuid) {
+async function 反代参数获取(url, uuid, ctx2) {
     const { searchParams } = url, pathname = decodeURIComponent(url.pathname);
     const pathLower = pathname.toLowerCase();
 
@@ -6595,12 +6619,12 @@ async function 反代参数获取(url, uuid) {
             const { type, ...链式代理地址 } = JSON.parse(链式代理明文);
             if (!type || !反代协议默认端口[String(type).toLowerCase()]) throw new Error('链式代理类型无效');
             if (!链式代理地址.hostname || !链式代理地址.port) throw new Error('链式代理地址缺少 hostname 或 port');
-            我的SOCKS5账号 = '';
-            反代IP = '链式代理';
-            启用反代兜底 = false;
-            启用SOCKS5全局反代 = true;
-            启用SOCKS5反代 = String(type).toLowerCase();
-            parsedSocks5Address = {
+            ctx2.我的SOCKS5账号 = '';
+            ctx2.反代IP = '链式代理';
+            ctx2.启用反代兜底 = false;
+            ctx2.启用SOCKS5全局反代 = true;
+            ctx2.启用SOCKS5反代 = String(type).toLowerCase();
+            ctx2.parsedSocks5Address = {
                 username: 链式代理地址.username,
                 password: 链式代理地址.password,
                 hostname: 链式代理地址.hostname,
@@ -6614,16 +6638,16 @@ async function 反代参数获取(url, uuid) {
     }
 
     // 初始化
-    我的SOCKS5账号 = searchParams.get('socks5') || searchParams.get('http') || searchParams.get('https') || searchParams.get('turn') || searchParams.get('sstp') || null;
-    启用SOCKS5全局反代 = searchParams.has('globalproxy');
+    ctx2.我的SOCKS5账号 = searchParams.get('socks5') || searchParams.get('http') || searchParams.get('https') || searchParams.get('turn') || searchParams.get('sstp') || null;
+    ctx2.启用SOCKS5全局反代 = searchParams.has('globalproxy');
 
     // 辅助函数：解析代理协议URL (socks5://... http://... https://... turn://... sstp://...)
     const 解析代理URL = (proxyUrl, 默认全局 = true) => {
         const protocolMatch = proxyUrl.match(/^(socks5|http|https|turn|sstp):\/\/(.+)$/i);
         if (!protocolMatch) return false;
-        启用SOCKS5反代 = protocolMatch[1].toLowerCase();
-        我的SOCKS5账号 = protocolMatch[2].split('/')[0];
-        启用SOCKS5全局反代 = 默认全局 || 启用SOCKS5全局反代;
+        ctx2.启用SOCKS5反代 = protocolMatch[1].toLowerCase();
+        ctx2.我的SOCKS5账号 = protocolMatch[2].split('/')[0];
+        ctx2.启用SOCKS5全局反代 = 默认全局 || ctx2.启用SOCKS5全局反代;
         return true;
     };
 
@@ -6658,26 +6682,32 @@ async function 反代参数获取(url, uuid) {
         if (解析代理URL(路参IP)) { /* 继续到下方统一解析 */ }
         else {
             // 否则作为 IP 反代
-            反代IP = 路参IP;
-            启用反代兜底 = false;
+            ctx2.反代IP = 路参IP;
+            ctx2.启用反代兜底 = false;
             return;
         }
     }
     // 设置 query 参数的代理协议类型
-    if (searchParams.get('socks5')) 启用SOCKS5反代 = 'socks5';
-    else if (searchParams.get('http')) 启用SOCKS5反代 = 'http';
-    else if (searchParams.get('https')) 启用SOCKS5反代 = 'https';
-    else if (searchParams.get('turn')) 启用SOCKS5反代 = 'turn';
-    else if (searchParams.get('sstp')) 启用SOCKS5反代 = 'sstp';
+    if (searchParams.get('socks5')) ctx2.启用SOCKS5反代 = 'socks5';
+    else if (searchParams.get('http')) ctx2.启用SOCKS5反代 = 'http';
+    else if (searchParams.get('https')) ctx2.启用SOCKS5反代 = 'https';
+    else if (searchParams.get('turn')) ctx2.启用SOCKS5反代 = 'turn';
+    else if (searchParams.get('sstp')) ctx2.启用SOCKS5反代 = 'sstp';
     // query 中的 ?socks5= 和 ?http= 等值已在初始化时由 searchParams.get 处理
 
     // ==================== 第二步：处理路径中的协议关键词 ====================
     // 匹配：/socks5://..., /socks://.., /http://..., /https://..., /turn://..., /sstp://...
     else if ((socksMatch = pathname.match(/\/(socks5?|http|https|turn|sstp):\/?\/?([^/?#\s]+)/i))) {
         const 类型 = socksMatch[1].toLowerCase();
-        启用SOCKS5反代 = 类型 === 'sock' || 类型 === 'socks' ? 'socks5' : 类型;
-        我的SOCKS5账号 = socksMatch[2].split('/')[0];
-        启用SOCKS5全局反代 = true;
+        ctx2.启用SOCKS5反代 = 类型 === 'sock' || 类型 === 'socks' ? 'socks5' : 类型;
+        ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
+        ctx2.启用SOCKS5全局反代 = true;
+    }
+    else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http|g?https|g?turn|g?sstp)=([^/?#\s]+)/i))) {
+        const type = socksMatch[1].toLowerCase();
+        ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
+        ctx2.启用SOCKS5反代 = type.includes('sstp') ? 'sstp' : (type.includes('turn') ? 'turn' : (type.includes('https') ? 'https' : (type.includes('http') ? 'http' : 'socks5')));
+        ctx2.启用SOCKS5全局反代 = type.startsWith('g') || ctx2.启用SOCKS5全局反代;
     }
     // 匹配：/socks5=..., /s5=..., /gs5=..., /http=..., /ghttp=..., /turn=..., /gturn=..., /sstp=..., /gsstp=...
     else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http|g?https|g?turn|g?sstp)=([^/?#\s]+)/i))) {
@@ -6693,28 +6723,27 @@ async function 反代参数获取(url, uuid) {
         // proxyip 值以 socks5:// http:// https:// turn:// sstp:// 开头，视为对应协议处理
         if (!解析代理URL(路参IP)) {
             // 否则作为 IP 反代
-            反代IP = 路参IP;
-            启用反代兜底 = false;
+            ctx2.反代IP = 路参IP;
+            ctx2.启用反代兜底 = false;
             return;
         }
     }
 
     // 统一解析SOCKS5地址
-    if (我的SOCKS5账号) {
+    if (ctx2.我的SOCKS5账号) {
         try {
-            parsedSocks5Address = await 获取SOCKS5账号(我的SOCKS5账号, 获取代理默认端口(启用SOCKS5反代));
-            // 根据 query 参数确定最终协议类型
-            if (searchParams.get('socks5')) 启用SOCKS5反代 = 'socks5';
-            else if (searchParams.get('http')) 启用SOCKS5反代 = 'http';
-            else if (searchParams.get('https')) 启用SOCKS5反代 = 'https';
-            else if (searchParams.get('turn')) 启用SOCKS5反代 = 'turn';
-            else if (searchParams.get('sstp')) 启用SOCKS5反代 = 'sstp';
-            else 启用SOCKS5反代 = 启用SOCKS5反代 || 'socks5';
+            ctx2.parsedSocks5Address = await 获取SOCKS5账号(ctx2.我的SOCKS5账号, 获取代理默认端口(ctx2.启用SOCKS5反代));
+            if (searchParams.get('socks5')) ctx2.启用SOCKS5反代 = 'socks5';
+            else if (searchParams.get('http')) ctx2.启用SOCKS5反代 = 'http';
+            else if (searchParams.get('https')) ctx2.启用SOCKS5反代 = 'https';
+            else if (searchParams.get('turn')) ctx2.启用SOCKS5反代 = 'turn';
+            else if (searchParams.get('sstp')) ctx2.启用SOCKS5反代 = 'sstp';
+            else ctx2.启用SOCKS5反代 = ctx2.启用SOCKS5反代 || 'socks5';
         } catch (err) {
             console.error('解析SOCKS5地址失败:', err.message);
-            启用SOCKS5反代 = null;
+            ctx2.启用SOCKS5反代 = null;
         }
-    } else 启用SOCKS5反代 = null;
+    } else ctx2.启用SOCKS5反代 = null;
 }
 
 async function 获取SOCKS5账号(address, 默认端口 = 80) {
@@ -6813,6 +6842,9 @@ async function getCloudflareUsage(Email, GlobalAPIKey, AccountID, APIToken) {
 const SHA224_K = Object.freeze([0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
 
 function sha224(s) {
+    // 缓存检查：相同输入直接返回缓存结果
+    if (sha224缓存.has(s)) return sha224缓存.get(s);
+    
     const 编码器 = $encoder;
     const 编码字节 = 编码器.encode(s);
     s = '';
@@ -6843,6 +6875,11 @@ function sha224(s) {
     for (let i = 0; i < 7; i++) {
         for (let j = 24; j >= 0; j -= 8)hex += ((h[i] >>> j) & 0xFF).toString(16).padStart(2, '0');
     }
+    // 缓存结果
+    if (sha224缓存.size >= SHA224_CACHE_MAX) {
+        sha224缓存.delete(sha224缓存.keys().next().value);
+    }
+    sha224缓存.set(s, hex);
     return hex;
 }
 
@@ -6900,26 +6937,51 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
                 const ipv6Regex = /^\[?([a-fA-F0-9:]+)\]?$/;
 
                 if (!ipv4Regex.test(地址) && !ipv6Regex.test(地址)) {
-                    // 并行查询 A 和 AAAA 记录
-                    let [aRecords, aaaaRecords] = await Promise.all([
-                        DoH查询(地址, 'A'),
-                        DoH查询(地址, 'AAAA')
-                    ]);
-
-                    let ipv4List = aRecords.filter(r => r.type === 1).map(r => r.data);
-                    let ipv6List = aaaaRecords.filter(r => r.type === 28).map(r => `[${r.data}]`);
-                    let ipAddresses = [...ipv4List, ...ipv6List];
-
-                    // 默认DoH无结果时，切换Google DoH重试
-                    if (ipAddresses.length === 0) {
-
-                        [aRecords, aaaaRecords] = await Promise.all([
-                            DoH查询(地址, 'A', 'https://dns.google/dns-query'),
-                            DoH查询(地址, 'AAAA', 'https://dns.google/dns-query')
+                    // DNS 缓存查找
+                    const cacheKey = `${地址}:${端口}`;
+                    const cached = dns解析缓存.get(cacheKey);
+                    let ipAddresses = null;
+                    if (cached && Date.now() - cached.time < DNS_CACHE_TTL) {
+                        ipAddresses = cached.result;
+                    } else {
+                        // 并行查询 A 和 AAAA 记录
+                        let [aRecords, aaaaRecords] = await Promise.all([
+                            DoH查询(地址, 'A'),
+                            DoH查询(地址, 'AAAA')
                         ]);
-                        ipv4List = aRecords.filter(r => r.type === 1).map(r => r.data);
-                        ipv6List = aaaaRecords.filter(r => r.type === 28).map(r => `[${r.data}]`);
+
+                        let ipv4List = aRecords.filter(r => r.type === 1).map(r => r.data);
+                        let ipv6List = aaaaRecords.filter(r => r.type === 28).map(r => `[${r.data}]`);
                         ipAddresses = [...ipv4List, ...ipv6List];
+
+                        // 默认DoH无结果时，切换Google DoH重试
+                        if (ipAddresses.length === 0) {
+                            [aRecords, aaaaRecords] = await Promise.all([
+                                DoH查询(地址, 'A', 'https://dns.google/dns-query'),
+                                DoH查询(地址, 'AAAA', 'https://dns.google/dns-query')
+                            ]);
+                            ipv4List = aRecords.filter(r => r.type === 1).map(r => r.data);
+                            ipv6List = aaaaRecords.filter(r => r.type === 28).map(r => `[${r.data}]`);
+                            ipAddresses = [...ipv4List, ...ipv6List];
+                        }
+
+                        // 写入缓存
+                        dns解析缓存.set(cacheKey, { result: ipAddresses, time: Date.now() });
+                        // 清理过期缓存 + 限制最大条目数
+                        if (dns解析缓存.size > DNS_CACHE_MAX) {
+                            const now = Date.now();
+                            const keysToDelete = [];
+                            for (const [key, value] of dns解析缓存) {
+                                if (now - value.time >= DNS_CACHE_TTL) keysToDelete.push(key);
+                            }
+                            // 如果过期条目不足，额外删除最旧的一半
+                            if (keysToDelete.length < dns解析缓存.size - DNS_CACHE_MAX) {
+                                const entries = [...dns解析缓存.entries()].sort((a, b) => a[1].time - b[1].time);
+                                const extraDelete = entries.slice(0, dns解析缓存.size - DNS_CACHE_MAX - keysToDelete.length);
+                                for (const [key] of extraDelete) keysToDelete.push(key);
+                            }
+                            for (const key of keysToDelete) dns解析缓存.delete(key);
+                        }
                     }
 
                     if (ipAddresses.length > 0) {
