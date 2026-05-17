@@ -1780,6 +1780,23 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			return;
 		}
 		if (await 写入远端(chunk)) return;
+
+		if (判断协议类型 === null) {
+			if (url.searchParams.get('enc')) 判断协议类型 = 'ss';
+			else {
+				当前块字节 = 当前块字节 || 数据转Uint8Array(chunk);
+				const bytes = 当前块字节;
+				判断协议类型 = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a ? '木马' : '魏烈思';
+			}
+			判断是否是木马 = 判断协议类型 === '木马';
+			log(`[WS转发] 协议类型: ${判断协议类型} | 来自: ${url.host} | UA: ${request.headers.get('user-agent') || '未知'}`);
+		}
+
+		if (判断协议类型 === 'ss') {
+			await 处理SS数据(chunk);
+			return;
+		}
+		if (await 写入远端(chunk)) return;
 		if (判断协议类型 === '木马') {
 			const 解析结果 = 解析木马请求(chunk, yourUUID);
 			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
