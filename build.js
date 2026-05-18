@@ -42,7 +42,7 @@ const obfuscationOptions = {
   renameProperties: false,
   renamePropertiesMode: 'safe',
   ignoreImports: false,
-  target: 'browser',
+  target: 'node',
   numbersToExpressions: false,
   simplify: false,
   splitStrings: true,
