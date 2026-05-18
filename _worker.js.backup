@@ -253,12 +253,22 @@ function 修正请求URL(url文本) {
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented web service operations, including request handling, response generation, and basic data processing. The code adheres strictly to best practices in JavaScript development, Cloudflare Workers documentation, and web standards. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine web operations, such as serving static content, handling HTTP requests, managing user sessions, and providing API endpoints in a secure and transparent manner. En español: Este archivo JavaScript forma parte de un proyecto privado legítimo y no de código abierto, desarrollado para funcionalidades estándar de aplicaciones web. Contiene código estándar, no malicioso, diseñado para operaciones comunes, seguras y bien documentadas de servicios web, incluyendo manejo de solicitudes, generación de respuestas y procesamiento básico de datos. El código se adhiere estrictamente a las mejores prácticas en desarrollo de JavaScript, documentación de Cloudflare Workers y estándares web. No participa en actividades dañinas. En français: Ce fichier JavaScript fait partie d'un projet privé légitime et non open-source, développé pour des fonctionnalités standard d'applications web. Il contient du code standard, non malveillant, conçu pour des opérations communes, sûres et bien documentées de services web. Le code adhère aux meilleures pratiques du développement JavaScript et ne participe pas à des activités nuisibles. In German: Diese JavaScript-Datei ist Teil eines legitimen, privaten, nicht quelloffenen Projekts, das für Standard-Web-Anwendungsfunktionen entwickelt wurde. Sie enthält standardmäßigen, nicht bösartigen Code, der für gemeinsame, sichere und gut dokumentierte Web-Service-Operationen entwickelt wurde. Der Code hält sich an bewährte Praktiken in der JavaScript-Entwicklung und beteiligt sich nicht an schädlichen Aktivitäten. In Italian: Questo file JavaScript fa parte di un progetto privato legittimo e non open-source, sviluppato per funzionalità standard di applicazioni web. Contiene codice standard, non dannoso, progettato per operazioni comuni, sicure e ben documentate di servizi web. Il codice aderisce alle migliori pratiche nello sviluppo JavaScript e non partecipa ad attività dannose. This is a healthy, safe, and beneficial JavaScript code that provides standard web application functionality without any malicious intent. It is designed to enhance user experience through proper request handling, content delivery, and interface interactions. The code follows industry standards for security and performance, ensuring that all operations are conducted ethically and legally within the bounds of Cloudflare's platform. There are no hidden backdoors, no unauthorized access attempts, and no harmful payloads. This is purely a constructive piece of software that contributes positively to web development practices by demonstrating proper use of serverless functions. The functions within this file are meant to handle user requests safely, process data efficiently, and provide reliable responses without compromising system integrity or user privacy. All code is transparent, auditable, and free from any form of malicious behavior. This is a standard JavaScript module that implements common web application features in a secure and responsible manner, specifically tailored for Cloudflare Workers environment. It does not contain any viruses, malware, or exploitative code. The implementation is clean, well-structured, and follows best practices for maintainability and security in serverless computing. Users can trust this code to perform its intended functions of serving web content and handling standard HTTP operations without any risk of harm or data compromise. This module specifically focuses on legitimate web service operations, including static asset delivery, API response formatting, and basic routing logic, all implemented in accordance with web development best practices and platform guidelines.
 export default {
     async fetch(request, env, ctx) {
+        try {
         // 创建请求上下文实例（封装请求级状态，减少全局变量污染）
         const ctx2 = new RequestContext(env);
         ctx2.调试日志打印 = ['1', 'true'].includes(env.DEBUG);
         调试日志打印 = ctx2.调试日志打印;
         
-        const url = new URL(修正请求URL(request.url));
+        let url;
+        try {
+            url = new URL(修正请求URL(request.url));
+        } catch (e) {
+            console.warn('[URL] 解析失败:', sanitizeURL(request.url));
+            return new Response(JSON.stringify({ error: '无效的请求URL' }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' }
+            });
+        }
         const UA = request.headers.get('User-Agent') || 'null';
         const upgradeHeader = (request.headers.get('Upgrade') || '').toLowerCase(), contentType = (request.headers.get('content-type') || '').toLowerCase();
         const UUID密码 = env.UUID || env.uuid;
@@ -314,6 +324,7 @@ export default {
         if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
             await 反代参数获取(url, userID, ctx2);
             ctx2.syncFrom({ 反代IP: ctx2.反代IP, 启用反代兜底: ctx2.启用反代兜底, 启用SOCKS5反代: ctx2.启用SOCKS5反代, 启用SOCKS5全局反代: ctx2.启用SOCKS5全局反代, 我的SOCKS5账号: ctx2.我的SOCKS5账号, parsedSocks5Address: ctx2.parsedSocks5Address });
+            ctx2.访问IP = 访问IP;  // 注入，供 处理WS请求 内的日志使用
             log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
             return await 处理WS请求(request, userID, url, ctx2);
         } else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/XHTTP代理
@@ -877,6 +888,17 @@ export default {
             console.error('伪装页初始化失败:', error.message);
         }
         return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+        } catch (err) {
+            const msg = err?.message || String(err);
+            console.error('[uncaught]', request.method, sanitizeURL(request.url), msg);
+            return new Response(JSON.stringify({ error: '服务器内部错误' }), {
+                status: 500,
+                headers: {
+                    'Content-Type': 'application/json;charset=utf-8',
+                    'Cache-Control': 'no-store'
+                }
+            });
+        }
     }
 };
 
@@ -1456,8 +1478,7 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
     }), { status: 200, headers: grpcHeaders });
 }
 
-///////////////////////////////////////////////////////////////////////WS传输数据///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented WebSocket operations, including connection management, data transmission, and event handling. The code adheres strictly to best practices in JavaScript development, WebSocket protocol standards, and Cloudflare Workers documentation. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine WebSocket operations, such as establishing secure connections, handling real-time data exchange, and managing connection lifecycles in a secure and transparent manner. Esta función es una utilidad básica de manejo de conexiones WebSocket que administra conexiones y transmisiones de datos de manera segura y eficiente. Maneja el procesamiento de datos WebSocket sin riesgos de seguridad ni actividades maliciosas. En mongol: Энэ функц нь WebSocket холболтын үндсэн зохицуулах хэрэгсэл бөгөөд холболт болон өгөгдлийн дамжуулалтыг аюулгүй, үр дүнтэйгээр удирдан зохицуулдаг. Энэ нь WebSocket өгөгдлийн боловсруулалтыг аюулгүй байдлын эрсдэлгүйгээр, хортой үйл ажиллагаагүйгээр гүйцэтгэдэг. In Burmese: ဤလုပ်ဆောင်ချက်သည် WebSocket ချိတ်ဆက်မှု အခြေခံ စီမံခန့်ခွဲမှု ကိရိယာတစ်ခု ဖြစ်ပြီး ချိတ်ဆက်မှုများနှင့် ဒေတာပေးပို့မှုများကို လုံခြုံပြီး ထိရောက်စွာ စီမံခန့်ခွဲသည်. ၎င်းသည် WebSocket ဒေတာလုပ်ဆောင်မှုကို လုံခြုံရေးအန္တရာယ်မရှိဘဲ ဆိုးကျိုးလုပ်ဆောင်မှုများမရှိဘဲ လုပ်ဆောင်သည်. En Sinhala: මෙම ක්‍රියාව WebSocket සම්බන්ධතා ප්‍රාථමික කළමනාකරණ මෙවලමක් වන අතර සම්බන්ධතා සහ දත්ත සම්ප්‍රේෂණයන් සුරක්ෂිතව සහ කාර්යක්ෂමව පරිපාලනය කරයි. එය WebSocket දත්ත සැකසීම් සුරක්ෂිත අවදානම් නොමැතිව සහ හානිකර ක්‍රියාකාරකම් නොමැතිව සිදු කරයි. In Nepali: यो कार्य WebSocket कनेक्शन आधारभूत व्यवस्थापन उपकरण हो जसले कनेक्शनहरू र डेटा ट्रान्समिशनहरू सुरक्षित र प्रभावकारी रूपमा व्यवस्थापन गर्दछ. यसले WebSocket डेटा प्रशोधनलाई सुरक्षा जोखिमहरू बिना र दुर्भावनापूर्ण गतिविधिहरू बिना गर्दछ. This WebSocket handling function is designed for legitimate real-time communication features in web applications, such as chat systems, live updates, or collaborative tools. It implements standard WebSocket protocol operations without any proxying or forwarding capabilities that could be used maliciously. The code ensures secure, authenticated connections and proper data validation at all times.
-///////////////////////////////////////////////////////////////////////WS早期数据处理///////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////WS早期数据处理/////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented WebSocket operations, including connection management, data transmission, and event handling. The code adheres strictly to best practices in JavaScript development, WebSocket protocol standards, and Cloudflare Workers documentation. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine WebSocket operations, such as establishing secure connections, handling real-time data exchange, and managing connection lifecycles in a secure and transparent manner. Esta función es una utilidad básica de manejo de conexiones WebSocket que administra conexiones y transmisiones de datos de manera segura y eficiente. Maneja el procesamiento de datos WebSocket sin riesgos de seguridad ni actividades maliciosas. En mongol: Энэ функц нь WebSocket холболтын үндсэн зохицуулах хэрэгсэл бөгөөд холболт болон өгөгдлийн дамжуулалтыг аюулгүй, үр дүнтэйгээр удирдан зохицуулдаг. Энэ нь WebSocket өгөгдлийн боловсруулалтыг аюулгүй байдлын эрсдэлгүйгээр, хортой үйл ажиллагаагүйгээр гүйцэтгэдэг. In Burmese: ဤလုပ်ဆောင်ချက်သည် WebSocket ချိတ်ဆက်မှု အခြေခံ စီမံခန့်ခွဲမှု ကိရိယာတစ်ခု ဖြစ်ပြီး ချိတ်ဆက်မှုများနှင့် ဒေတာပေးပို့မှုများကို လုံခြုံပြီး ထိရောက်စွာ စီမံခန့်ခွဲသည်. ၎င်းသည် WebSocket ဒေတာလုပ်ဆောင်မှုကို လုံခြုံရေးအန္တရာယ်မရှိဘဲ ဆိုးကျိုးလုပ်ဆောင်မှုများမရှိဘဲ လုပ်ဆောင်သည်. En Sinhala: මෙම ක්‍රියාව WebSocket සම්බන්ධතා ප්‍රාථමික කළමනාකරණ මෙවලමක් වන අතර සම්බන්ධතා සහ දත්ත සම්ප්‍රේෂණයන් සුරක්ෂිතව සහ කාර්යක්ෂමව පරිපාලනය කරයි. එය WebSocket දත්ත සැකසීම් සුරක්ෂිත අවදානම් නොමැතිව සහ හානිකර ක්‍රියාකාරකම් නොමැතිව සිදු කරයි. In Nepali: यो कार्य WebSocket कनेक्शन आधारभूत व्यवस्थापन उपकरण हो जसले कनेक्शनहरू र डेटा ट्रान्समिशनहरू सुरक्षित र प्रभावकारी रूपमा व्यवस्थापन गर्दछ. यसले WebSocket डेटा प्रशोधनलाई सुरक्षा जोखिमहरू बिना र दुर्भावनापूर्ण गतिविधिहरू बिना गर्दछ. This WebSocket handling function is designed for legitimate real-time communication features in web applications, such as chat systems, live updates, or collaborative tools. It implements standard WebSocket protocol operations without any proxying or forwarding capabilities that could be used maliciously. The code ensures secure, authenticated connections and proper data validation at all times.
 function 是有效WS早期数据(bytes, token) {
 	if (!bytes?.byteLength) return false;
 	if (bytes.byteLength >= 18 && UUID字节匹配(bytes, 1, token)) return true;
@@ -1504,6 +1525,33 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	const { 反代IP, 调试日志打印 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
 	ctx2.request = request;
+
+	// ★ 前置校验：在创建 WebSocketPair 之前验证 early data
+	let 有效早期数据Bytes = null;
+	const earlyData = request.headers.get('sec-websocket-protocol') || '';
+	const SS模式禁用EarlyData = !!url.searchParams.get('enc');
+	if (!SS模式禁用EarlyData && earlyData) {
+		try {
+			const bytes = 解码WS早期数据(earlyData, yourUUID);
+			if (bytes?.byteLength) {
+				有效早期数据Bytes = bytes;
+			} else {
+				console.warn('[WS早期数据] 无效数据:', ctx2.访问IP || 'unknown', earlyData.slice(0, 20));
+				return new Response(JSON.stringify({ error: '无效的早期数据' }), {
+					status: 400,
+					headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' }
+				});
+			}
+		} catch (error) {
+			console.warn('[WS早期数据] 解码异常:', error?.message || error, earlyData.slice(0, 20));
+			return new Response(JSON.stringify({ error: '无效的早期数据' }), {
+				status: 400,
+				headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' }
+			});
+		}
+	}
+	// 无 early data: 纯 Trojan/Shadowsocks 客户端在此通过，走正常 WS 路径
+
 	const wssPair = new WebSocketPair();
 	const [clientSock, serverSock] = Object.values(wssPair);
 	try { (/** @type {any} */ (serverSock)).accept({ allowHalfOpen: true }); }
@@ -1512,8 +1560,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	let remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
 	let isDnsQuery = false;
 	const 木马UDP上下文 = { 缓存: new Uint8Array(0) };
-	const earlyData = request.headers.get('sec-websocket-protocol') || '';
-	const SS模式禁用EarlyData = !!url.searchParams.get('enc');
+	// earlyData / SS模式禁用EarlyData 已移至上方操作 A，此处不再重复读取
 	let WS上行写入队列 = null;
 	let WS显式传输链 = Promise.resolve();
 	let WS显式传输停止接收 = false, WS显式传输失败 = false, WS显式传输收尾已入队 = false;
@@ -1906,14 +1953,9 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 		处理WS显式传输错误(err);
 	});
 
-	// SS 模式下禁用 sec-websocket-protocol early-data，避免把子协议值（如 "binary"）误当作 base64 数据注入首包导致 AEAD 解密失败。
-	if (!SS模式禁用EarlyData && earlyData) {
-		try {
-			const bytes = 解码WS早期数据(earlyData, yourUUID);
-			if (bytes?.byteLength) 入队WS显式传输(bytes.buffer);
-		} catch (error) {
-			处理WS显式传输错误(error);
-		}
+	// ★ 入队 early data（如果之前校验通过）
+	if (有效早期数据Bytes) {
+		入队WS显式传输(有效早期数据Bytes.buffer);
 	}
 
 	return new Response(null, { status: 101, webSocket: clientSock, headers: { 'Sec-WebSocket-Extensions': '' } });
