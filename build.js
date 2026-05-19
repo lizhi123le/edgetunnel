@@ -52,7 +52,7 @@ const obfuscationOptions = {
   selfDefending: false,
   debugProtection: false,
   debugProtectionInterval: 0,
-  disableConsoleOutput: true,
+  disableConsoleOutput: false,
   domainLock: []
 };
 
