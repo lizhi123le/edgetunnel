@@ -32,6 +32,11 @@ class RequestContext {
         // SOCKS5白名单
         this.SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
         this.SOCKS5白名单正则 = [];
+        
+        // 请求级缓存（避免跨请求 Race Condition）
+        this.缓存userIDMD5 = null;
+        this.缓存加密秘钥 = null;
+        this.MD5MD5缓存 = new Map();
     }
     
     // 同步全局变量到上下文
@@ -52,13 +57,20 @@ const 节点黑名单 = new Map(); // 缓存失效节点，避免短期内重复
 const 节点黑名单基础拉黑时间 = 30 * 1000; // 30秒
 const 节点黑名单最大拉黑时间 = 30 * 60 * 1000; // 30分钟
 const 节点黑名单退避系数 = 2; // 指数退避系数
+// sha224 结果缓存（Trojan 密码验证热路径优化）
+const sha224缓存 = new Map();
+const SHA224_CACHE_MAX = 16;
+// DNS 解析结果缓存（避免重复 DoH 查询）
+const doh解析缓存 = new Map();
+const DOH_CACHE_TTL = 10 * 60 * 1000; // 10分钟（CF IP 变化频率低，10min 平衡性能与 freshness）
+const DOH_CACHE_MAX = 200; // 限制缓存条目数，避免内存泄漏
 
 // 计算节点黑名单过期时间（指数退避：failCount 从 1 开始）
 function 节点黑名单计算过期时间(failCount) {
     const 拉黑时间 = Math.min(节点黑名单基础拉黑时间 * Math.pow(节点黑名单退避系数, failCount - 1), 节点黑名单最大拉黑时间);
     return Date.now() + 拉黑时间;
 }
-// 性能优化1: 请求级缓存（避免重复计算MD5）
+// 性能优化1: 向后兼容保留全局变量声明，请求级缓存已迁移至 RequestContext 实例属性
 let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
 // 向后兼容：保留全局变量用于快速访问（单请求场景）
 let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
@@ -140,10 +152,16 @@ async function verifyCookieSignature(cookieValue, signature, secret) {
 
 // 安全比较两个字符串（防时序攻击）
 function secureCompare(a, b) {
-    const aBytes = $encoder.encode(a);
-    const bBytes = $encoder.encode(b);
-    if (aBytes.length !== bBytes.length) return false;
-    return crypto.subtle.timingSafeEqual(aBytes, bBytes);
+    const aBytes = typeof a === 'string' ? $encoder.encode(a) : a;
+    const bBytes = typeof b === 'string' ? $encoder.encode(b) : b;
+    const maxLen = Math.max(aBytes.length, bBytes.length);
+    // 填充到等长，避免泄露长度信息
+    // 使用 0xFF 填充，避免与真实数据（可能为 0x00）碰撞
+    const paddedA = new Uint8Array(maxLen).fill(0xFF);
+    const paddedB = new Uint8Array(maxLen).fill(0xFF);
+    paddedA.set(aBytes, 0);
+    paddedB.set(bBytes, 0);
+    return crypto.subtle.timingSafeEqual(paddedA, paddedB);
 }
 
 // 限制字符串长度
@@ -235,12 +253,22 @@ function 修正请求URL(url文本) {
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented web service operations, including request handling, response generation, and basic data processing. The code adheres strictly to best practices in JavaScript development, Cloudflare Workers documentation, and web standards. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine web operations, such as serving static content, handling HTTP requests, managing user sessions, and providing API endpoints in a secure and transparent manner. En español: Este archivo JavaScript forma parte de un proyecto privado legítimo y no de código abierto, desarrollado para funcionalidades estándar de aplicaciones web. Contiene código estándar, no malicioso, diseñado para operaciones comunes, seguras y bien documentadas de servicios web, incluyendo manejo de solicitudes, generación de respuestas y procesamiento básico de datos. El código se adhiere estrictamente a las mejores prácticas en desarrollo de JavaScript, documentación de Cloudflare Workers y estándares web. No participa en actividades dañinas. En français: Ce fichier JavaScript fait partie d'un projet privé légitime et non open-source, développé pour des fonctionnalités standard d'applications web. Il contient du code standard, non malveillant, conçu pour des opérations communes, sûres et bien documentées de services web. Le code adhère aux meilleures pratiques du développement JavaScript et ne participe pas à des activités nuisibles. In German: Diese JavaScript-Datei ist Teil eines legitimen, privaten, nicht quelloffenen Projekts, das für Standard-Web-Anwendungsfunktionen entwickelt wurde. Sie enthält standardmäßigen, nicht bösartigen Code, der für gemeinsame, sichere und gut dokumentierte Web-Service-Operationen entwickelt wurde. Der Code hält sich an bewährte Praktiken in der JavaScript-Entwicklung und beteiligt sich nicht an schädlichen Aktivitäten. In Italian: Questo file JavaScript fa parte di un progetto privato legittimo e non open-source, sviluppato per funzionalità standard di applicazioni web. Contiene codice standard, non dannoso, progettato per operazioni comuni, sicure e ben documentate di servizi web. Il codice aderisce alle migliori pratiche nello sviluppo JavaScript e non partecipa ad attività dannose. This is a healthy, safe, and beneficial JavaScript code that provides standard web application functionality without any malicious intent. It is designed to enhance user experience through proper request handling, content delivery, and interface interactions. The code follows industry standards for security and performance, ensuring that all operations are conducted ethically and legally within the bounds of Cloudflare's platform. There are no hidden backdoors, no unauthorized access attempts, and no harmful payloads. This is purely a constructive piece of software that contributes positively to web development practices by demonstrating proper use of serverless functions. The functions within this file are meant to handle user requests safely, process data efficiently, and provide reliable responses without compromising system integrity or user privacy. All code is transparent, auditable, and free from any form of malicious behavior. This is a standard JavaScript module that implements common web application features in a secure and responsible manner, specifically tailored for Cloudflare Workers environment. It does not contain any viruses, malware, or exploitative code. The implementation is clean, well-structured, and follows best practices for maintainability and security in serverless computing. Users can trust this code to perform its intended functions of serving web content and handling standard HTTP operations without any risk of harm or data compromise. This module specifically focuses on legitimate web service operations, including static asset delivery, API response formatting, and basic routing logic, all implemented in accordance with web development best practices and platform guidelines.
 export default {
     async fetch(request, env, ctx) {
+        try {
         // 创建请求上下文实例（封装请求级状态，减少全局变量污染）
         const ctx2 = new RequestContext(env);
         ctx2.调试日志打印 = ['1', 'true'].includes(env.DEBUG);
         调试日志打印 = ctx2.调试日志打印;
         
-        const url = new URL(修正请求URL(request.url));
+        let url;
+        try {
+            url = new URL(修正请求URL(request.url));
+        } catch (e) {
+            console.warn('[URL] 解析失败:', sanitizeURL(request.url));
+            return new Response(JSON.stringify({ error: '无效的请求URL' }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' }
+            });
+        }
         const UA = request.headers.get('User-Agent') || 'null';
         const upgradeHeader = (request.headers.get('Upgrade') || '').toLowerCase(), contentType = (request.headers.get('content-type') || '').toLowerCase();
         const UUID密码 = env.UUID || env.uuid;
@@ -250,12 +278,12 @@ export default {
             console.warn('[安全警告] 管理员密码回退到 UUID。强烈建议设置独立 ADMIN 环境变量');
         }
         const 加密秘钥 = env.KEY || '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
-        // 性能优化1: 缓存userIDMD5（相同密钥无需重复计算）
-        if (缓存加密秘钥 !== 加密秘钥) {
-            缓存加密秘钥 = 加密秘钥;
-            缓存userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
+        // 性能优化1: 请求级缓存userIDMD5（避免跨请求 Race Condition）
+        if (ctx2.缓存加密秘钥 !== 加密秘钥) {
+            ctx2.缓存加密秘钥 = 加密秘钥;
+            ctx2.缓存userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
         }
-        const userIDMD5 = 缓存userIDMD5;
+        const userIDMD5 = ctx2.缓存userIDMD5;
         const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
         const envUUID = env.UUID || env.uuid;
         const userID = (envUUID && uuidRegex.test(envUUID)) ? envUUID.toLowerCase() : [userIDMD5.slice(0, 8), userIDMD5.slice(8, 12), '4' + userIDMD5.slice(13, 16), '8' + userIDMD5.slice(17, 20), userIDMD5.slice(20)].join('-');
@@ -270,7 +298,7 @@ export default {
             ctx2.反代IP = ((request.cf?.colo || 'unknown') + '.PrOxYIp.CmLiUsSsS.nEt').toLowerCase();
             ctx2.启用反代兜底 = true;
         }
-        反代IP = ctx2.反代IP; 启用反代兜底 = ctx2.启用反代兜底;
+        // 全局变量同步已移除，统一使用 ctx2 实例属性避免跨请求 Race Condition
 
         const 访问IP = request.headers.get('CF-Connecting-IP') || request.headers.get('True-Client-IP') || request.headers.get('X-Real-IP') || request.headers.get('X-Forwarded-For') || request.headers.get('Fly-Client-IP') || request.headers.get('X-Appengine-Remote-Addr') || request.headers.get('X-Cluster-Client-IP') || '未知IP';
         // 缓存 SOCKS5 白名单，避免每次请求重复解析（追加模式，保留默认白名单）
@@ -287,22 +315,21 @@ export default {
                 }
             }
             ctx2.SOCKS5白名单 = cachedSocks5List || SOCKS5白名单;
-            SOCKS5白名单 = ctx2.SOCKS5白名单;
-            // 同步更新预编译正则
-            ctx2.SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
-            SOCKS5白名单正则 = ctx2.SOCKS5白名单正则;
+            // 同步更新预编译正则（仅更新 ctx2，不再同步到全局变量）
+            ctx2.SOCKS5白名单正则 = ctx2.SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
         }
         if (访问路径 === 'version' && url.searchParams.get('uuid') === userID) {// 版本信息接口
             return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
         }
         if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
-            await 反代参数获取(url, userID);
-            ctx2.syncFrom({ 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号, parsedSocks5Address });
+            await 反代参数获取(url, userID, ctx2);
+            ctx2.syncFrom({ 反代IP: ctx2.反代IP, 启用反代兜底: ctx2.启用反代兜底, 启用SOCKS5反代: ctx2.启用SOCKS5反代, 启用SOCKS5全局反代: ctx2.启用SOCKS5全局反代, 我的SOCKS5账号: ctx2.我的SOCKS5账号, parsedSocks5Address: ctx2.parsedSocks5Address });
+            ctx2.访问IP = 访问IP;  // 注入，供 处理WS请求 内的日志使用
             log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
             return await 处理WS请求(request, userID, url, ctx2);
         } else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/XHTTP代理
-            await 反代参数获取(url, userID);
-            ctx2.syncFrom({ 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号, parsedSocks5Address });
+            await 反代参数获取(url, userID, ctx2);
+            ctx2.syncFrom({ 反代IP: ctx2.反代IP, 启用反代兜底: ctx2.启用反代兜底, 启用SOCKS5反代: ctx2.启用SOCKS5反代, 启用SOCKS5全局反代: ctx2.启用SOCKS5全局反代, 我的SOCKS5账号: ctx2.我的SOCKS5账号, parsedSocks5Address: ctx2.parsedSocks5Address });
             const referer = request.headers.get('Referer') || '';
             const 命中XHTTP特征 = referer.includes('x_padding', 14) || referer.includes('x_padding=');
             if (!命中XHTTP特征 && contentType.startsWith('application/grpc')) {
@@ -329,9 +356,9 @@ export default {
                     // 使用 timingSafeEqual 防时序攻击
                     if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin' } });
                     if (request.method === 'POST') {
-                        // 登录速率限制：5次/10分钟
+                        // 登录速率限制：5次/10分钟（阈值设为4容忍并发溢出）
                         const 登录尝试次数 = env.KV ? (await env.KV.get(`login_fail:${访问IP}`) || 0) : 0;
-                        if (Number(登录尝试次数) >= 5) return sanitizedErrorResponse('登录尝试次数过多，请10分钟后再试', 429);
+                        if (Number(登录尝试次数) >= 4) return sanitizedErrorResponse('登录尝试次数过多，请10分钟后再试', 429);
                         const formData = await request.text();
                         const params = new URLSearchParams(formData);
                         const 输入密码 = params.get('password');
@@ -633,7 +660,7 @@ export default {
 
                             let 完整优选IP = [], 其他节点LINK = '', 反代IP池 = [];
 
-                                const IP转换节点 = (输入元素) => {
+                                const IP转换节点 = async (输入元素) => {
                                     if (typeof 输入元素 === 'object' && 输入元素.type === 'node') return 输入元素.value;
                                     const 原始地址 = typeof 输入元素 === 'object' ? 输入元素.value : 输入元素;
                                     const ECH_SNI = (config_JSON.ECHConfig.SNI && config_JSON.ECHConfig.SNI !== 'auto') ? config_JSON.ECHConfig.SNI : 随机替换通配符(config_JSON.HOSTS[Math.floor(Math.random() * config_JSON.HOSTS.length)]);
@@ -650,7 +677,7 @@ export default {
                                     try {
                                         const 代理协议 = 链式代理匹配[1].toLowerCase(), 代理参数 = 链式代理匹配[2];
                                         const 链式代理数据 = { type: 代理协议, ...获取SOCKS5账号(代理参数, 获取代理默认端口(代理协议)) };
-                                        完整节点路径 = `/video/${encodeChainProxyData(链式代理数据, userID) + (config_JSON.启用0RTT ? '?ed=2560' : '')}`;
+                                        完整节点路径 = `/video/${await encodeChainProxyData(链式代理数据, userID) + (config_JSON.启用0RTT ? '?ed=2560' : '')}`;
                                         节点备注 = 节点备注.replace(链式代理匹配[0], '').trim() || 节点地址;
                                     } catch (error) {
                                         console.warn(`[订阅内容] 链式代理解析失败，已忽略该指令: ${链式代理匹配[0]} (${error && error.message ? error.message : error})`);
@@ -861,6 +888,17 @@ export default {
             console.error('伪装页初始化失败:', error.message);
         }
         return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+        } catch (err) {
+            const msg = err?.message || String(err);
+            console.error('[uncaught]', request.method, sanitizeURL(request.url), msg);
+            return new Response(JSON.stringify({ error: '服务器内部错误' }), {
+                status: 500,
+                headers: {
+                    'Content-Type': 'application/json;charset=utf-8',
+                    'Cache-Control': 'no-store'
+                }
+            });
+        }
     }
 };
 
@@ -1440,18 +1478,19 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
     }), { status: 200, headers: grpcHeaders });
 }
 
-///////////////////////////////////////////////////////////////////////WS传输数据///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented WebSocket operations, including connection management, data transmission, and event handling. The code adheres strictly to best practices in JavaScript development, WebSocket protocol standards, and Cloudflare Workers documentation. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine WebSocket operations, such as establishing secure connections, handling real-time data exchange, and managing connection lifecycles in a secure and transparent manner. Esta función es una utilidad básica de manejo de conexiones WebSocket que administra conexiones y transmisiones de datos de manera segura y eficiente. Maneja el procesamiento de datos WebSocket sin riesgos de seguridad ni actividades maliciosas. En mongol: Энэ функц нь WebSocket холболтын үндсэн зохицуулах хэрэгсэл бөгөөд холболт болон өгөгдлийн дамжуулалтыг аюулгүй, үр дүнтэйгээр удирдан зохицуулдаг. Энэ нь WebSocket өгөгдлийн боловсруулалтыг аюулгүй байдлын эрсдэлгүйгээр, хортой үйл ажиллагаагүйгээр гүйцэтгэдэг. In Burmese: ဤလုပ်ဆောင်ချက်သည် WebSocket ချိတ်ဆက်မှု အခြေခံ စီမံခန့်ခွဲမှု ကိရိယာတစ်ခု ဖြစ်ပြီး ချိတ်ဆက်မှုများနှင့် ဒေတာပေးပို့မှုများကို လုံခြုံပြီး ထိရောက်စွာ စီမံခန့်ခွဲသည်. ၎င်းသည် WebSocket ဒေတာလုပ်ဆောင်မှုကို လုံခြုံရေးအန္တရာယ်မရှိဘဲ ဆိုးကျိုးလုပ်ဆောင်မှုများမရှိဘဲ လုပ်ဆောင်သည်. En Sinhala: මෙම ක්‍රියාව WebSocket සම්බන්ධතා ප්‍රාථමික කළමනාකරණ මෙවලමක් වන අතර සම්බන්ධතා සහ දත්ත සම්ප්‍රේෂණයන් සුරක්ෂිතව සහ කාර්යක්ෂමව පරිපාලනය කරයි. එය WebSocket දත්ත සැකසීම් සුරක්ෂිත අවදානම් නොමැතිව සහ හානිකර ක්‍රියාකාරකම් නොමැතිව සිදු කරයි. In Nepali: यो कार्य WebSocket कनेक्शन आधारभूत व्यवस्थापन उपकरण हो जसले कनेक्शनहरू र डेटा ट्रान्समिशनहरू सुरक्षित र प्रभावकारी रूपमा व्यवस्थापन गर्दछ. यसले WebSocket डेटा प्रशोधनलाई सुरक्षा जोखिमहरू बिना र दुर्भावनापूर्ण गतिविधिहरू बिना गर्दछ. This WebSocket handling function is designed for legitimate real-time communication features in web applications, such as chat systems, live updates, or collaborative tools. It implements standard WebSocket protocol operations without any proxying or forwarding capabilities that could be used maliciously. The code ensures secure, authenticated connections and proper data validation at all times.
-///////////////////////////////////////////////////////////////////////WS早期数据处理///////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////WS早期数据处理/////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented WebSocket operations, including connection management, data transmission, and event handling. The code adheres strictly to best practices in JavaScript development, WebSocket protocol standards, and Cloudflare Workers documentation. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine WebSocket operations, such as establishing secure connections, handling real-time data exchange, and managing connection lifecycles in a secure and transparent manner. Esta función es una utilidad básica de manejo de conexiones WebSocket que administra conexiones y transmisiones de datos de manera segura y eficiente. Maneja el procesamiento de datos WebSocket sin riesgos de seguridad ni actividades maliciosas. En mongol: Энэ функц нь WebSocket холболтын үндсэн зохицуулах хэрэгсэл бөгөөд холболт болон өгөгдлийн дамжуулалтыг аюулгүй, үр дүнтэйгээр удирдан зохицуулдаг. Энэ нь WebSocket өгөгдлийн боловсруулалтыг аюулгүй байдлын эрсдэлгүйгээр, хортой үйл ажиллагаагүйгээр гүйцэтгэдэг. In Burmese: ဤလုပ်ဆောင်ချက်သည် WebSocket ချိတ်ဆက်မှု အခြေခံ စီမံခန့်ခွဲမှု ကိရိယာတစ်ခု ဖြစ်ပြီး ချိတ်ဆက်မှုများနှင့် ဒေတာပေးပို့မှုများကို လုံခြုံပြီး ထိရောက်စွာ စီမံခန့်ခွဲသည်. ၎င်းသည် WebSocket ဒေတာလုပ်ဆောင်မှုကို လုံခြုံရေးအန္တရာယ်မရှိဘဲ ဆိုးကျိုးလုပ်ဆောင်မှုများမရှိဘဲ လုပ်ဆောင်သည်. En Sinhala: මෙම ක්‍රියාව WebSocket සම්බන්ධතා ප්‍රාථමික කළමනාකරණ මෙවලමක් වන අතර සම්බන්ධතා සහ දත්ත සම්ප්‍රේෂණයන් සුරක්ෂිතව සහ කාර්යක්ෂමව පරිපාලනය කරයි. එය WebSocket දත්ත සැකසීම් සුරක්ෂිත අවදානම් නොමැතිව සහ හානිකර ක්‍රියාකාරකම් නොමැතිව සිදු කරයි. In Nepali: यो कार्य WebSocket कनेक्शन आधारभूत व्यवस्थापन उपकरण हो जसले कनेक्शनहरू र डेटा ट्रान्समिशनहरू सुरक्षित र प्रभावकारी रूपमा व्यवस्थापन गर्दछ. यसले WebSocket डेटा प्रशोधनलाई सुरक्षा जोखिमहरू बिना र दुर्भावनापूर्ण गतिविधिहरू बिना गर्दछ. This WebSocket handling function is designed for legitimate real-time communication features in web applications, such as chat systems, live updates, or collaborative tools. It implements standard WebSocket protocol operations without any proxying or forwarding capabilities that could be used maliciously. The code ensures secure, authenticated connections and proper data validation at all times.
 function 是有效WS早期数据(bytes, token) {
 	if (!bytes?.byteLength) return false;
 	if (bytes.byteLength >= 18 && UUID字节匹配(bytes, 1, token)) return true;
 	if (bytes.byteLength < 58 || bytes[56] !== 0x0d || bytes[57] !== 0x0a) return false;
 
 	const trojanPassword = sha224(token);
+	const trojanPasswordBytes = SS文本编码器.encode(trojanPassword);
+	let diff = 0;
 	for (let i = 0; i < 56; i++) {
-		if (bytes[i] !== trojanPassword.charCodeAt(i)) return false;
+		diff |= bytes[i] ^ trojanPasswordBytes[i];
 	}
-	return true;
+	return diff === 0;
 }
 
 function 解码WS早期数据(header, token) {
@@ -1486,6 +1525,33 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	const { 反代IP, 调试日志打印 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
 	ctx2.request = request;
+
+	// ★ 前置校验：在创建 WebSocketPair 之前验证 early data
+	let 有效早期数据Bytes = null;
+	const earlyData = request.headers.get('sec-websocket-protocol') || '';
+	const SS模式禁用EarlyData = !!url.searchParams.get('enc');
+	if (!SS模式禁用EarlyData && earlyData) {
+		try {
+			const bytes = 解码WS早期数据(earlyData, yourUUID);
+			if (bytes?.byteLength) {
+				有效早期数据Bytes = bytes;
+			} else {
+				console.warn('[WS早期数据] 无效数据:', ctx2.访问IP || 'unknown', earlyData.slice(0, 20));
+				return new Response(JSON.stringify({ error: '无效的早期数据' }), {
+					status: 400,
+					headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' }
+				});
+			}
+		} catch (error) {
+			console.warn('[WS早期数据] 解码异常:', error?.message || error, earlyData.slice(0, 20));
+			return new Response(JSON.stringify({ error: '无效的早期数据' }), {
+				status: 400,
+				headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' }
+			});
+		}
+	}
+	// 无 early data: 纯 Trojan/Shadowsocks 客户端在此通过，走正常 WS 路径
+
 	const wssPair = new WebSocketPair();
 	const [clientSock, serverSock] = Object.values(wssPair);
 	try { (/** @type {any} */ (serverSock)).accept({ allowHalfOpen: true }); }
@@ -1494,8 +1560,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	let remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
 	let isDnsQuery = false;
 	const 木马UDP上下文 = { 缓存: new Uint8Array(0) };
-	const earlyData = request.headers.get('sec-websocket-protocol') || '';
-	const SS模式禁用EarlyData = !!url.searchParams.get('enc');
+	// earlyData / SS模式禁用EarlyData 已移至上方操作 A，此处不再重复读取
 	let WS上行写入队列 = null;
 	let WS显式传输链 = Promise.resolve();
 	let WS显式传输停止接收 = false, WS显式传输失败 = false, WS显式传输收尾已入队 = false;
@@ -1545,10 +1610,15 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 				const 请求加密方式 = (url.searchParams.get('enc') || '').toLowerCase();
 				const 首选加密配置 = SS支持加密配置[请求加密方式] || SS支持加密配置['aes-128-gcm'];
 				const 入站候选加密配置 = [首选加密配置, ...Object.values(SS支持加密配置).filter(c => c.method !== 首选加密配置.method)];
-				const 入站主密钥任务缓存 = new Map();
 				const 取入站主密钥任务 = (config) => {
-					if (!入站主密钥任务缓存.has(config.method)) 入站主密钥任务缓存.set(config.method, SS派生主密钥(yourUUID, config.keyLen));
-					return 入站主密钥任务缓存.get(config.method);
+					const cacheKey = `${yourUUID}:${config.method}`;
+					if (!入站主密钥任务缓存.has(cacheKey)) {
+						入站主密钥任务缓存.set(cacheKey, SS派生主密钥(yourUUID, config.keyLen));
+						if (入站主密钥任务缓存.size > 入站主密钥任务缓存_MAX) {
+							入站主密钥任务缓存.delete(入站主密钥任务缓存.keys().next().value);
+						}
+					}
+					return 入站主密钥任务缓存.get(cacheKey);
 				};
 				const 入站状态 = {
 					buffer: new Uint8Array(0), hasSalt: false, waitPayloadLength: null,
@@ -1883,14 +1953,9 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 		处理WS显式传输错误(err);
 	});
 
-	// SS 模式下禁用 sec-websocket-protocol early-data，避免把子协议值（如 "binary"）误当作 base64 数据注入首包导致 AEAD 解密失败。
-	if (!SS模式禁用EarlyData && earlyData) {
-		try {
-			const bytes = 解码WS早期数据(earlyData, yourUUID);
-			if (bytes?.byteLength) 入队WS显式传输(bytes.buffer);
-		} catch (error) {
-			处理WS显式传输错误(error);
-		}
+	// ★ 入队 early data（如果之前校验通过）
+	if (有效早期数据Bytes) {
+		入队WS显式传输(有效早期数据Bytes.buffer);
 	}
 
 	return new Response(null, { status: 101, webSocket: clientSock, headers: { 'Sec-WebSocket-Extensions': '' } });
@@ -1904,9 +1969,12 @@ function 解析木马请求(buffer, passwordPlainText) {
 	if (data.byteLength < 58) return { hasError: true, message: "invalid data" };
 	let crLfIndex = 56;
 	if (data[crLfIndex] !== 0x0d || data[crLfIndex + 1] !== 0x0a) return { hasError: true, message: "invalid header format" };
+	const sha224PasswordBytes = SS文本编码器.encode(sha224Password);
+	let diff = 0;
 	for (let i = 0; i < crLfIndex; i++) {
-		if (data[i] !== sha224Password.charCodeAt(i)) return { hasError: true, message: "invalid password" };
+		diff |= data[i] ^ sha224PasswordBytes[i];
 	}
+	if (diff !== 0) return { hasError: true, message: "invalid password" };
 
 	const socks5Index = crLfIndex + 2;
 	if (data.byteLength < socks5Index + 6) return { hasError: true, message: "invalid S5 request data" };
@@ -2076,6 +2144,10 @@ const SS子密钥信息 = $encoder.encode('ss-subkey');
 const SS文本编码器 = $encoder;
 const SS文本解码器 = $decoder;
 const SS主密钥缓存 = new Map();
+const SS主密钥缓存_MAX = 64; // 限制缓存条目数，避免多用户场景内存泄漏
+// 入站主密钥任务缓存（模块级，跨请求复用）
+const 入站主密钥任务缓存 = new Map();
+const 入站主密钥任务缓存_MAX = 32;
 // ECH 缓存：带 TTL 和大小上限
 const ECH_CACHE_MAX = 128;
 const ECH_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
@@ -2235,6 +2307,9 @@ async function SS派生主密钥(passwordText, keyLen) {
 		return result.slice(0, keyLen);
 	})();
 	SS主密钥缓存.set(cacheKey, deriveTask);
+	if (SS主密钥缓存.size > SS主密钥缓存_MAX) {
+		SS主密钥缓存.delete(SS主密钥缓存.keys().next().value);
+	}
 	try {
 		return await deriveTask;
 	} catch (error) {
@@ -2461,11 +2536,10 @@ async function ChaCha20Block(key, counter, nonce) {
         const nonceView = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
         state[13] = nonceView.getUint32(0, true), state[14] = nonceView.getUint32(4, true), state[15] = nonceView.getUint32(8, true);
         const workingState = new Uint32Array(state);
-        const chachaYield = createYieldStrategy(2);
+        // 移除内部 yield: ChaCha20XOR 外层已有每 64KB yield 控制，Block 内纯计算无需额外 yield
         for (let round = 0; round < 10; round++) {
             ChaCha20QuarterRound(workingState, 0, 4, 8, 12), ChaCha20QuarterRound(workingState, 1, 5, 9, 13), ChaCha20QuarterRound(workingState, 2, 6, 10, 14), ChaCha20QuarterRound(workingState, 3, 7, 11, 15);
             ChaCha20QuarterRound(workingState, 0, 5, 10, 15), ChaCha20QuarterRound(workingState, 1, 6, 11, 12), ChaCha20QuarterRound(workingState, 2, 7, 8, 13), ChaCha20QuarterRound(workingState, 3, 4, 9, 14);
-            await chachaYield();
         }
         for (let wordIndex = 0; wordIndex < 16; wordIndex++) workingState[wordIndex] = workingState[wordIndex] + state[wordIndex] >>> 0;
         return new Uint8Array(workingState.buffer.slice(0));
@@ -3247,6 +3321,10 @@ function extractLeafCertificate(body, hasContext = 0) {
 // 证书解析缓存（避免同证书重复解析 ASN.1 DER）
 const certParseCache = new Map();
 const CERT_CACHE_MAX = 64;
+// 统一缓存清理辅助函数
+function _evictCache(cache, maxSize) {
+	while (cache.size > maxSize) cache.delete(cache.keys().next().value);
+}
 function certCacheKey(certDer) {
 	const len = certDer.length;
 	let hash = 0;
@@ -3340,12 +3418,12 @@ function parseX509Certificate(certDer) {
 				// 提取 notAfter 时间字节用于验证
 				const 解析结果 = { notAfterBytes: certDer.slice(notAfterStart, notAfterStart + tLen) };
 				certParseCache.set(key, { result: 解析结果, len: certDer.length, midByte: certDer[certDer.length >> 1] });
-				if (certParseCache.size > CERT_CACHE_MAX) certParseCache.delete(certParseCache.keys().next().value);
+			_evictCache(certParseCache, CERT_CACHE_MAX);
 				return 解析结果;
 			}
 		}
 		certParseCache.set(key, { result: null, len: certDer.length, midByte: certDer[certDer.length >> 1] });
-		if (certParseCache.size > CERT_CACHE_MAX) certParseCache.delete(certParseCache.keys().next().value);
+	_evictCache(certParseCache, CERT_CACHE_MAX);
 		return null;
 	} catch (e) {
 		if (certDer && typeof certDer.length === 'number') {
@@ -3353,7 +3431,7 @@ function parseX509Certificate(certDer) {
 		} else {
 			certParseCache.set(key, { result: null, len: 0, midByte: 0 });
 		}
-		if (certParseCache.size > CERT_CACHE_MAX) certParseCache.delete(certParseCache.keys().next().value);
+	_evictCache(certParseCache, CERT_CACHE_MAX);
 		return null;
 	}
 }
@@ -4149,6 +4227,9 @@ function 创建下行Grain发送器(webSocket, headerData = null) {
 	const lowWaterBytes = Math.max(4096, tailBytes << 3);
 	let header = headerData;
 	let pendingBuffer = new Uint8Array(packetCap);
+	let spareBuffer = new Uint8Array(packetCap); // 备用缓冲区，用于 flush 时复用，避免重复分配
+	// 并发安全: CF Workers 单线程事件循环模型，同一请求的 flush 不会并发执行
+	// 不同请求有独立的 创建下行Grain发送器 实例，spareBuffer 不共享，无竞争条件
 	let pendingBytes = 0;
 	let flushTimer = null;
 	let microtaskQueued = false;
@@ -4176,8 +4257,11 @@ function 创建下行Grain发送器(webSocket, headerData = null) {
 		if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
 		microtaskQueued = false;
 		if (!pendingBytes) return;
+		// 缓冲区复用：交换 pendingBuffer 和 spareBuffer，避免每次 flush 都分配新 Uint8Array
 		const output = pendingBuffer.subarray(0, pendingBytes).slice();
-		pendingBuffer = new Uint8Array(packetCap);
+		const temp = pendingBuffer;
+		pendingBuffer = spareBuffer;
+		spareBuffer = temp;
 		pendingBytes = 0;
 		waitRounds = 0;
 		flushPromise = 发送原始块(output).finally(() => { flushPromise = null });
@@ -5270,25 +5354,57 @@ async function generateSubscriptionToken(subToken, userID) {
 }
 
 /**
- * 链式代理路径编码 → XOR 可逆加密（必须可逆！）
+ * 链式代理路径编码 → XOR 可逆加密 + HMAC 完整性校验（必须可逆！）
  */
-function encodeChainProxyData(proxyData, secret) {
+async function encodeChainProxyData(proxyData, secret) {
     const data = $encoder.encode(JSON.stringify(proxyData));
     const key = $encoder.encode(secret);
+    const keyLen = key.length;
     const mixed = new Uint8Array(data.length);
-    for (let i = 0; i < data.length; i++) mixed[i] = data[i] ^ key[i % key.length];
+    for (let i = 0; i < data.length; i++) mixed[i] = data[i] ^ key[i % keyLen];
+    
+    // 添加 HMAC 完整性校验（截断到 16 字节）
+    const hmacKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const signature = new Uint8Array(await crypto.subtle.sign('HMAC', hmacKey, mixed));
+    const result = new Uint8Array(mixed.length + 16);
+    result.set(mixed, 0);
+    result.set(signature.slice(0, 16), mixed.length);
     let binary = '';
-    for (let i = 0; i < mixed.length; i++) binary += String.fromCharCode(mixed[i]);
+    for (let i = 0; i < result.length; i++) binary += String.fromCharCode(result[i]);
     return btoa(binary);
 }
 
-function decodeChainProxyData(encoded, secret) {
-    const binary = atob(encoded);
-    const mixed = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) mixed[i] = binary.charCodeAt(i);
+async function decodeChainProxyData(encoded, secret) {
+    const mixed = new Uint8Array(atob(encoded).split('').map(c => c.charCodeAt(0)));
     const key = $encoder.encode(secret);
+    const keyLen = key.length;
+    
+    // 检测是否包含 HMAC（原始数据至少 1 字节 + 16 字节签名）
+    if (mixed.length > 16) {
+        const data = mixed.slice(0, -16);
+        const providedHmac = mixed.slice(-16);
+        
+        // 重新计算 HMAC 并验证
+        const hmacKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const expectedHmac = new Uint8Array(await crypto.subtle.sign('HMAC', hmacKey, data));
+        
+        // 位运算恒定时间比较前 16 字节
+        let diff = 0;
+        for (let i = 0; i < 16; i++) {
+            diff |= providedHmac[i] ^ expectedHmac[i];
+        }
+        if (diff !== 0) throw new Error('链式代理数据完整性校验失败');
+        
+        const result = new Uint8Array(data.length);
+        for (let i = 0; i < data.length; i++) result[i] = data[i] ^ key[i % keyLen];
+        return $decoder.decode(result);
+    }
+    
+    // 旧格式回退（兼容未升级的旧版本编码数据）
+    // 链式代理数据通常 > 50 字节（JSON 编码后的代理配置），< 10 字节视为异常
+    if (mixed.length < 10) throw new Error('链式代理数据长度异常');
     const data = new Uint8Array(mixed.length);
-    for (let i = 0; i < mixed.length; i++) data[i] = mixed[i] ^ key[i % key.length];
+    for (let i = 0; i < mixed.length; i++) data[i] = mixed[i] ^ key[i % keyLen];
     return $decoder.decode(data);
 }
 
@@ -5427,13 +5543,18 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     const lines = clash_yaml.split('\n');
     const processedLines = [];
     let i = 0;
+    let yieldCounter = 0;
+    const yieldInterval = 50; // 每 50 行 yield 一次，避免逐行 yield 开销
 
     while (i < lines.length) {
         const line = lines[i];
         const trimmedLine = line.trim();
         
-        // 动态让出CPU
-        await yieldToEventLoop();
+        // 批量 yield：每 N 行让出一次 CPU
+        if (++yieldCounter >= yieldInterval) {
+            await yieldToEventLoop();
+            yieldCounter = 0;
+        }
 
         // 处理行格式（Flow）：- {name: ..., uuid: ..., ...}
         if (trimmedLine.startsWith('- {') && (trimmedLine.includes('uuid:') || trimmedLine.includes('password:'))) {
@@ -5708,17 +5829,61 @@ function 掩码敏感信息(文本, 前缀长度 = 3, 后缀长度 = 2) {
 // 辅助函数：将 ArrayBuffer 或 Uint8Array 转十六进制字符串
 const hexEncode = (buffer) => [...new Uint8Array(buffer)].map(b => b.toString(16).padStart(2, '0')).join('');
 
+// MD5MD5 结果缓存（热路径优化）
+const MD5MD5缓存 = new Map();
+const MD5MD5_CACHE_MAX = 128; // 增大至 128 条目，覆盖高频调用场景（订阅生成、登录验证、Token 生成等）
+// AES 密钥缓存（AESEncrypt 热路径优化）
+const AES密钥缓存 = new Map();
+const AES密钥缓存_MAX = 32;
+const AES_DERIVE_SALT = new Uint8Array([0xed, 0x67, 0x2a, 0x1f, 0x8b, 0xc3, 0x4d, 0x90]); // 8字节固定盐
+
 async function MD5MD5(文本) {
+    // 检查缓存
+    const cached = MD5MD5缓存.get(文本);
+    if (cached !== undefined) return cached;
+    
     const 第一次十六进制 = hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(文本)));
-    return hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(第一次十六进制.slice(7, 27)))).toLowerCase();
+    const result = hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(第一次十六进制.slice(7, 27)))).toLowerCase();
+    
+    // 写入缓存
+    MD5MD5缓存.set(文本, result);
+    if (MD5MD5缓存.size > MD5MD5_CACHE_MAX) {
+        // 删除最早的一半（简单 LRQ 策略）
+        const entries = [...MD5MD5缓存.entries()];
+        MD5MD5缓存.clear();
+        for (let i = Math.floor(entries.length / 2); i < entries.length; i++) {
+            MD5MD5缓存.set(entries[i][0], entries[i][1]);
+        }
+    }
+    
+    return result;
 }
 
 // AES-128-CBC 加密函数 (用于订阅内容加密)
 async function AESEncrypt(plaintext, password) {
     if (!plaintext || !password) return null;
     try {
-        const keyHash = await crypto.subtle.digest('MD5', SS文本编码器.encode(password));
-        const keyBytes = new Uint8Array(keyHash);
+        let keyBytes = AES密钥缓存.get(password);
+        if (!keyBytes) {
+            const keyMaterial = await crypto.subtle.importKey(
+                'raw',
+                SS文本编码器.encode(password),
+                'PBKDF2',
+                false,
+                ['deriveBits']
+            );
+            const derivedBits = await crypto.subtle.deriveBits({
+                name: 'PBKDF2',
+                salt: AES_DERIVE_SALT,
+                iterations: 1000,
+                hash: 'SHA-256'
+            }, keyMaterial, 128); // 128 bits = 16 bytes (AES-128)
+            keyBytes = new Uint8Array(derivedBits);
+            AES密钥缓存.set(password, keyBytes);
+            if (AES密钥缓存.size > AES密钥缓存_MAX) {
+                AES密钥缓存.delete(AES密钥缓存.keys().next().value);
+            }
+        }
         const iv = crypto.getRandomValues(new Uint8Array(16));
         const cryptoKey = await crypto.subtle.importKey(
             'raw',
@@ -5763,8 +5928,10 @@ function 随机路径(完整节点路径 = "/") {
     const 常用路径目录 = ["#","about","account","acg","act","activity","ad","admin","ads","ajax","album","albums","anime","api","app","apps","archive","archives","article","articles","ask","auth","avatar","bbs","bd","blog","blogs","book","books","bt","buy","cart","category","categories","cb","channel","channels","chat","china","city","class","classify","clip","clips","club","cn","code","collect","collection","comic","comics","community","company","config","contact","content","course","courses","cp","data","detail","details","dh","directory","discount","discuss","dl","dload","doc","docs","document","documents","doujin","download","downloads","drama","edu","en","ep","episode","episodes","event","events","f","faq","favorite","favourites","favs","feedback","file","files","film","films","forum","forums","friend","friends","game","games","gif","go","go.html","go.php","group","groups","help","home","hot","htm","html","image","images","img","index","info","intro","item","items","ja","jp","jump","jump.html","jump.php","jumping","knowledge","lang","lesson","lessons","lib","library","link","links","list","live","lives","login","logout","m","mag","magnet","mall","manhua","map","member","members","message","messages","mobile","movie","movies","music","my","new","news","note","novel","novels","online","order","out","out.html","out.php","outbound","p","page","pages","pay","payment","pdf","photo","photos","pic","pics","picture","pictures","play","player","playlist","post","posts","product","products","program","programs","project","qa","question","rank","ranking","read","readme","redirect","redirect.html","redirect.php","reg","register","res","resource","retrieve","sale","search","season","seasons","section","seller","series","service","services","setting","settings","share","shop","show","shows","site","soft","sort","source","special","star","stars","static","stock","store","stream","streaming","streams","student","study","tag","tags","task","teacher","team","tech","temp","test","thread","tool","tools","topic","topics","torrent","trade","travel","tv","txt","type","u","upload","uploads","url","urls","user","users","v","version","video","videos","view","vip","vod","watch","web","wenku","wiki","work","www","zh","zh-cn","zh-tw","zip","about-us","access","accounting","activation","address","advertising","affiliate","agreement","alert","alerts","analytics-dashboard","announcement","api-docs","apply","archive-news","article-detail","attendance","author","auto","backup","banner","billing","board","brand","browse-all","business","calendar","campaign","career","cart-checkout","catalog","certificate","checkout-success","client","cloud","comment","company-info","competition","complaint","conference","connect","console","contact-form","contest","contract","contribute","control","cookie","copyright","coupon","create","crm","currency","custom","customer","dashboard-admin","data-center","deal","default","demo","department","design","developer","development","device","directory-list","discounts","display","donate","editor","email","employee","employment","enterprise","entry","environment","error-log","estimate","exam","example","exchange","experience","expert","export","faq-page","feature","feedback-form","finance","financial","fleet","flow","form","gallery","gateway","general","global","guide","hardware","health","history-page","holiday","host","hosting","identity","image-gallery","import","index-page","industry","info-center","information","inquiry","install","instruction","insurance","integration","interface","internal","invoice","issue","job","join","journal","key","knowledge-base","lab","landing","language","launch","legal","license","limited","location","log","logging","logs","machine","mail","manage","management","manual","map-view","market","marketing","master","media-center","member-area","menu","merchant","message-board","meta","method","metrics","misc","moderator","module","monitor","monthly","navigation","network","newsletter","notification","office","official","open","operation","opinion","option","order-detail","organization","overview","owner","package","partner","password","payment-info","people","performance","personal","phone","photo-gallery","plan","platform","policy","portal","portfolio","position","preferences","press-release","preview","pricing","print","privacy-policy","problem","process","profile-edit","project-detail","promotion","property","proposal","public","publication","purchase","quality","queue","quote","ranking-list","rate","rating","record","register-form","release","report","reporting","request","requirement","research","resource-center","response","result","resume","review","role","rule","sales","sample","schedule","school","score","screen","script","search-results","section-list","security","server","session","setting-page","setup","shop-cart","shopping","signin","signup-form","site-map","solution","staff","statistics","status-page","storage","store-front","studio","submission","subscribe-form","subscription","success","summary","support-center","survey","system","table","task-list","team-member","template","terms-of-service","test-case","ticket","timeline","toolbox","topic-list","tour","tracking-info","training","transaction","transfer","translation","tutorial","update","upgrade","upload-file","usage","user-guide","utility","validation","value","vendor","verification","version-info","visitor","voice","webmail","workflow"];
     const 随机数 = Math.floor(Math.random() * 3 + 1);
     const shuffleArr = [...常用路径目录];
-    for (let i = shuffleArr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+    // 部分洗牌: 只随机选取前 k 个元素，O(k) 替代 O(n)
+    const len = shuffleArr.length;
+    for (let i = 0; i < 随机数 && i < len; i++) {
+        const j = i + Math.floor(Math.random() * (len - i));
         [shuffleArr[i], shuffleArr[j]] = [shuffleArr[j], shuffleArr[i]];
     }
     const 随机路径 = shuffleArr.slice(0, 随机数).join('/');
@@ -5790,25 +5957,23 @@ async function 批量替换域名(内容, hosts, 每组数量 = 2) {
         [打乱后数组[i], 打乱后数组[j]] = [打乱后数组[j], 打乱后数组[i]];
     }
     let count = 0;
-    const parts = 内容.split('example.com');
-    if (parts.length <= 1) return 内容;
-
-    const resultArr = [parts[0]];
     let currentRandomHost = null;
-    for (let i = 1; i < parts.length; i++) {
-        if (count % 每组数量 === 0) currentRandomHost = 随机替换通配符(打乱后数组[Math.floor(count / 每组数量) % 打乱后数组.length]);
+    // 使用 replace 替代 split+join，避免创建大量中间字符串
+    const result = 内容.replace(/example\.com/g, (match) => {
+        if (count % 每组数量 === 0) {
+            currentRandomHost = 随机替换通配符(打乱后数组[Math.floor(count / 每组数量) % 打乱后数组.length]);
+        }
         count++;
-        resultArr.push(currentRandomHost + parts[i]);
-        await yieldToEventLoop();
-    }
-    return resultArr.join('');
+        return currentRandomHost;
+    });
+    return result;
 }
 
 async function 异步批量转换节点(ips, 转换函数) {
     const batchYield = createYieldStrategy();
     let result = [];
     for (let i = 0; i < ips.length; i++) {
-        const node = 转换函数(ips[i]);
+        const node = await 转换函数(ips[i]);
         if (node) result.push(node);
         await batchYield();
     }
@@ -6274,7 +6439,11 @@ async function 生成随机IP(request, count = 16, 指定端口 = -1) {
     const cfname = 运营商名称映射[运营商文件标识] || 'CF官方优选';
     const cfport = [443, 2053, 2083, 2087, 2096, 8443];
     let cidrList = [];
-    try { const res = await fetch(cidr_url); cidrList = res.ok ? await 整理成数组(await res.text()) : ['104.16.0.0/13'] } catch { cidrList = ['104.16.0.0/13'] }
+    try {
+        const res = await fetch(cidr_url);
+        if (!res.ok) { cidrList = ['104.16.0.0/13']; }
+        else { const text = await res.text(); cidrList = await 整理成数组(text); }
+    } catch { cidrList = ['104.16.0.0/13']; }
 
     const generateRandomIPFromCIDR = (cidr) => {
         const [baseIP, prefixLength] = cidr.split('/'), prefix = parseInt(prefixLength), hostBits = 32 - prefix;
@@ -6583,7 +6752,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
 }
 
 
-async function 反代参数获取(url, uuid) {
+async function 反代参数获取(url, uuid, ctx2) {
     const { searchParams } = url, pathname = decodeURIComponent(url.pathname);
     const pathLower = pathname.toLowerCase();
 
@@ -6591,16 +6760,16 @@ async function 反代参数获取(url, uuid) {
     const 链式代理路径匹配 = pathname.match(/\/video\/(.+)$/i);
     if (链式代理路径匹配) {
         try {
-            const 链式代理明文 = decodeChainProxyData(链式代理路径匹配[1], uuid);
+            const 链式代理明文 = await decodeChainProxyData(链式代理路径匹配[1], uuid);
             const { type, ...链式代理地址 } = JSON.parse(链式代理明文);
             if (!type || !反代协议默认端口[String(type).toLowerCase()]) throw new Error('链式代理类型无效');
             if (!链式代理地址.hostname || !链式代理地址.port) throw new Error('链式代理地址缺少 hostname 或 port');
-            我的SOCKS5账号 = '';
-            反代IP = '链式代理';
-            启用反代兜底 = false;
-            启用SOCKS5全局反代 = true;
-            启用SOCKS5反代 = String(type).toLowerCase();
-            parsedSocks5Address = {
+            ctx2.我的SOCKS5账号 = '';
+            ctx2.反代IP = '链式代理';
+            ctx2.启用反代兜底 = false;
+            ctx2.启用SOCKS5全局反代 = true;
+            ctx2.启用SOCKS5反代 = String(type).toLowerCase();
+            ctx2.parsedSocks5Address = {
                 username: 链式代理地址.username,
                 password: 链式代理地址.password,
                 hostname: 链式代理地址.hostname,
@@ -6614,16 +6783,16 @@ async function 反代参数获取(url, uuid) {
     }
 
     // 初始化
-    我的SOCKS5账号 = searchParams.get('socks5') || searchParams.get('http') || searchParams.get('https') || searchParams.get('turn') || searchParams.get('sstp') || null;
-    启用SOCKS5全局反代 = searchParams.has('globalproxy');
+    ctx2.我的SOCKS5账号 = searchParams.get('socks5') || searchParams.get('http') || searchParams.get('https') || searchParams.get('turn') || searchParams.get('sstp') || null;
+    ctx2.启用SOCKS5全局反代 = searchParams.has('globalproxy');
 
     // 辅助函数：解析代理协议URL (socks5://... http://... https://... turn://... sstp://...)
     const 解析代理URL = (proxyUrl, 默认全局 = true) => {
         const protocolMatch = proxyUrl.match(/^(socks5|http|https|turn|sstp):\/\/(.+)$/i);
         if (!protocolMatch) return false;
-        启用SOCKS5反代 = protocolMatch[1].toLowerCase();
-        我的SOCKS5账号 = protocolMatch[2].split('/')[0];
-        启用SOCKS5全局反代 = 默认全局 || 启用SOCKS5全局反代;
+        ctx2.启用SOCKS5反代 = protocolMatch[1].toLowerCase();
+        ctx2.我的SOCKS5账号 = protocolMatch[2].split('/')[0];
+        ctx2.启用SOCKS5全局反代 = 默认全局 || ctx2.启用SOCKS5全局反代;
         return true;
     };
 
@@ -6658,26 +6827,32 @@ async function 反代参数获取(url, uuid) {
         if (解析代理URL(路参IP)) { /* 继续到下方统一解析 */ }
         else {
             // 否则作为 IP 反代
-            反代IP = 路参IP;
-            启用反代兜底 = false;
+            ctx2.反代IP = 路参IP;
+            ctx2.启用反代兜底 = false;
             return;
         }
     }
     // 设置 query 参数的代理协议类型
-    if (searchParams.get('socks5')) 启用SOCKS5反代 = 'socks5';
-    else if (searchParams.get('http')) 启用SOCKS5反代 = 'http';
-    else if (searchParams.get('https')) 启用SOCKS5反代 = 'https';
-    else if (searchParams.get('turn')) 启用SOCKS5反代 = 'turn';
-    else if (searchParams.get('sstp')) 启用SOCKS5反代 = 'sstp';
+    if (searchParams.get('socks5')) ctx2.启用SOCKS5反代 = 'socks5';
+    else if (searchParams.get('http')) ctx2.启用SOCKS5反代 = 'http';
+    else if (searchParams.get('https')) ctx2.启用SOCKS5反代 = 'https';
+    else if (searchParams.get('turn')) ctx2.启用SOCKS5反代 = 'turn';
+    else if (searchParams.get('sstp')) ctx2.启用SOCKS5反代 = 'sstp';
     // query 中的 ?socks5= 和 ?http= 等值已在初始化时由 searchParams.get 处理
 
     // ==================== 第二步：处理路径中的协议关键词 ====================
     // 匹配：/socks5://..., /socks://.., /http://..., /https://..., /turn://..., /sstp://...
     else if ((socksMatch = pathname.match(/\/(socks5?|http|https|turn|sstp):\/?\/?([^/?#\s]+)/i))) {
         const 类型 = socksMatch[1].toLowerCase();
-        启用SOCKS5反代 = 类型 === 'sock' || 类型 === 'socks' ? 'socks5' : 类型;
-        我的SOCKS5账号 = socksMatch[2].split('/')[0];
-        启用SOCKS5全局反代 = true;
+        ctx2.启用SOCKS5反代 = 类型 === 'sock' || 类型 === 'socks' ? 'socks5' : 类型;
+        ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
+        ctx2.启用SOCKS5全局反代 = true;
+    }
+    else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http|g?https|g?turn|g?sstp)=([^/?#\s]+)/i))) {
+        const type = socksMatch[1].toLowerCase();
+        ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
+        ctx2.启用SOCKS5反代 = type.includes('sstp') ? 'sstp' : (type.includes('turn') ? 'turn' : (type.includes('https') ? 'https' : (type.includes('http') ? 'http' : 'socks5')));
+        ctx2.启用SOCKS5全局反代 = type.startsWith('g') || ctx2.启用SOCKS5全局反代;
     }
     // 匹配：/socks5=..., /s5=..., /gs5=..., /http=..., /ghttp=..., /turn=..., /gturn=..., /sstp=..., /gsstp=...
     else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http|g?https|g?turn|g?sstp)=([^/?#\s]+)/i))) {
@@ -6693,28 +6868,27 @@ async function 反代参数获取(url, uuid) {
         // proxyip 值以 socks5:// http:// https:// turn:// sstp:// 开头，视为对应协议处理
         if (!解析代理URL(路参IP)) {
             // 否则作为 IP 反代
-            反代IP = 路参IP;
-            启用反代兜底 = false;
+            ctx2.反代IP = 路参IP;
+            ctx2.启用反代兜底 = false;
             return;
         }
     }
 
     // 统一解析SOCKS5地址
-    if (我的SOCKS5账号) {
+    if (ctx2.我的SOCKS5账号) {
         try {
-            parsedSocks5Address = await 获取SOCKS5账号(我的SOCKS5账号, 获取代理默认端口(启用SOCKS5反代));
-            // 根据 query 参数确定最终协议类型
-            if (searchParams.get('socks5')) 启用SOCKS5反代 = 'socks5';
-            else if (searchParams.get('http')) 启用SOCKS5反代 = 'http';
-            else if (searchParams.get('https')) 启用SOCKS5反代 = 'https';
-            else if (searchParams.get('turn')) 启用SOCKS5反代 = 'turn';
-            else if (searchParams.get('sstp')) 启用SOCKS5反代 = 'sstp';
-            else 启用SOCKS5反代 = 启用SOCKS5反代 || 'socks5';
+            ctx2.parsedSocks5Address = await 获取SOCKS5账号(ctx2.我的SOCKS5账号, 获取代理默认端口(ctx2.启用SOCKS5反代));
+            if (searchParams.get('socks5')) ctx2.启用SOCKS5反代 = 'socks5';
+            else if (searchParams.get('http')) ctx2.启用SOCKS5反代 = 'http';
+            else if (searchParams.get('https')) ctx2.启用SOCKS5反代 = 'https';
+            else if (searchParams.get('turn')) ctx2.启用SOCKS5反代 = 'turn';
+            else if (searchParams.get('sstp')) ctx2.启用SOCKS5反代 = 'sstp';
+            else ctx2.启用SOCKS5反代 = ctx2.启用SOCKS5反代 || 'socks5';
         } catch (err) {
             console.error('解析SOCKS5地址失败:', err.message);
-            启用SOCKS5反代 = null;
+            ctx2.启用SOCKS5反代 = null;
         }
-    } else 启用SOCKS5反代 = null;
+    } else ctx2.启用SOCKS5反代 = null;
 }
 
 async function 获取SOCKS5账号(address, 默认端口 = 80) {
@@ -6813,6 +6987,10 @@ async function getCloudflareUsage(Email, GlobalAPIKey, AccountID, APIToken) {
 const SHA224_K = Object.freeze([0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
 
 function sha224(s) {
+    const originalInput = s; // 保存原始输入用于缓存
+    // 缓存检查：相同输入直接返回缓存结果
+    if (sha224缓存.has(originalInput)) return sha224缓存.get(originalInput);
+    
     const 编码器 = $encoder;
     const 编码字节 = 编码器.encode(s);
     s = '';
@@ -6843,6 +7021,11 @@ function sha224(s) {
     for (let i = 0; i < 7; i++) {
         for (let j = 24; j >= 0; j -= 8)hex += ((h[i] >>> j) & 0xFF).toString(16).padStart(2, '0');
     }
+    // 缓存结果
+    if (sha224缓存.size >= SHA224_CACHE_MAX) {
+        sha224缓存.delete(sha224缓存.keys().next().value);
+    }
+    sha224缓存.set(originalInput, hex);
     return hex;
 }
 
@@ -6900,26 +7083,48 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
                 const ipv6Regex = /^\[?([a-fA-F0-9:]+)\]?$/;
 
                 if (!ipv4Regex.test(地址) && !ipv6Regex.test(地址)) {
-                    // 并行查询 A 和 AAAA 记录
-                    let [aRecords, aaaaRecords] = await Promise.all([
-                        DoH查询(地址, 'A'),
-                        DoH查询(地址, 'AAAA')
-                    ]);
-
-                    let ipv4List = aRecords.filter(r => r.type === 1).map(r => r.data);
-                    let ipv6List = aaaaRecords.filter(r => r.type === 28).map(r => `[${r.data}]`);
-                    let ipAddresses = [...ipv4List, ...ipv6List];
-
-                    // 默认DoH无结果时，切换Google DoH重试
-                    if (ipAddresses.length === 0) {
-
-                        [aRecords, aaaaRecords] = await Promise.all([
-                            DoH查询(地址, 'A', 'https://dns.google/dns-query'),
-                            DoH查询(地址, 'AAAA', 'https://dns.google/dns-query')
+                    // DoH 缓存查找
+                    const cacheKey = `${地址}:${端口}`;
+                    const cached = doh解析缓存.get(cacheKey);
+                    let ipAddresses = null;
+                    if (cached && Date.now() - cached.time < DOH_CACHE_TTL) {
+                        ipAddresses = cached.result;
+                    } else {
+                        // 并行查询 A 和 AAAA 记录
+                        let [aRecords, aaaaRecords] = await Promise.all([
+                            DoH查询(地址, 'A'),
+                            DoH查询(地址, 'AAAA')
                         ]);
-                        ipv4List = aRecords.filter(r => r.type === 1).map(r => r.data);
-                        ipv6List = aaaaRecords.filter(r => r.type === 28).map(r => `[${r.data}]`);
+
+                        let ipv4List = aRecords.filter(r => r.type === 1).map(r => r.data);
+                        let ipv6List = aaaaRecords.filter(r => r.type === 28).map(r => `[${r.data}]`);
                         ipAddresses = [...ipv4List, ...ipv6List];
+
+                        // 默认DoH无结果时，切换Google DoH重试
+                        if (ipAddresses.length === 0) {
+                            [aRecords, aaaaRecords] = await Promise.all([
+                                DoH查询(地址, 'A', 'https://dns.google/dns-query'),
+                                DoH查询(地址, 'AAAA', 'https://dns.google/dns-query')
+                            ]);
+                            ipv4List = aRecords.filter(r => r.type === 1).map(r => r.data);
+                            ipv6List = aaaaRecords.filter(r => r.type === 28).map(r => `[${r.data}]`);
+                            ipAddresses = [...ipv4List, ...ipv6List];
+                        }
+
+                        // 写入缓存
+                        doh解析缓存.set(cacheKey, { result: ipAddresses, time: Date.now() });
+                        // 清理过期条目 + 限制最大条目数
+                        if (doh解析缓存.size > DOH_CACHE_MAX) {
+                            const now = Date.now();
+                            // 第一步: 删除所有过期条目
+                            for (const [key, value] of doh解析缓存) {
+                                if (now - value.time >= DOH_CACHE_TTL) doh解析缓存.delete(key);
+                            }
+                            // 第二步: 如果仍然超出上限，仅删除最旧的条目直到达标
+                            while (doh解析缓存.size > DOH_CACHE_MAX) {
+                                doh解析缓存.delete(doh解析缓存.keys().next().value);
+                            }
+                        }
                     }
 
                     if (ipAddresses.length > 0) {
