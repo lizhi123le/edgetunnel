@@ -3850,7 +3850,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
             socket = 连接结果.socket;
             if (预加载候选列表) {
                 const winner = 连接结果.candidate;
-                log(`[TCP直连] 预加载竞速结果: ${winner.hostname}:${winner.port} 胜出，源域名: ${winner.resolvedFrom || address}`);
+                log(`[TCP直连] 预加载竞速结果: ${winner.hostname}:${winner.port} 胜出，源域名: ${winner.hostname || address}`);
             }
             await 写入首包(socket, data);
             return socket;
