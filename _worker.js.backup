@@ -3819,13 +3819,13 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
             log(`[TCP直连] ${address} 预加载缓存命中，竞速拨号 ${拨号数} 路`);
             // 缓存命中：展开为 N 路 hostname 候选，保持竞速效果
             return Array.from({ length: 拨号数 }, (_, attempt) => ({
-                hostname: address, port, attempt, resolvedFrom: address
+                hostname: address, port, attempt
             }));
         }
 
         // 生成直接使用 hostname 的候选列表
         // Workers 运行时在 connect() 时原生解析 DNS，无需显式 DoH 查询
-        const 候选列表 = Array.from({ length: 拨号数 }, (_, attempt) => ({ hostname: address, port, attempt, resolvedFrom: address }));
+        const 候选列表 = Array.from({ length: 拨号数 }, (_, attempt) => ({ hostname: address, port, attempt }));
 
         // 写入短期缓存（纯 timeout marker，不存 resolved info）
         预加载DNS缓存.set(缓存键, { time: Date.now() });
@@ -3840,7 +3840,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 
     async function connectDirect(address, port, data = null, 启用预加载 = false) {
         const 预加载候选列表 = 启用预加载 ? await 构建预加载竞速候选列表(address, port) : null;
-        const 候选列表 = 预加载候选列表 || Array.from({ length: TCP并发拨号数 }, (_, attempt) => ({ hostname: address, port, attempt, resolvedFrom: address }));
+        const 候选列表 = 预加载候选列表 || Array.from({ length: TCP并发拨号数 }, (_, attempt) => ({ hostname: address, port, attempt }));
         log(预加载候选列表
             ? `[TCP直连] 并发尝试 ${候选列表.length} 路: ${候选列表.map(候选 => `${候选.hostname}:${候选.port}`).join(', ')}`
             : `[TCP直连] 并发尝试 ${候选列表.length} 路: ${address}:${port}`);
