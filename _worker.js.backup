@@ -3807,35 +3807,25 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 
     async function 构建预加载竞速候选列表(address, port) {
         if (!预加载竞速拨号 || isIPHostname(address)) return null;
-        log(`[TCP直连] 预加载竞速拨号开启，使用 Workers 原生 DNS 解析 ${address}`);
+        log(`[TCP直连] 预加载 DNS 缓存: ${address}`);
 
-        // 拨号数提前声明（修复 TDZ + 消除重复）
-        const 拨号数 = Math.max(1, TCP并发拨号数 | 0);
-
-        // 检查短期 DNS 缓存
+        // 检查短期缓存
         const 缓存键 = `预加载:${address}`;
         const 缓存项 = 预加载DNS缓存.get(缓存键);
         if (缓存项 && Date.now() - 缓存项.time < 预加载DNS缓存TTL) {
-            log(`[TCP直连] ${address} 预加载缓存命中，竞速拨号 ${拨号数} 路`);
-            // 缓存命中：展开为 N 路 hostname 候选，保持竞速效果
-            return Array.from({ length: 拨号数 }, (_, attempt) => ({
-                hostname: address, port, attempt
-            }));
+            log(`[TCP直连] ${address} 预加载缓存命中`);
+            return [{ hostname: address, port, attempt: 0 }];
         }
 
-        // 生成直接使用 hostname 的候选列表
-        // Workers 运行时在 connect() 时原生解析 DNS，无需显式 DoH 查询
-        const 候选列表 = Array.from({ length: 拨号数 }, (_, attempt) => ({ hostname: address, port, attempt }));
-
-        // 写入短期缓存（纯 timeout marker，不存 resolved info）
+        // 写入短期缓存（纯 timeout marker）
         预加载DNS缓存.set(缓存键, { time: Date.now() });
         if (预加载DNS缓存.size > 预加载DNS缓存最大) {
             const 最早 = 预加载DNS缓存.keys().next().value;
             if (最早) 预加载DNS缓存.delete(最早);
         }
 
-        log(`[TCP直连] ${address} 原生 DNS 预加载，竞速拨号 ${拨号数} 路`);
-        return 候选列表;
+        log(`[TCP直连] ${address} 预加载缓存未命中，单路连接`);
+        return [{ hostname: address, port, attempt: 0 }];
     }
 
     async function connectDirect(address, port, data = null, 启用预加载 = false) {
