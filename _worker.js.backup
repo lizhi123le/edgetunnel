@@ -4,15 +4,11 @@ const Version = '2026-05-18 18:37:45(Enhanced)';
 /*and all data flows*/ from//this single source.
     'cloudflare\u003asockets';
 
-// ============================================================
 // 全局 TextEncoder/TextDecoder 复用提升性能
-// ============================================================
 const $encoder = new TextEncoder();
 const $decoder = new TextDecoder();
 
-// ============================================================
 // 请求上下文类 - 封装请求级状态，减少全局变量污染
-// ============================================================
 class RequestContext {
     constructor(env) {
         this.config_JSON = null;
@@ -3811,57 +3807,40 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 
     async function 构建预加载竞速候选列表(address, port) {
         if (!预加载竞速拨号 || isIPHostname(address)) return null;
-        log(`[TCP直连] 预加载竞速拨号开启，开始并发查询 ${address} 的 A/AAAA 记录`);
+        log(`[TCP直连] 预加载竞速拨号开启，使用 Workers 原生 DNS 解析 ${address}`);
+
+        // 拨号数提前声明（修复 TDZ + 消除重复）
+        const 拨号数 = Math.max(1, TCP并发拨号数 | 0);
+
         // 检查短期 DNS 缓存
         const 缓存键 = `预加载:${address}`;
         const 缓存项 = 预加载DNS缓存.get(缓存键);
         if (缓存项 && Date.now() - 缓存项.time < 预加载DNS缓存TTL) {
-            const 缓存结果 = 缓存项.ipList;
-            if (缓存结果.length === 0) return null; // 缓存记录为无结果，跳过预加载
-            log(`[TCP直连] ${address} DNS 缓存命中: ${缓存结果.join(', ')}`);
-            return 缓存结果.map((hostname, attempt) => ({ hostname, port, attempt, resolvedFrom: address }));
+            log(`[TCP直连] ${address} 预加载缓存命中，竞速拨号 ${拨号数} 路`);
+            // 缓存命中：展开为 N 路 hostname 候选，保持竞速效果
+            return Array.from({ length: 拨号数 }, (_, attempt) => ({
+                hostname: address, port, attempt, resolvedFrom: address
+            }));
         }
-        const [aRecords, aaaaRecords] = await Promise.all([
-            DoH查询(address, 'A'),
-            DoH查询(address, 'AAAA')
-        ]);
-        const ipv4List = [...new Set(aRecords.flatMap(r => {
-            const data = r.data;
-            return r.type === 1 && typeof data === 'string' && isIPv4(data) ? [data] : [];
-        }))];
-        const ipv6List = [...new Set(aaaaRecords.flatMap(r => {
-            const data = r.data;
-            return r.type === 28 && typeof data === 'string' && isIPHostname(data) ? [data] : [];
-        }))];
-        const 拨号上限 = Math.max(1, TCP并发拨号数 | 0);
-        const ipList = ipv4List.length >= 拨号上限
-            ? ipv4List.slice(0, 拨号上限)
-            : ipv4List.concat(ipv6List.slice(0, 拨号上限 - ipv4List.length));
-        const 使用记录类型 = ipv4List.length > 0
-            ? (ipList.length > ipv4List.length ? 'A+AAAA' : 'A')
-            : 'AAAA';
-        const 选中IP列表 = ipList;
-        log(`[TCP直连] ${address} A记录:${ipv4List.length} AAAA记录:${ipv6List.length}，使用${使用记录类型}记录，竞速拨号 ${选中IP列表.length}/${拨号上限}: ${选中IP列表.join(', ')}`);
 
-        // 写入短期缓存
-        if (选中IP列表.length > 0) {
-            预加载DNS缓存.set(缓存键, { ipList: 选中IP列表, time: Date.now() });
-        } else {
-            预加载DNS缓存.set(缓存键, { ipList: [], time: Date.now() });
-        }
+        // 生成直接使用 hostname 的候选列表
+        // Workers 运行时在 connect() 时原生解析 DNS，无需显式 DoH 查询
+        const 候选列表 = Array.from({ length: 拨号数 }, (_, attempt) => ({ hostname: address, port, attempt, resolvedFrom: address }));
+
+        // 写入短期缓存（纯 timeout marker，不存 resolved info）
+        预加载DNS缓存.set(缓存键, { time: Date.now() });
         if (预加载DNS缓存.size > 预加载DNS缓存最大) {
             const 最早 = 预加载DNS缓存.keys().next().value;
             if (最早) 预加载DNS缓存.delete(最早);
         }
 
-        // DNS 查空 → 降级到原始域名直连（不关 WS，保留 connecttoPry 兜底链路）
-        if (选中IP列表.length === 0) return null;
-        return 选中IP列表.map((hostname, attempt) => ({ hostname, port, attempt, resolvedFrom: address }));
+        log(`[TCP直连] ${address} 原生 DNS 预加载，竞速拨号 ${拨号数} 路`);
+        return 候选列表;
     }
 
     async function connectDirect(address, port, data = null, 启用预加载 = false) {
         const 预加载候选列表 = 启用预加载 ? await 构建预加载竞速候选列表(address, port) : null;
-        const 候选列表 = 预加载候选列表 || Array.from({ length: TCP并发拨号数 }, (_, attempt) => ({ hostname: address, port, attempt }));
+        const 候选列表 = 预加载候选列表 || Array.from({ length: TCP并发拨号数 }, (_, attempt) => ({ hostname: address, port, attempt, resolvedFrom: address }));
         log(预加载候选列表
             ? `[TCP直连] 并发尝试 ${候选列表.length} 路: ${候选列表.map(候选 => `${候选.hostname}:${候选.port}`).join(', ')}`
             : `[TCP直连] 并发尝试 ${候选列表.length} 路: ${address}:${port}`);
