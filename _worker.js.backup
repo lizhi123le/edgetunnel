@@ -706,7 +706,7 @@ export default {
                                 const IP转换节点 = async (输入元素) => {
                                     if (typeof 输入元素 === 'object' && 输入元素.type === 'node') return 输入元素.value;
                                     const 原始地址 = typeof 输入元素 === 'object' ? 输入元素.value : 输入元素;
-                                    const ECH_SNI = 选择混合SNI(config_JSON.HOST, config_JSON.HOSTS);
+                                    const ECH_SNI = (config_JSON.ECHConfig.SNI && config_JSON.ECHConfig.SNI !== 'auto') ? config_JSON.ECHConfig.SNI : 随机替换通配符(config_JSON.HOSTS[Math.floor(Math.random() * config_JSON.HOSTS.length)]);
                                     const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}` : '';
                                     const SS_ECH参数 = (config_JSON.ECH && config_JSON.SS.TLS === true && (协议类型 === 'ss' || config_JSON.协议类型 === 'ss')) ? `&echconfiglist=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}&fp=${config_JSON.Fingerprint}` : ECHLINK参数;
                                 const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
@@ -6532,7 +6532,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
     if (!config_JSON.Fingerprint) config_JSON.Fingerprint = "chrome";
     if (!config_JSON.ECH) config_JSON.ECH = false;
     if (!config_JSON.ECHConfig) config_JSON.ECHConfig = { DNS: CM_DoH, SNI: null };
-    const ECH_SNI = 选择混合SNI(config_JSON.HOST, config_JSON.HOSTS);
+    const ECH_SNI = (config_JSON.ECHConfig.SNI && config_JSON.ECHConfig.SNI !== 'auto') ? config_JSON.ECHConfig.SNI : 随机替换通配符(config_JSON.HOSTS[Math.floor(Math.random() * config_JSON.HOSTS.length)]);
     const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}` : '';
     const SS_ECH参数 = (config_JSON.ECH && config_JSON.SS.TLS === true && config_JSON.协议类型 === 'ss') ? `&echconfiglist=${encodeURIComponent(ECH_SNI + '+' + config_JSON.ECHConfig.DNS)}&fp=${config_JSON.Fingerprint}` : ECHLINK参数;
 
