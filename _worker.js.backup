@@ -6001,8 +6001,6 @@ const MD5MD5_CACHE_MAX = 128; // 增大至 128 条目，覆盖高频调用场景
 // AES 密钥缓存（AESEncrypt 热路径优化）
 const AES密钥缓存 = new Map();
 const AES密钥缓存_MAX = 32;
-const AES_DERIVE_SALT = new Uint8Array([0xed, 0x67, 0x2a, 0x1f, 0x8b, 0xc3, 0x4d, 0x90]); // 8字节固定盐
-
 async function MD5MD5(文本) {
     // 检查缓存
     const cached = MD5MD5缓存.get(文本);
@@ -6025,26 +6023,15 @@ async function MD5MD5(文本) {
     return result;
 }
 
-// AES-128-CBC 加密函数 (用于订阅内容加密)
+// AES-128-CBC 加密函数 (用于订阅内容加密，兼容 Stash/Shadowrocket/SingBox 等客户端)
 async function AESEncrypt(plaintext, password) {
     if (!plaintext || !password) return null;
     try {
         let keyBytes = AES密钥缓存.get(password);
         if (!keyBytes) {
-            const keyMaterial = await crypto.subtle.importKey(
-                'raw',
-                SS文本编码器.encode(password),
-                'PBKDF2',
-                false,
-                ['deriveBits']
-            );
-            const derivedBits = await crypto.subtle.deriveBits({
-                name: 'PBKDF2',
-                salt: AES_DERIVE_SALT,
-                iterations: 1000,
-                hash: 'SHA-256'
-            }, keyMaterial, 128); // 128 bits = 16 bytes (AES-128)
-            keyBytes = new Uint8Array(derivedBits);
+            // 使用 MD5 派生密钥（主流客户端通用方案，兼容 Stash/Shadowrocket/SingBox）
+            const md5Hash = await crypto.subtle.digest('MD5', SS文本编码器.encode(password));
+            keyBytes = new Uint8Array(md5Hash); // MD5 = 16 字节，恰好 AES-128 密钥长度
             AES密钥缓存.set(password, keyBytes);
             if (AES密钥缓存.size > AES密钥缓存_MAX) {
                 AES密钥缓存.delete(AES密钥缓存.keys().next().value);
