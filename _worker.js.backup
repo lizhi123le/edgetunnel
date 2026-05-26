@@ -10,6 +10,8 @@ const $decoder = new TextDecoder();
 
 // ★ 全局 SNI 混合器实例（启动时初始化，未初始化时为 null）
 let 全局SNI混合器 = null;
+// ★ 全局 ECH 统计计数器 (Step H1)
+let 全局ECH统计 = { attempted: 0, accepted: 0, rejected: 0, failed: 0 };
 
 // 请求上下文类 - 封装请求级状态，减少全局变量污染
 class RequestContext {
@@ -376,9 +378,19 @@ export default {
             }
             const sni混合器 = typeof 全局SNI混合器 !== 'undefined' ? 全局SNI混合器 : null;
             const stats = sni混合器 ? sni混合器.获取统计() : '未初始化';
+            // ★ ECH 统计 (Step H3) — 直接读 env 避免 config_JSON 未初始化
+            const ech出站启用 = env.SNI_ECH === 'true' || env.SNI_ECH === '1';
+            const echStats = typeof 全局ECH统计 !== 'undefined' ? {
+                attempted: 全局ECH统计.attempted,
+                accepted: 全局ECH统计.accepted,
+                rejected: 全局ECH统计.rejected,
+                failed: 全局ECH统计.failed,
+            } : null;
             return new Response(JSON.stringify({
                 mixing_enabled: sni混合器 ? true : false,
                 stats: stats,
+                ech_outbound_enabled: ech出站启用,
+                ech: echStats,
             }, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
         }
         if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
@@ -2499,7 +2511,7 @@ function 创建SS入站解密器(config, passwordText) {
 const TLS_VERSION_10 = 769, TLS_VERSION_12 = 771, TLS_VERSION_13 = 772;
 const CONTENT_TYPE_CHANGE_CIPHER_SPEC = 20, CONTENT_TYPE_ALERT = 21, CONTENT_TYPE_HANDSHAKE = 22, CONTENT_TYPE_APPLICATION_DATA = 23;
 const HANDSHAKE_TYPE_CLIENT_HELLO = 1, HANDSHAKE_TYPE_SERVER_HELLO = 2, HANDSHAKE_TYPE_NEW_SESSION_TICKET = 4, HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS = 8, HANDSHAKE_TYPE_CERTIFICATE = 11, HANDSHAKE_TYPE_SERVER_KEY_EXCHANGE = 12, HANDSHAKE_TYPE_CERTIFICATE_REQUEST = 13, HANDSHAKE_TYPE_SERVER_HELLO_DONE = 14, HANDSHAKE_TYPE_CERTIFICATE_VERIFY = 15, HANDSHAKE_TYPE_CLIENT_KEY_EXCHANGE = 16, HANDSHAKE_TYPE_FINISHED = 20, HANDSHAKE_TYPE_KEY_UPDATE = 24;
-const EXT_SERVER_NAME = 0, EXT_SUPPORTED_GROUPS = 10, EXT_EC_POINT_FORMATS = 11, EXT_SIGNATURE_ALGORITHMS = 13, EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION = 16, EXT_SUPPORTED_VERSIONS = 43, EXT_PSK_KEY_EXCHANGE_MODES = 45, EXT_KEY_SHARE = 51;
+const EXT_SERVER_NAME = 0, EXT_SUPPORTED_GROUPS = 10, EXT_EC_POINT_FORMATS = 11, EXT_SIGNATURE_ALGORITHMS = 13, EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION = 16, EXT_SUPPORTED_VERSIONS = 43, EXT_PSK_KEY_EXCHANGE_MODES = 45, EXT_KEY_SHARE = 51, EXT_ENCRYPTED_CLIENT_HELLO = 57;
 const ALERT_CLOSE_NOTIFY = 0, ALERT_LEVEL_WARNING = 1, ALERT_UNRECOGNIZED_NAME = 112;
 const shouldIgnoreTlsAlert = fragment => fragment?.[0] === ALERT_LEVEL_WARNING && fragment?.[1] === ALERT_UNRECOGNIZED_NAME;
 const TLS文本编码器 = $encoder;
@@ -2786,11 +2798,20 @@ class TlsClient {
 		this.allowChacha = options.allowChacha !== false;  // ChaCha20 支持开关
 		// ★ SNI 混合支持
 		this.sni混合器 = options.sni混合器 || null;
-		this.有效SNI = this.serverName;  // 真实 SNI（供证书验证等使用）
-		// TlsClient 不执行证书验证，混合 SNI 不会导致握手失败，无需 insecure 降级
-		this.发送SNI = this.sni混合器
-		    ? this.sni混合器.选择SNI(this.serverName) 
-		    : this.serverName;  // ClientHello 中发送的 SNI
+		// ★ ECH 支持 (Step E)
+		this.echConfig = options.echConfig || null;
+		this.echEnabled = options.echEnabled || false;
+		// ★ SNI 策略优先级: ECH public_name > SNI混合 > 原始 serverName (Step E)
+		this.有效SNI = this.serverName;
+		if (this.echEnabled && this.echConfig) {
+			// ECH 模式: outer SNI = public_name, 真实 SNI 在内层 CH
+			this.发送SNI = this.echConfig.publicName;
+		} else if (this.sni混合器) {
+			// SNI 混合模式
+			this.发送SNI = this.sni混合器.选择SNI(this.serverName);
+		} else {
+			this.发送SNI = this.serverName;
+		}
 		this.timeout = options.timeout ?? 30000;
 		this.clientRandom = TLS随机字节(32);
 		this.serverRandom = null;
@@ -2996,7 +3017,7 @@ class TlsClient {
             }, closedError);
         }
 
-        // TLS 握手
+        // TLS 握手 (Step E: +ECH路径)
         async handshake() {
             await this.yieldIfNeeded();
             const [p256Share, x25519Share] = await Promise.all([
@@ -3005,13 +3026,40 @@ class TlsClient {
 		]);
 		this.keyPairs = new Map([[23, p256Share], [29, x25519Share]]);
 		this.ecdhKeyPair = p256Share.keyPair;
+		// ★ ECH: 以 [groupId, shareObj][] 格式保存 keyShares (Step E)
+		this.keyShares = [[29, x25519Share], [23, p256Share]];
 		const reader = this.socket.readable.getReader();
 		const writer = this.socket.writable.getWriter();
         try {
             this.setStage('handshake');
-            const clientHello = buildClientHello(this.clientRandom, this.发送SNI, { x25519: x25519Share.publicKeyRaw, p256: p256Share.publicKeyRaw }, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
-            this.recordHandshake(clientHello);
-            await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, clientHello, TLS_VERSION_10));
+            // ★ ECH: 根据 echEnabled 选择 ECH 或普通路径 (Step E)
+            if (this.echEnabled && this.echConfig) {
+                try {
+                    const echResult = await buildECHClientHello(
+                        this.clientRandom,
+                        this.有效SNI,
+                        this.发送SNI,
+                        this.keyShares,
+                        { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha },
+                        this.echConfig
+                    );
+                    this.recordHandshake(echResult.outerCH);
+                    await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, echResult.outerCH, TLS_VERSION_10));
+                    // ★ ECH 统计 (Step H2)
+                    if (typeof 全局ECH统计 !== 'undefined') 全局ECH统计.attempted++;
+                } catch (echErr) {
+                    log(`[ECH] 构建/发送 ECH CH 失败: ${echErr.message}，降级到普通 ClientHello`);
+                    this.echEnabled = false;
+                    if (typeof 全局ECH统计 !== 'undefined') 全局ECH统计.failed++;
+                    const ch = buildClientHello(this.clientRandom, this.发送SNI, this.keyShares, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
+                    this.recordHandshake(ch);
+                    await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, ch, TLS_VERSION_10));
+                }
+            } else {
+                const ch = buildClientHello(this.clientRandom, this.发送SNI, this.keyShares, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
+                this.recordHandshake(ch);
+                await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, ch, TLS_VERSION_10));
+            }
             const serverHello = await this.receiveServerHello(reader);
             if (serverHello.isHRR) throw new Error('HelloRetryRequest is not supported');
             if (serverHello.keyShare?.group && this.keyPairs.has(serverHello.keyShare.group)) {
@@ -3169,6 +3217,16 @@ class TlsClient {
                         this.recordHandshake(message.raw);
                         const parsed = parseEncryptedExtensions(message.body);
                         if (parsed.alpn) this.negotiatedAlpn = parsed.alpn;
+                        // ★ ECH accept/reject 统计 (Step F/H2)
+                        if (this.echEnabled && typeof 全局ECH统计 !== 'undefined') {
+                            if (parsed.echAccepted) {
+                                全局ECH统计.accepted++;
+                                log(`[ECH] ECH accepted: 使用真实 SNI "${this.有效SNI}"`);
+                            } else {
+                                全局ECH统计.rejected++;
+                                log(`[ECH] ECH rejected/ignored: 降级到外层 SNI "${this.发送SNI}"`);
+                            }
+                        }
                         break;
                     case HANDSHAKE_TYPE_CERTIFICATE_REQUEST:
                         this.recordHandshake(message.raw);
@@ -3686,9 +3744,9 @@ function extractSANFromCert(certDer) {
 	} catch (e) { return []; }
 }
 
-// 解析EncryptedExtensions
+// 解析EncryptedExtensions (Step F: +ECH accept检测)
 function parseEncryptedExtensions(body) {
-	const parsed = { alpn: null };
+	const parsed = { alpn: null, echAccepted: false };
 	let offset = 2;
 	const extensionsEnd = 2 + readUint16(body, 0);
 	for (; offset + 4 <= extensionsEnd;) {
@@ -3701,9 +3759,185 @@ function parseEncryptedExtensions(body) {
 				parsed.alpn = TLS文本解码器.decode(body.slice(offset + 3, offset + 3 + protocolLength));
 			}
 		}
+		if (extensionType === EXT_ENCRYPTED_CLIENT_HELLO) {
+			parsed.echAccepted = extensionLength === 0;
+		}
 		offset += extensionLength;
 	}
 	return parsed;
+}
+
+// ===== ECH / HPKE 核心模块 (Step A + D) =====
+const HPKE_KEM_ID = 0x0020;
+const HPKE_KDF_ID = 0x0001;
+const HPKE_AEAD_ID = 0x0001;
+
+function HPKE构建SuiteID() {
+	return concatBytes($encoder.encode('HPKE-v1'), uint16be(HPKE_KEM_ID), uint16be(HPKE_KDF_ID), uint16be(HPKE_AEAD_ID));
+}
+
+async function HPKE标签化Extract(salt, ikm, label, suiteID) {
+	const labeledIKM = concatBytes($encoder.encode('HPKE-v1'), suiteID, $encoder.encode(label), ikm);
+	return hkdfExtract('SHA-256', salt, labeledIKM);
+}
+
+async function HPKE标签化Expand(prk, label, info, length, suiteID) {
+	const labeledInfo = concatBytes(uint16be(length), $encoder.encode('HPKE-v1'), suiteID, $encoder.encode(label), info);
+	return hkdfExpandRaw('SHA-256', prk, labeledInfo, length);
+}
+
+async function hkdfExpandRaw(hash, prk, info, length) {
+	const hashLen = TLS哈希长度(hash);
+	const roundCount = Math.ceil(length / hashLen);
+	let output = new Uint8Array(0);
+	let previousBlock = new Uint8Array(0);
+	for (let round = 1; round <= roundCount; round++) {
+		previousBlock = await TLS_HMAC(hash, prk, concatBytes(previousBlock, info, [round]));
+		output = concatBytes(output, previousBlock);
+	}
+	return output.slice(0, length);
+}
+
+async function HPKE_DHKEM_Encap(pkR) {
+	const { keyPair: skE, publicKeyRaw: pkE } = await TLS生成KeyShare('X25519');
+	const dh = await TLS派生共享密钥(skE.privateKey, pkR, 'X25519');
+	const enc = pkE;
+	const kemContext = concatBytes(enc, pkR);
+	const suiteID = HPKE构建SuiteID();
+	const prk = await HPKE标签化Extract(null, dh, 'shared_secret', suiteID);
+	const sharedSecret = await HPKE标签化Expand(prk, 'key_schedule_context', kemContext, 32, suiteID);
+	return { enc, sharedSecret };
+}
+
+async function HPKE_KeySchedule(mode, sharedSecret, hpkeInfo, psk = '', psk_id = '') {
+	const suiteID = HPKE构建SuiteID();
+	const pskIDHash = await HPKE标签化Extract(null, $encoder.encode(psk_id), 'psk_id_hash', suiteID);
+	const infoHash = await HPKE标签化Extract(null, hpkeInfo, 'info_hash', suiteID);
+	const keyScheduleContext = concatBytes([mode], pskIDHash, infoHash);
+	const secret = await HPKE标签化Extract(sharedSecret, $encoder.encode(''), 'secret', suiteID);
+	const key = await HPKE标签化Expand(secret, 'key', keyScheduleContext, 16, suiteID);
+	const baseNonce = await HPKE标签化Expand(secret, 'base_nonce', keyScheduleContext, 12, suiteID);
+	const exporterSecret = await HPKE标签化Expand(secret, 'exp', keyScheduleContext, 32, suiteID);
+	return { key, baseNonce, exporterSecret, sequence: 0 };
+}
+
+async function HPKE_SetupBaseS(pkR, hpkeInfo) {
+	const { enc, sharedSecret } = await HPKE_DHKEM_Encap(pkR);
+	const { key: rawKey, baseNonce } = await HPKE_KeySchedule(0x00, sharedSecret, hpkeInfo);
+	const aesKey = await TLS导入AES密钥(rawKey, ['encrypt']);
+	return { enc, context: { aesKey, baseNonce, sequence: 0 } };
+}
+
+async function HPKE_Seal(context, plaintext, aad) {
+	const nonce = xorSequenceIntoIv(context.baseNonce, context.sequence);
+	context.sequence++;
+	return TLS_AES_GCM加密(context.aesKey, nonce, plaintext, aad);
+}
+
+// ECH 扩展构建 (Step D)
+function buildECHExtension(echConfig, enc, encryptedCH) {
+	const cipherSuite = tlsBytes(echConfig.cipherSuites[0].kdfId, echConfig.cipherSuites[0].aeadId);
+	const configId = tlsBytes(echConfig.configId);
+	const encBytes = tlsBytes(enc.length, enc);
+	const encryptedCHBytes = tlsBytes(uint16be(encryptedCH.length), encryptedCH);
+	const extContent = concatBytes(cipherSuite, configId, encBytes, encryptedCHBytes);
+	return tlsBytes(uint16be(EXT_ENCRYPTED_CLIENT_HELLO), uint16be(extContent.length), extContent);
+}
+
+function buildZeroedECHExtension(echConfig, enc, payloadLength) {
+	const encLength = enc.length;
+	const dataLength = 2 + 1 + 2 + encLength + 2 + payloadLength;
+	const data = new Uint8Array(dataLength);
+	data[0] = echConfig.cipherSuites[0].kdfId;
+	data[1] = echConfig.cipherSuites[0].aeadId;
+	data[2] = echConfig.configId;
+	data[3] = (encLength >> 8) & 0xFF;
+	data[4] = encLength & 0xFF;
+	data.set(enc, 5);
+	const payloadLenOffset = 5 + encLength;
+	data[payloadLenOffset] = (payloadLength >> 8) & 0xFF;
+	data[payloadLenOffset + 1] = payloadLength & 0xFF;
+	return concatBytes(uint16be(EXT_ENCRYPTED_CLIENT_HELLO), uint16be(dataLength), data);
+}
+
+// 构建带 ECH 扩展的外层 ClientHello (Step C helper)
+function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, options, echExt) {
+	const cipherIds = [];
+	if (options?.tls13 !== false) cipherIds.push(4865, 4866);
+	if (options?.tls13 !== false && options?.chacha !== false) cipherIds.push(4867);
+	if (options?.tls12 !== false) cipherIds.push(49199, 49200, 49195, 49196);
+	if (options?.tls12 !== false && options?.chacha !== false) cipherIds.push(52392, 52393);
+	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
+	const extensions = [tlsBytes(255, 1, 0, 1, 0)];
+	if (serverName) {
+		const serverNameBytes = TLS文本编码器.encode(serverName);
+		const serverNameList = tlsBytes(0, uint16be(serverNameBytes.length), serverNameBytes);
+		extensions.push(tlsBytes(uint16be(EXT_SERVER_NAME), uint16be(serverNameList.length + 2), uint16be(serverNameList.length), serverNameList));
+	}
+	if (keyShares) {
+		const keyShareEntries = [];
+		const supportedGroupsExt = tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), 4, 0, 1, 0);
+		for (const [groupId, keyShare] of keyShares) {
+			keyShareEntries.push(tlsBytes(uint16be(groupId), uint16be(keyShare.publicKeyRaw.length), keyShare.publicKeyRaw));
+		}
+		if (keyShareEntries.length) {
+			const keyShareExt = tlsBytes(0, concatBytes(...keyShareEntries));
+			extensions.push(tlsBytes(uint16be(EXT_KEY_SHARE), uint16be(keyShareExt.length), keyShareExt));
+		}
+		extensions.push(supportedGroupsExt);
+	}
+	const supportedVersions = [];
+	if (options?.tls13 !== false) supportedVersions.push(TLS_VERSION_13);
+	if (options?.tls12 !== false) supportedVersions.push(TLS_VERSION_12);
+	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
+	if (options?.alpn) {
+		const alpnBytes = TLS文本编码器.encode(options.alpn);
+		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), tlsBytes(alpnBytes.length + 1, alpnBytes.length, alpnBytes)));
+	}
+	if (options?.chacha !== false) {
+		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), 2, 1, 0));
+	}
+	if (echExt) extensions.push(echExt);
+	const clientHello = tlsBytes(TLS_VERSION_12, clientRandom, tlsBytes(0), cipherBytes, tlsBytes(1, 0), tlsBytes(uint16be(concatBytes(...extensions).length), ...extensions));
+	return buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_HELLO, clientHello);
+}
+
+// 内层 CH padding (RFC 7685 type=21)
+function addPaddingToClientHello(clientHelloMsg, targetSize) {
+	const currentSize = clientHelloMsg.length;
+	const paddingNeeded = targetSize - currentSize;
+	if (paddingNeeded <= 4) return clientHelloMsg;
+	const paddingDataLen = paddingNeeded - 4;
+	const paddingExt = concatBytes(uint16be(21), uint16be(paddingDataLen), new Uint8Array(paddingDataLen));
+	const body = clientHelloMsg.slice(4);
+	let offset = 34;
+	offset += 1 + body[offset];
+	offset += 2 + ((body[offset] << 8) | body[offset + 1]);
+	offset += 1 + body[offset];
+	const extLen = (body[offset] << 8) | body[offset + 1];
+	offset += 2;
+	const existingExt = body.slice(offset, offset + extLen);
+	const newExt = concatBytes(existingExt, paddingExt);
+	const newBody = concatBytes(body.slice(0, offset - 2), uint16be(newExt.length), newExt);
+	return buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_HELLO, newBody);
+}
+
+// ECH 内层+外层 ClientHello 构建 (Step C)
+async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShares, options, echConfig) {
+	let innerCH = buildClientHello(clientRandom, 真实SNI, keyShares, options);
+	innerCH = addPaddingToClientHello(innerCH, 512);
+	const outerCH_Base = buildClientHello(clientRandom, publicName, keyShares, options);
+	const echLabel = $encoder.encode('tls13-ech');
+	const configHash = await TLS摘要('SHA-256', concatBytes(echLabel, echConfig.raw));
+	const hpkeInfo = concatBytes(echLabel, configHash);
+	const { enc, context } = await HPKE_SetupBaseS(echConfig.publicKey, hpkeInfo);
+	const predictedPayloadSize = innerCH.length + 16;
+	const zeroExt = buildZeroedECHExtension(echConfig, enc, predictedPayloadSize);
+	const outerCH_AAD = 构建带ECH扩展的外层CH(clientRandom, publicName, keyShares, options, zeroExt);
+	const encryptedCH = await HPKE_Seal(context, innerCH, outerCH_AAD);
+	const echExt = buildECHExtension(echConfig, enc, encryptedCH);
+	const outerCH_Final = 构建带ECH扩展的外层CH(clientRandom, publicName, keyShares, options, echExt);
+	return { outerCH: outerCH_Final, innerCH, enc };
 }
 
 // 构建ClientHello
@@ -5442,9 +5676,22 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = nul
 		const proxySocket = (TCP连接 || connect)({ hostname, port });
 		try {
 			await proxySocket.opened;
-			const socket = new TlsClient(proxySocket, { serverName: tlsServerName, insecure: allowInsecure, allowChacha, sni混合器: 全局SNI混合器 });
+			// ★ ECH 出站: 获取目标 ECHConfig 并启用 ECH (Step G)
+			let echConfig = null, echEnabled = false;
+			if (config_JSON?.ECH出站 && !isIPHostname(hostname) && typeof 获取ECHConfig === 'function') {
+				try {
+					echConfig = await 获取ECHConfig(tlsServerName);
+					if (echConfig) {
+						echEnabled = true;
+						log(`[ECH] 出站 ECH 已启用: ${tlsServerName} → public_name=${echConfig.publicName}`);
+					}
+				} catch (echErr) {
+					log(`[ECH] 获取 ECH config 失败: ${echErr.message}，跳过 ECH`);
+				}
+			}
+			const socket = new TlsClient(proxySocket, { serverName: tlsServerName, insecure: allowInsecure, allowChacha, sni混合器: 全局SNI混合器, echConfig, echEnabled });
 			await socket.handshake();
-			log(`[HTTPS代理] TLS版本: ${socket.isTls13 ? '1.3' : '1.2'} | Cipher: 0x${socket.cipherSuite.toString(16)}${socket.cipherConfig?.chacha ? ' (ChaCha20)' : ' (AES-GCM)'}${socket.发送SNI !== tlsServerName ? ` | SNI: ${socket.发送SNI} (真实: ${tlsServerName})` : ''}`);
+			log(`[HTTPS代理] TLS版本: ${socket.isTls13 ? '1.3' : '1.2'} | Cipher: 0x${socket.cipherSuite.toString(16)}${socket.cipherConfig?.chacha ? ' (ChaCha20)' : ' (AES-GCM)'}${socket.发送SNI !== tlsServerName ? ` | SNI: ${socket.发送SNI} (真实: ${tlsServerName})` : ''}${socket.echEnabled ? ' | ECH: 是' : ''}`);
 			return socket;
 		} catch (error) {
 			try { proxySocket.close() } catch (e) { }
@@ -6342,50 +6589,82 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
     }
 }
 
-async function getECH(host) {
+// 解析单个 ECHConfig 字节数组 (RFC 8871 §4) (Step B)
+function 解析ECHConfig(bytes) {
+	let offset = 0;
+	const version = (bytes[offset] << 8) | bytes[offset + 1];
+	if (version !== 0xFE0D) return null;
+	offset += 4;
+	const configId = bytes[offset++];
+	const kemId = (bytes[offset] << 8) | bytes[offset + 1];
+	offset += 2;
+	const pubKeyLen = (bytes[offset] << 8) | bytes[offset + 1];
+	offset += 2;
+	const publicKey = bytes.slice(offset, offset + pubKeyLen);
+	offset += pubKeyLen;
+	const suitesLen = (bytes[offset] << 8) | bytes[offset + 1];
+	offset += 2;
+	const cipherSuites = [];
+	const suitesEnd = offset + suitesLen;
+	while (offset + 2 <= suitesEnd) {
+		cipherSuites.push({ kdfId: bytes[offset++], aeadId: bytes[offset++] });
+	}
+	const maximumNameLength = bytes[offset++];
+	const nameLen = bytes[offset++];
+	const publicName = TLS文本解码器.decode(bytes.slice(offset, offset + nameLen));
+	offset += nameLen;
+	return { configId, kemId, publicKey, publicName, cipherSuites, maximumNameLength, raw: bytes };
+}
+
+// 获取并解析 ECHConfig (Step B: 取代旧 getECH)
+async function 获取ECHConfig(host) {
 	if (ECH_CACHE.has(host)) {
 		const cached = ECH_CACHE.get(host);
 		if (Date.now() - cached.time < ECH_CACHE_TTL) return cached.value;
 		ECH_CACHE.delete(host);
 	}
-    try {
-        const answers = await DoH查询(host, 'HTTPS');
-        if (!answers.length) return '';
-        for (const ans of answers) {
-            if (ans.type !== 65 || !ans.rdata) continue;
-            const bytes = ans.rdata;
-            // 解析 SVCB/HTTPS rdata: SvcPriority(2) + TargetName(variable) + SvcParams
-            let offset = 2; // 跳过 SvcPriority
-            // 跳过 TargetName (域名编码)
-            while (offset < bytes.length) {
-                const len = bytes[offset];
-                if (len === 0) { offset++; break; }
-                offset += len + 1;
-            }
-            // 遍历 SvcParams 键值对
-            while (offset + 4 <= bytes.length) {
-                const key = (bytes[offset] << 8) | bytes[offset + 1];
-                const len = (bytes[offset + 2] << 8) | bytes[offset + 3];
-                offset += 4;
-                // key=5 是 ECH (Encrypted Client Hello)
-                if (key === 5) {
-					const echConfig = btoa(String.fromCharCode(...bytes.slice(offset, offset + len)));
-					// 缓存大小管理：达到上限时删除最旧条目
-					if (ECH_CACHE.size >= ECH_CACHE_MAX) {
-						const oldest = ECH_CACHE.keys().next().value;
-						ECH_CACHE.delete(oldest);
+	try {
+		const answers = await DoH查询(host, 'HTTPS');
+		if (!answers.length) return null;
+		for (const ans of answers) {
+			if (ans.type !== 65 || !ans.rdata) continue;
+			const bytes = ans.rdata;
+			let offset = 2;
+			while (offset < bytes.length) {
+				const len = bytes[offset];
+				if (len === 0) { offset++; break; }
+				offset += len + 1;
+			}
+			while (offset + 4 <= bytes.length) {
+				const key = (bytes[offset] << 8) | bytes[offset + 1];
+				const svcLen = (bytes[offset + 2] << 8) | bytes[offset + 3];
+				offset += 4;
+				if (key === 5) {
+					const echListBytes = bytes.slice(offset, offset + svcLen);
+					let listOff = 0;
+					while (listOff + 2 < echListBytes.length) {
+						const cfgLen = (echListBytes[listOff] << 8) | echListBytes[listOff + 1];
+						listOff += 2;
+						const cfg = 解析ECHConfig(echListBytes.slice(listOff, listOff + cfgLen));
+						listOff += cfgLen;
+						if (cfg && cfg.kemId === HPKE_KEM_ID && cfg.cipherSuites.some(s => s.kdfId === HPKE_KDF_ID && s.aeadId === HPKE_AEAD_ID)) {
+							if (ECH_CACHE.size >= ECH_CACHE_MAX) { const oldest = ECH_CACHE.keys().next().value; ECH_CACHE.delete(oldest); }
+							ECH_CACHE.set(host, { value: cfg, time: Date.now() });
+							return cfg;
+						}
 					}
-					ECH_CACHE.set(host, { value: echConfig, time: Date.now() });
-					return echConfig;
 				}
-                offset += len;
-            }
-        }
-        return '';
-    } catch {
-        return '';
-    }
+				offset += svcLen;
+			}
+		}
+		return null;
+	} catch {
+		return null;
+	}
 }
+
+// 保留旧 getECH 别名保持向后兼容
+async function getECH(host) { const cfg = await 获取ECHConfig(host); return cfg ? btoa(String.fromCharCode(...cfg.raw)) : ''; }
 
 async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false, existingToken = null) {
     // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
@@ -6585,6 +6864,8 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
     if (!config_JSON.Fingerprint) config_JSON.Fingerprint = "chrome";
     if (!config_JSON.ECH) config_JSON.ECH = false;
     if (!config_JSON.ECHConfig) config_JSON.ECHConfig = { DNS: CM_DoH, SNI: null };
+    // ★ ECH 出站默认 (Step G)
+    if (config_JSON.ECH出站 === undefined) config_JSON.ECH出站 = false;
     // ★ SNI 混合初始化
     // 1. 后备：KV/用户配置未提供 SNIMixing 时使用默认值
     if (!config_JSON.SNIMixing) {
@@ -6597,6 +6878,14 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
             config_JSON.SNIMixing = { ...config_JSON.SNIMixing, ...envSNI };
         } catch (e) {
             console.error(`[SNIMixing] 解析环境变量失败: ${e.message}`);
+        }
+    }
+    // ★ env.SNI_ECH 覆盖 ECH出站 (Step G)
+    if (env.SNI_ECH) {
+        try {
+            config_JSON.ECH出站 = JSON.parse(env.SNI_ECH);
+        } catch (e) {
+            console.error(`[SNI_ECH] 解析环境变量失败: ${e.message}`);
         }
     }
     // 3. 创建全局混合器实例

@@ -21,6 +21,7 @@ wrangler-install.log
 # IDE
 .vscode/
 .idea/
+.sisyphus/
 *.swp
 *.swo
 *~
