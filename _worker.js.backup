@@ -4285,12 +4285,10 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
                 newSocket = await socks5Connect(host, portNum, 本次首包数据, TCP连接);
             } else if (启用SOCKS5反代 === 'http') {
                 log(`[HTTP代理] 代理到: ${host}:${portNum}`);
-                newSocket = await httpConnect(host, portNum, 本次首包数据, false, TCP连接);
+                newSocket = await httpConnect(host, portNum, 本次首包数据, TCP连接);
             } else if (启用SOCKS5反代 === 'https') {
                 log(`[HTTPS代理] 代理到: ${host}:${portNum}`);
-                newSocket = isIPHostname(parsedSocks5Address.hostname)
-                    ? await httpsConnect(host, portNum, 本次首包数据, TCP连接)
-                    : await httpConnect(host, portNum, 本次首包数据, true, TCP连接);
+                newSocket = await httpsConnect(host, portNum, 本次首包数据, TCP连接);
             } else if (启用SOCKS5反代 === 'turn') {
                 log(`[TURN代理] 代理到: ${host}:${portNum}`);
                 newSocket = await turnConnect(parsedSocks5Address, host, portNum, TCP连接);
@@ -5299,10 +5297,36 @@ async function sstpConnect(proxy, targetHost, targetPort, TCP连接 = null) {
 	try {
 		const serverHost = stripIPv6Brackets(proxy.hostname);
 		const serverPort = proxy.port;
-		socket = (TCP连接 || connect)({ hostname: serverHost, port: serverPort }, { secureTransport: 'on', allowHalfOpen: false });
+		socket = (TCP连接 || connect)({ hostname: serverHost, port: serverPort });
 		await withTimeout(socket.opened, CONNECT_TIMEOUT_MS, 'SSTP server connection timed out');
-		reader = socket.readable.getReader();
-		writer = socket.writable.getWriter();
+		const tlsServerName = stripIPv6Brackets(serverHost);
+		let echConfig = null, echEnabled = false;
+			if (config_JSON?.ECH出站 && !isIPHostname(tlsServerName) && typeof 获取ECHConfig === 'function') {
+			try {
+				echConfig = await 获取ECHConfig(tlsServerName);
+				if (echConfig) {
+					echEnabled = true;
+					log(`[ECH] SSTP 出站 ECH 已启用: ${tlsServerName} → public_name=${echConfig.publicName}`);
+				}
+			} catch (echErr) {
+				log(`[ECH] SSTP 获取 ECH config 失败: ${echErr.message}，跳过 ECH`);
+			}
+		}
+		const tlsSocket = new TlsClient(socket, { serverName: tlsServerName, sni混合器: 全局SNI混合器, echConfig, echEnabled });
+		await tlsSocket.handshake();
+		reader = {
+			async read() {
+				const data = await tlsSocket.read();
+				return data ? { value: data, done: false } : { value: null, done: true };
+			}
+		};
+		writer = {
+			async write(data) {
+				await tlsSocket.write(数据转Uint8Array(data));
+			},
+			async close() { },
+			releaseLock() { }
+		};
 
 		const displayHost = serverHost.includes(':') ? `[${serverHost}]` : serverHost;
 		const httpRequest = SS文本编码器.encode(
@@ -5781,15 +5805,11 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = nul
 	}
 }
 
-async function httpConnect(targetHost, targetPort, initialData, HTTPS代理 = false, TCP连接 = null) {
+async function httpConnect(targetHost, targetPort, initialData, TCP连接 = null) {
     const { username, password, hostname, port } = parsedSocks5Address;
-    const socket = HTTPS代理
-        ? (TCP连接 || connect)({ hostname, port }, { secureTransport: 'on', allowHalfOpen: false })
-        : (TCP连接 || connect)({ hostname, port });
+    const socket = (TCP连接 || connect)({ hostname, port });
     const writer = socket.writable.getWriter(), reader = socket.readable.getReader();
     try {
-        if (HTTPS代理) await socket.opened;
-
         const auth = username && password ? `Proxy-Authorization: Basic ${btoa(`${username}:${password}`)}\r\n` : '';
         const request = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n${auth}User-Agent: Mozilla/5.0\r\nConnection: keep-alive\r\n\r\n`;
         await writer.write(SS文本编码器.encode(request));
@@ -5798,19 +5818,19 @@ async function httpConnect(targetHost, targetPort, initialData, HTTPS代理 = fa
         let responseBuffer = new Uint8Array(0), headerEndIndex = -1, bytesRead = 0;
         while (headerEndIndex === -1 && bytesRead < 8192) {
             const { done, value } = await withTimeout(reader.read(), 5000);
-            if (done || !value) throw new Error(`${HTTPS代理 ? 'HTTPS' : 'HTTP'} 代理在返回 CONNECT 响应前关闭连接`);
+            if (done || !value) throw new Error('HTTP 代理在返回 CONNECT 响应前关闭连接');
             responseBuffer = new Uint8Array([...responseBuffer, ...value]);
             bytesRead = responseBuffer.length;
             const crlfcrlf = responseBuffer.findIndex((_, i) => i < responseBuffer.length - 3 && responseBuffer[i] === 0x0d && responseBuffer[i + 1] === 0x0a && responseBuffer[i + 2] === 0x0d && responseBuffer[i + 3] === 0x0a);
             if (crlfcrlf !== -1) headerEndIndex = crlfcrlf + 4;
         }
 
-        if (headerEndIndex === -1) throw new Error(`${HTTPS代理 ? 'HTTPS' : 'HTTP'} 代理响应无效`);
+        if (headerEndIndex === -1) throw new Error('HTTP 代理响应无效');
         const statusLine = SS文本解码器.decode(responseBuffer.slice(0, headerEndIndex)).split('\r\n')[0];
         const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-        if (!statusMatch) throw new Error(`${HTTPS代理 ? 'HTTPS' : 'HTTP'} 代理返回无效状态行`);
+        if (!statusMatch) throw new Error('HTTP 代理返回无效状态行');
         const statusCode = parseInt(statusMatch[1]);
-        if (statusCode < 200 || statusCode >= 300) throw new Error(`${HTTPS代理 ? 'HTTPS' : 'HTTP'} 代理连接失败: ${statusCode}`);
+        if (statusCode < 200 || statusCode >= 300) throw new Error(`HTTP 代理连接失败: ${statusCode}`);
 
         reader.releaseLock();
         if (有效数据长度(initialData) > 0) {
@@ -7747,9 +7767,9 @@ async function SOCKS5可用性验证(代理协议 = 'socks5', 代理参数, requ
         } else if (代理协议 === 'sstp') {
             tcpSocket = await sstpConnect(parsedSocks5Address, 'check.socks5.090227.xyz', 80, TCP连接);
         } else {
-            tcpSocket = 代理协议 === 'https' && isIPHostname(hostname)
+            tcpSocket = 代理协议 === 'https'
                 ? await httpsConnect('check.socks5.090227.xyz', 80, initialData, TCP连接)
-                : await httpConnect('check.socks5.090227.xyz', 80, initialData, 代理协议 === 'https', TCP连接);
+                : await httpConnect('check.socks5.090227.xyz', 80, initialData, TCP连接);
         }
         if (!tcpSocket) return { success: false, error: '无法连接到代理服务器', proxy: 代理协议 + "://" + 完整代理参数, responseTime: Date.now() - startTime };
         try {
