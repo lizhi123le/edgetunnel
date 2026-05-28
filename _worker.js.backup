@@ -3063,6 +3063,11 @@ function 创建SNI混合器(config = {}, env = null) {
             // flush 无数据（!需Flush 或刚切换重置）→ 读 KV 现有值
             return await 获取KV统计(env);
         }
+        // 开关关闭时：直读 KV 存量（无 flush），有则返回，无则回退本地计数
+        if (env?.KV) {
+            const kvStats = await 获取KV统计(env);
+            if (kvStats !== '无数据') return kvStats;
+        }
         return 获取统计();
     }
 
