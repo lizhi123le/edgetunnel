@@ -1087,7 +1087,13 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
                         关闭连接: (err) => { closeSocketQuietly(xhttpBridge); },
                         名称: 'XHTTP上行'
                     });
-                    await forwardataTCP(首包.hostname, 首包.port, 首包.rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID, ctx2);
+                    let rawData = 首包.rawData;
+                    // SNI 改写: 如果是 TLS ClientHello，改写 SNI
+                    if (rawData) {
+                        const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
+                        if (改写结果) rawData = 改写结果;
+                    }
+                    await forwardataTCP(首包.hostname, 首包.port, rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID, ctx2);
                 }
 
                 while (true) {
@@ -1521,7 +1527,13 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
                                     isDnsQuery = true;
                                     if (有效数据长度(rawClientData) > 0) await 转发木马UDP数据(rawClientData, grpcBridge, 木马UDP上下文, ctx2);
                                 } else {
-                                    await forwardataTCP(hostname, port, rawClientData, grpcBridge, null, remoteConnWrapper, yourUUID, ctx2);
+                                    let rawData = rawClientData;
+                                    // SNI 改写: 如果是 TLS ClientHello，改写 SNI
+                                    if (rawData) {
+                                        const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
+                                        if (改写结果) rawData = 改写结果;
+                                    }
+                                    await forwardataTCP(hostname, port, rawData, grpcBridge, null, remoteConnWrapper, yourUUID, ctx2);
                                 }
                             } else {
                                 判断是否是木马 = false;
@@ -1916,7 +1928,13 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			上下文.首包已建立 = true;
 			上下文.目标主机 = hostname;
 			上下文.目标端口 = port;
-			await forwardataTCP(hostname, port, rawClientData, 上下文.回包Socket, null, remoteConnWrapper, yourUUID, ctx2);
+			let rawData = rawClientData;
+			// SNI 改写: 如果是 TLS ClientHello，改写 SNI
+			if (rawData) {
+				const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
+				if (改写结果) rawData = 改写结果;
+			}
+			await forwardataTCP(hostname, port, rawData, 上下文.回包Socket, null, remoteConnWrapper, yourUUID, ctx2);
 		}
 	};
 
@@ -1961,7 +1979,13 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 				if (有效数据长度(rawClientData) > 0) return 转发木马UDP数据(rawClientData, serverSock, 木马UDP上下文, ctx2);
 				return;
 			}
-			await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, yourUUID, ctx2);
+			let rawData = rawClientData;
+			// SNI 改写: 如果是 TLS ClientHello，改写 SNI
+			if (rawData) {
+				const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
+				if (改写结果) rawData = 改写结果;
+			}
+			await forwardataTCP(hostname, port, rawData, serverSock, null, remoteConnWrapper, yourUUID, ctx2);
 		} else {
 			判断是否是木马 = false;
 			当前块字节 = 当前块字节 || 有效块;
