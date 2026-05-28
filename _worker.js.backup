@@ -303,6 +303,8 @@ export default {
         const ctx2 = new RequestContext(env);
         ctx2.调试日志打印 = ['1', 'true'].includes(env.DEBUG);
         调试日志打印 = ctx2.调试日志打印;
+        // ★ 轻量 SNI 混合器初始化：在代理路径前创建，确保 TLS 出口均持有 mixer 实例
+        确保SNI混合器已初始化(env);
         
         let url;
         try {
@@ -2975,6 +2977,25 @@ function 创建SNI混合器(config = {}) {
     }
     
     return { 选择SNI, 获取统计, 重置统计: () => { 混合计数 = { 主域: 0, 掩护: 0, 总计: 0 }; } };
+}
+
+/**
+ * 轻量级 SNI 混合器初始化（仅从 env.SNIMIXING 创建，不依赖 KV/配置缓存）
+ * 在 fetch handler 入口处调用，确保代理路径（WS/gRPC/XHTTP）无需等待 读取config_JSON 即可获得 mixer 实例。
+ * L7103 的完整初始化执行后会覆盖此实例（双保险设计）。
+ */
+function 确保SNI混合器已初始化(env) {
+    if (全局SNI混合器) return;
+    const config = { 启用: false, 真实SNI比例: 0.8, 白名单: 默认SNI白名单 };
+    if (env.SNIMIXING) {
+        try {
+            const envConfig = JSON.parse(env.SNIMIXING);
+            Object.assign(config, envConfig);
+        } catch (e) {
+            console.error('[SNIMixing] 解析环境变量失败:', e.message);
+        }
+    }
+    全局SNI混合器 = 创建SNI混合器(config);
 }
 
 // TLS 客户端类
