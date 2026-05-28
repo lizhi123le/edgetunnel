@@ -1535,7 +1535,12 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
                                 }
                                 const respHeader = new Uint8Array([version, 0]);
                                 grpcBridge.send(respHeader);
-                                const rawData = rawClientData;
+                                let rawData = rawClientData;
+                                // SNI 改写: 如果是 TLS ClientHello，改写 SNI
+                                if (!isDnsQuery && rawData) {
+                                    const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
+                                    if (改写结果) rawData = 改写结果;
+                                }
                                 if (isDnsQuery) {
                                     if (判断是否是木马) await 转发木马UDP数据(rawData, grpcBridge, 木马UDP上下文, ctx2);
                                     else await forwardataudp(rawData, grpcBridge, null, null, ctx2);
@@ -1970,7 +1975,12 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 				else throw new Error('UDP is not supported');
 			}
 			const respHeader = new Uint8Array([version, 0]);
-			const rawData = rawClientData;
+			let rawData = rawClientData;
+			// SNI 改写: 如果是 TLS ClientHello，改写 SNI
+			if (rawData) {
+				const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
+				if (改写结果) rawData = 改写结果;
+			}
 			if (isDnsQuery) {
 				if (判断是否是木马) return 转发木马UDP数据(rawData, serverSock, 木马UDP上下文, ctx2);
 				return forwardataudp(rawData, serverSock, respHeader, null, ctx2);
@@ -2540,6 +2550,163 @@ const tlsBytes = (...parts) => {
 const uint16be = value => [value >> 8 & 255, 255 & value];
 const readUint16 = (buffer, offset) => buffer[offset] << 8 | buffer[offset + 1];
 const readUint24 = (buffer, offset) => buffer[offset] << 16 | buffer[offset + 1] << 8 | buffer[offset + 2];
+
+/**
+ * 尝试解析并改写 TLS ClientHello 中的 SNI
+ * @param {Uint8Array} rawData - 原始首包数据
+ * @param {object} sni混合器 - SNI 混合器实例 { 选择SNI(sni): string }
+ * @returns {Uint8Array|null} 改写后的数据，或 null（无需改写/非 TLS）
+ */
+function 尝试改写ClientHelloSNI(rawData, sni混合器) {
+    if (!sni混合器?.选择SNI) return null;
+    if (!rawData || rawData.length < 50) return null;  // 最短 ClientHello ~50 字节
+    
+    // 1. 检查是否为 TLS Handshake Record
+    if (rawData[0] !== 0x16) return null;
+    
+    // 2. 解析 TLS Record Header
+    const recordLen = (rawData[3] << 8) | rawData[4];
+    if (rawData.length < 5 + recordLen) return null;  // 不完整
+    
+    // 3. 解析 Handshake 消息
+    const recordBody = rawData.subarray(5, 5 + recordLen);
+    if (recordBody[0] !== 0x01) return null;  // 不是 ClientHello
+    
+    const hsLen = (recordBody[1] << 16) | (recordBody[2] << 8) | recordBody[3];
+    if (recordBody.length < 4 + hsLen) return null;  // 不完整
+    
+    // 4. 解析 ClientHello Body
+    const body = recordBody.subarray(4);
+    let offset = 0;
+    
+    // Version (2 bytes)
+    offset += 2;
+    // Random (32 bytes)
+    offset += 32;
+    // Session ID
+    const sessLen = body[offset];
+    offset += 1 + sessLen;
+    // Cipher Suites
+    const csLen = (body[offset] << 8) | body[offset + 1];
+    offset += 2 + csLen;
+    // Compression Methods
+    const compLen = body[offset];
+    offset += 1 + compLen;
+    
+    // 5. Extensions
+    if (offset + 2 > body.length) return null;
+    const extLen = (body[offset] << 8) | body[offset + 1];
+    offset += 2;
+    
+    if (offset + extLen > body.length) return null;
+    
+    // 6. 查找 SNI Extension (type = 0x0000)
+    const extEnd = offset + extLen;
+    // 记录名称在 body 中的位置
+    while (offset + 4 <= extEnd) {
+        const extType = (body[offset] << 8) | body[offset + 1];
+        const extDataLen = (body[offset + 2] << 8) | body[offset + 3];
+        const extDataEnd = offset + 4 + extDataLen;
+        
+        // 越界检查: 防止畸形 extension data length 导致跳跃越界
+        if (extDataEnd > extEnd) break;  // 丢弃剩余的不可解析 extensions
+        
+        if (extType === 0x0000) {
+            // Found SNI extension
+            const sniDataOffset = offset + 4;
+            const sniListLen = (body[sniDataOffset] << 8) | body[sniDataOffset + 1];
+            if (sniListLen < 3) return null;  // 至少 "NameType(1) + NameLen(2)"
+            
+            const nameType = body[sniDataOffset + 2];
+            if (nameType !== 0x00) return null;  // 不是 host_name
+            
+            const nameLen = (body[sniDataOffset + 3] << 8) | body[sniDataOffset + 4];
+            if (nameLen === 0) return null;
+            
+            // SNI 名称在 body 中的位置
+            const nameStartInBody = sniDataOffset + 5;
+            if (nameStartInBody + nameLen > body.length) return null;
+            
+            const sniBytes = body.subarray(nameStartInBody, nameStartInBody + nameLen);
+            const originalSNI = new TextDecoder().decode(sniBytes);
+            
+            // 调用 SNI 混合器选择新的 SNI
+            const newSNI = sni混合器.选择SNI(originalSNI);
+            if (!newSNI || newSNI === originalSNI) return null;  // 无需改写
+            
+            const newSNIBytes = new TextEncoder().encode(newSNI);
+            const lenDiff = newSNIBytes.length - nameLen;
+            
+            // 安全兜底: 新 SNI 过长可能溢出 16-bit 长度字段
+            if (newSNIBytes.length > 65535) return null;
+            const newRecordLen = recordLen + lenDiff;
+            if (newRecordLen > 65535) return null;  // TLS Record Length 上限
+            
+            // 转换为 chunk 中的绝对偏移
+            const absOffset = bodyPos => 5 + 4 + bodyPos;  // tlsRecord(5) + handshakeHeader(4) + body offset
+            const chunk_sniNameOffset = absOffset(nameStartInBody);
+            const chunk_nameLenOffset = absOffset(sniDataOffset + 3);
+            const chunk_sniListLenOffset = absOffset(sniDataOffset);
+            const chunk_extDataLenOffset = absOffset(offset + 2);  // offset is body position of ext type
+            const chunk_tlsRecordLenOffset = 3;
+            const chunk_handshakeMsgLenOffset = 6;
+            
+            // 构建新数组
+            const newLen = rawData.length + lenDiff;
+            const newData = new Uint8Array(newLen);
+            
+            // 第一部分: 到 SNI 名称之前
+            let pos = 0;
+            newData.set(rawData.subarray(0, chunk_sniNameOffset), pos);
+            pos += chunk_sniNameOffset;
+            
+            // 第二部分: 新 SNI
+            newData.set(newSNIBytes, pos);
+            pos += newSNIBytes.length;
+            
+            // 第三部分: SNI 名称之后
+            const afterSni = chunk_sniNameOffset + nameLen;
+            newData.set(rawData.subarray(afterSni), pos);
+            
+            // 更新所有长度字段 (大端序, 2或3字节)
+            // TLS Record Length (offset 3, 2 bytes)
+            newData[chunk_tlsRecordLenOffset] = (newRecordLen >> 8) & 0xFF;
+            newData[chunk_tlsRecordLenOffset + 1] = newRecordLen & 0xFF;
+            
+            // Handshake Message Length (offset 6, 3 bytes)
+            const newHsLen = hsLen + lenDiff;
+            newData[chunk_handshakeMsgLenOffset] = (newHsLen >> 16) & 0xFF;
+            newData[chunk_handshakeMsgLenOffset + 1] = (newHsLen >> 8) & 0xFF;
+            newData[chunk_handshakeMsgLenOffset + 2] = newHsLen & 0xFF;
+            
+            // SNI Extension Data Length (2 bytes)
+            const newExtDataLen = extDataLen + lenDiff;
+            newData[chunk_extDataLenOffset] = (newExtDataLen >> 8) & 0xFF;
+            newData[chunk_extDataLenOffset + 1] = newExtDataLen & 0xFF;
+            
+            // SNI Name List Length (2 bytes)
+            const newSniListLen = sniListLen + lenDiff;
+            newData[chunk_sniListLenOffset] = (newSniListLen >> 8) & 0xFF;
+            newData[chunk_sniListLenOffset + 1] = newSniListLen & 0xFF;
+            
+            // Server Name Length (2 bytes) — 直接设为新 SNI 长度
+            newData[chunk_nameLenOffset] = (newSNIBytes.length >> 8) & 0xFF;
+            newData[chunk_nameLenOffset + 1] = newSNIBytes.length & 0xFF;
+            
+            // 尝试记录日志
+            if (typeof log === 'function') {
+                log(`[SNI改写] ${originalSNI} → ${newSNI}`);
+            }
+            
+            return newData;
+        }
+        
+        offset = extDataEnd;
+    }
+    
+    return null;  // 未找到 SNI Extension
+}
+
 const concatBytes = (...chunks) => {
 	const nonEmptyChunks = chunks.filter((chunk => chunk && chunk.length > 0));
 	const length = nonEmptyChunks.reduce(((total, chunk) => total + chunk.length), 0);
