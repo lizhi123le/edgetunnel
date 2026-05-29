@@ -29,6 +29,8 @@ class RequestContext {
         
         // 调试状态
         this.调试日志打印 = false;
+        this.TCP并发拨号数 = 默认TCP并发拨号数;
+        this.预加载竞速拨号 = 默认预加载竞速拨号;
         
         // SOCKS5白名单
         this.SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
@@ -100,7 +102,7 @@ const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
 const 上行合包目标字节 = 32 * 1024, 上行队列最大字节 = 16 * 1024 * 1024, 上行队列最大条目 = 4096;
 const 下行Grain包字节 = 64 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
-const TCP并发拨号数 = 2, 预加载竞速拨号 = true;
+const 默认TCP并发拨号数 = 2, 默认预加载竞速拨号 = true;
 // TCP 预加载 DNS 缓存（短 TTL，仅用于直连竞速拨号，不与其他 DNS 缓存冲突）
 const 预加载DNS缓存 = new Map();
 const 预加载DNS缓存TTL = 30 * 1000;
@@ -345,6 +347,8 @@ export default {
             ctx2.反代IP = ((request.cf?.colo || 'unknown') + '.PrOxYIp.CmLiUsSsS.nEt').toLowerCase();
             ctx2.启用反代兜底 = true;
         }
+        ctx2.预加载竞速拨号 = ['1', 'true'].includes(env.PRELOAD_RACE_DIAL) || 默认预加载竞速拨号;
+        ctx2.TCP并发拨号数 = (默认TCP并发拨号数 !== 1 && 识别运营商(request) === 'cmcc') ? 1 : 默认TCP并发拨号数;
         // 全局变量同步已移除，统一使用 ctx2 实例属性避免跨请求 Race Condition
 
         const 访问IP = request.headers.get('CF-Connecting-IP') || request.headers.get('True-Client-IP') || request.headers.get('X-Real-IP') || request.headers.get('X-Forwarded-For') || request.headers.get('Fly-Client-IP') || request.headers.get('X-Appengine-Remote-Addr') || request.headers.get('X-Cluster-Client-IP') || '未知IP';
@@ -4412,7 +4416,7 @@ function 解析SS请求(chunk, passwordPlainText) {
 }
 
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID, ctx2) {
-	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, 调试日志打印 } = ctx2;
+	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, 调试日志打印, TCP并发拨号数, 预加载竞速拨号 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
     log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
     const 连接超时毫秒 = 2000;
@@ -5391,7 +5395,7 @@ async function turnConnect(proxy, targetHost, targetPort, TCP连接 = null) {
 		) {
 			const realmBytes = message.attributes[TURN_STUN_ATTR.REALM];
 			const nonce = message.attributes[TURN_STUN_ATTR.NONCE];
-			if (!realmBytes?.byteLength || !nonce?.byteLength) throw new Error('TURN authentication challenge is missing realm or nonce');
+			if (!realmBytes || !nonce?.byteLength) throw new Error('TURN authentication challenge is missing realm or nonce');
 
 			const realm = SS文本解码器.decode(realmBytes);
 			integrityKey = new Uint8Array(await crypto.subtle.digest('MD5', SS文本编码器.encode(`${proxy.username}:${realm}:${proxy.password}`)));
