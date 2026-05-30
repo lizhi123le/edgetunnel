@@ -2750,13 +2750,13 @@ function 尝试改写ClientHelloSNI(rawData, sni混合器) {
             if (nameStartInBody + nameLen > body.length) return null;
             
             const sniBytes = body.subarray(nameStartInBody, nameStartInBody + nameLen);
-            const originalSNI = new TextDecoder().decode(sniBytes);
+            const originalSNI = $decoder.decode(sniBytes);
             
             // 调用 SNI 混合器选择新的 SNI
             const newSNI = sni混合器.选择SNI(originalSNI);
             if (!newSNI || newSNI === originalSNI) return null;  // 无需改写
             
-            const newSNIBytes = new TextEncoder().encode(newSNI);
+            const newSNIBytes = $encoder.encode(newSNI);
             const lenDiff = newSNIBytes.length - nameLen;
             
             // 安全兜底: 新 SNI 过长可能溢出 16-bit 长度字段
