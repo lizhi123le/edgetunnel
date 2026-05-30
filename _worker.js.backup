@@ -68,6 +68,41 @@ const doh解析缓存 = new Map();
 const DOH_CACHE_TTL = 10 * 60 * 1000; // 10分钟（CF IP 变化频率低，10min 平衡性能与 freshness）
 const DOH_CACHE_MAX = 200; // 限制缓存条目数，避免内存泄漏
 
+// 6: 出站请求间隔调度器 — 策略 B (按域名粒度)
+// 模拟浏览器请求间隔 20-150ms，防止 DPI 时序指纹检测
+const connectionThrottles = new Map();
+const THROTTLE_MIN = 20;   // 最小间隔 (ms)
+const THROTTLE_MAX = 150;  // 最大间隔 (ms)
+const THROTTLE_CACHE_MAX = 256; // 最大缓存域名数，防止内存泄漏
+function getConnectionThrottle(hostname) {
+    const key = hostname || '_default';
+    if (!connectionThrottles.has(key)) {
+        if (connectionThrottles.size >= THROTTLE_CACHE_MAX) {
+            const oldest = connectionThrottles.keys().next().value;
+            connectionThrottles.delete(oldest);
+        }
+        connectionThrottles.set(key, {
+            lastRequest: 0,
+            baseDelay: THROTTLE_MIN + Math.floor(Math.random() * (THROTTLE_MAX - THROTTLE_MIN + 1)),
+        });
+    }
+    return connectionThrottles.get(key);
+}
+// 检查路径是否为 API/管理路径（跳过 throttle）
+function isApiPath(pathname) {
+    return pathname === '/' || pathname.startsWith('/admin') || pathname.startsWith('/sub') ||
+        pathname === '/login' || pathname === '/robots.txt' || pathname === '/locations' ||
+        pathname === '/favicon.ico' || /^\/([\w-]+\.(json|png|jpg|ico|css|js))$/.test(pathname);
+}
+// 应用 throttle delay — 在出站连接前调用
+async function applyThrottle(hostname) {
+    const t = getConnectionThrottle(hostname);
+    const now = Date.now();
+    const gap = Math.max(0, t.baseDelay - (now - t.lastRequest));
+    t.lastRequest = now + gap;
+    if (gap > 0) await new Promise(r => setTimeout(r, gap));
+}
+
 // ★ DoH 查询 inflight 去重：相同 (域名, 记录类型, DoH 服务地址) 的并发查询合并为一次
 const inflightDoH = new Map();
 async function DoH查询去重(域名, 记录类型, DoH解析服务 = "https://cloudflare-dns.com/dns-query") {
@@ -217,6 +252,20 @@ function sanitizeURL(url) {
     }
 }
 
+// 5: API 响应标准化包装器 — 统一添加 Date + X-Content-Type-Options
+const buildApiResponse = (data, status = 200, extraHeaders = {}) => {
+    return new Response(JSON.stringify(data), {
+        status,
+        headers: {
+            'Content-Type': 'application/json;charset=utf-8',
+            'Cache-Control': 'no-store',
+            'Date': new Date().toUTCString(),
+            'X-Content-Type-Options': 'nosniff',
+            ...extraHeaders,
+        }
+    });
+};
+
 // 统一错误响应（不泄露内部细节）
 function sanitizedErrorResponse(message, status = 500) {
     const publicMessages = {
@@ -228,10 +277,7 @@ function sanitizedErrorResponse(message, status = 500) {
         500: '服务器内部错误',
         504: '请求超时'
     };
-    return new Response(JSON.stringify({ error: publicMessages[status] || '操作失败' }), {
-        status,
-        headers: { 'Content-Type': 'application/json;charset=utf-8' }
-    });
+    return buildApiResponse({ error: publicMessages[status] || '操作失败' }, status);
 }
 
 // ★ 隐私增强：模块级函数 — 智能剥离随机填充前缀（所有协议路径共用）
@@ -320,6 +366,11 @@ export default {
         }
         const UA = request.headers.get('User-Agent') || 'null';
         const upgradeHeader = (request.headers.get('Upgrade') || '').toLowerCase(), contentType = (request.headers.get('content-type') || '').toLowerCase();
+        // 6: 对代理转发路径施加请求间隔 throttle（跳过 API/管理/静态路径）
+        if (!isApiPath(url.pathname) && (upgradeHeader === 'websocket' || request.method === 'POST' || request.method === 'CONNECT')) {
+            const targetHost = url.hostname || request.headers.get('Host') || 'proxy';
+            await applyThrottle(targetHost);
+        }
         const UUID密码 = env.UUID || env.uuid;
         const 管理员密码独立 = env.ADMIN || env.admin || env.PASSWORD || env.password || env.pswd || env.TOKEN || env.KEY;
         const 管理员密码 = 管理员密码独立 || UUID密码;
@@ -951,7 +1002,25 @@ export default {
             新请求头.set('Host', 反代URL.host);
             新请求头.set('Referer', 反代URL.origin);
             新请求头.set('Origin', 反代URL.origin);
-            if (!新请求头.has('User-Agent') && UA && UA !== 'null') 新请求头.set('User-Agent', UA);
+            // 4: 伪装页 UA 池 — 替换泛化/非浏览器 UA 为真实浏览器
+            const 通用UAs = ['Mozilla/5.0', 'Mozilla/5.0 ', 'Mozilla/5.0 (compatible;', 'curl/', 'wget/'];
+            const 需要接管UA = !UA || UA === 'null' || 通用UAs.some(prefix => UA.startsWith(prefix));
+            if (需要接管UA) {
+                const 浏览器UA池 = [
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/135.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7041.38 Mobile Safari/537.36',
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0',
+                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15',
+                ];
+                新请求头.set('User-Agent', 浏览器UA池[Math.floor(Math.random() * 浏览器UA池.length)]);
+                if (!新请求头.has('Accept-Language')) 新请求头.set('Accept-Language', 'en-US,en;q=0.9');
+            } else {
+                新请求头.set('User-Agent', UA);
+            }
             const fetchOptions = { method: request.method, headers: 新请求头, cf: request.cf || {} };
             // GET 请求不应传入 body，否则 fetch 可能挂起
             if (request.method !== 'GET' && request.body) fetchOptions.body = request.body;
@@ -2105,14 +2174,24 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	const wsKey = request.headers.get('Sec-WebSocket-Key') || '';
 	let wsAccept = '';
 	if (wsKey) {
-		const wsHash = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(wsKey + WS_GUID));
-		wsAccept = btoa(String.fromCharCode(...new Uint8Array(wsHash)));
+		const wsHash = await crypto.subtle.digest('SHA-1', $encoder.encode(wsKey + WS_GUID));
+		wsAccept = uint8ArrayToBase64(new Uint8Array(wsHash));
 	}
+	// 2: 防御纵深 — WS 响应头模拟真实 Web 服务器
+	const extRand = Math.random();
+	// 90% 标准值, 5% 无 client_max_window_bits, 5% 显式 window bits
+	const wsExtValue = extRand < 0.9
+		? 'permessage-deflate; client_max_window_bits'
+		: extRand < 0.95
+			? 'permessage-deflate'
+			: 'permessage-deflate; client_max_window_bits=15; server_max_window_bits=15';
 	const wsRespHeaders = {
 		'Upgrade': 'websocket',
 		'Connection': 'Upgrade',
 		'Sec-WebSocket-Accept': wsAccept,
-		'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits',
+		'Sec-WebSocket-Extensions': wsExtValue,
+		'Date': new Date().toUTCString(),
+		'Server': 'cloudflare',
 	};
 	return new Response(null, { status: 101, webSocket: clientSock, headers: wsRespHeaders });
 }
@@ -3364,7 +3443,13 @@ class TlsClient {
 		this.keyPairs = new Map([[23, p256Share], [29, x25519Share]]);
 		this.ecdhKeyPair = p256Share.keyPair;
 		// ★ ECH: 以 [groupId, shareObj][] 格式保存 keyShares (Step E)
-		this.keyShares = [[29, x25519Share], [23, p256Share]];
+		// 密钥共享随机化: 80% X25519-only (Chrome 行为), 20% dual (兼容性兜底)
+		// 使用 crypto.getRandomValues() 而非 Math.random() 避免 PRNG 可预测性
+		const rand = new Uint8Array(1);
+		crypto.getRandomValues(rand);
+		this.keyShares = rand[0] < 205  // 205/256 ≈ 80%
+			? [[29, x25519Share]]
+			: [[29, x25519Share], [23, p256Share]];
 		const reader = this.socket.readable.getReader();
 		const writer = this.socket.writable.getWriter();
         try {
@@ -3722,6 +3807,13 @@ class TlsClient {
 		} finally {
 			reader.releaseLock();
 		}
+	}
+
+	// 7: 关闭连接（带 0-50ms 随机抖动，防止 DPI 基于 FIN/RST 时序的指纹检测）
+	async close() {
+		const delay = Math.floor(Math.random() * 51); // 0-50ms
+		if (delay > 0) await new Promise(r => setTimeout(r, delay));
+		try { this.socket.close(); } catch (e) { }
 	}
 }
 
@@ -4199,21 +4291,31 @@ function buildZeroedECHExtension(echConfig, enc, payloadLength) {
 
 // 构建带 ECH 扩展的外层 ClientHello (Step C helper)
 function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, options, echExt) {
+	// 1c: 密码套件排序对齐 Chrome 120+
 	const cipherIds = [];
 	if (options?.tls13 !== false) cipherIds.push(4865, 4866);
 	if (options?.tls13 !== false && options?.chacha !== false) cipherIds.push(4867);
-	if (options?.tls12 !== false) cipherIds.push(49199, 49200, 49195, 49196);
+	if (options?.tls12 !== false) cipherIds.push(49199, 49195, 49200);
 	if (options?.tls12 !== false && options?.chacha !== false) cipherIds.push(52392, 52393);
+	if (options?.tls12 !== false) cipherIds.push(49196);
 	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
+	// 1a: 扩展顺序对齐 Chrome 120+
 	const extensions = [tlsBytes(255, 1, 0, 1, 0)];
 	if (serverName) {
 		const serverNameBytes = TLS文本编码器.encode(serverName);
 		const serverNameList = tlsBytes(0, uint16be(serverNameBytes.length), serverNameBytes);
 		extensions.push(tlsBytes(uint16be(EXT_SERVER_NAME), uint16be(serverNameList.length + 2), uint16be(serverNameList.length), serverNameList));
 	}
+	if (options?.alpn) {
+		const alpnBytes = TLS文本编码器.encode(options.alpn);
+		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), tlsBytes(alpnBytes.length + 1, alpnBytes.length, alpnBytes)));
+	}
+	const supportedVersions = [];
+	if (options?.tls13 !== false) supportedVersions.push(TLS_VERSION_13);
+	if (options?.tls12 !== false) supportedVersions.push(TLS_VERSION_12);
+	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
 	if (keyShares) {
 		const keyShareEntries = [];
-		const supportedGroupsExt = tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), 4, 0, 1, 0);
 		for (const [groupId, keyShare] of keyShares) {
 			keyShareEntries.push(tlsBytes(uint16be(groupId), uint16be(keyShare.publicKeyRaw.length), keyShare.publicKeyRaw));
 		}
@@ -4221,15 +4323,17 @@ function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, opti
 			const keyShareExt = tlsBytes(0, concatBytes(...keyShareEntries));
 			extensions.push(tlsBytes(uint16be(EXT_KEY_SHARE), uint16be(keyShareExt.length), keyShareExt));
 		}
-		extensions.push(supportedGroupsExt);
 	}
-	const supportedVersions = [];
-	if (options?.tls13 !== false) supportedVersions.push(TLS_VERSION_13);
-	if (options?.tls12 !== false) supportedVersions.push(TLS_VERSION_12);
-	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
-	if (options?.alpn) {
-		const alpnBytes = TLS文本编码器.encode(options.alpn);
-		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), tlsBytes(alpnBytes.length + 1, alpnBytes.length, alpnBytes)));
+	// SignatureAlgorithms (type 13) — Chrome 必带
+	{
+		const sigAlgs = [0x0804, 0x0805, 0x0806, 0x0403, 0x0503, 0x0603, 0x0807, 0x0808, 0x0809];
+		extensions.push(tlsBytes(uint16be(EXT_SIGNATURE_ALGORITHMS), uint16be(sigAlgs.length * 2 + 2), uint16be(sigAlgs.length * 2), ...sigAlgs.flatMap(uint16be)));
+	}
+	// PSKKeyExchangeModes (type 45) — TLS 1.3 浏览器必带
+	extensions.push(tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), 2, 1, 1));
+	if (keyShares) {
+		const supportedGroupsExt = tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), 4, 0, 1, 0);
+		extensions.push(supportedGroupsExt);
 	}
 	if (options?.chacha !== false) {
 		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), 2, 1, 0));
@@ -4262,7 +4366,9 @@ function addPaddingToClientHello(clientHelloMsg, targetSize) {
 // ECH 内层+外层 ClientHello 构建 (Step C)
 async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShares, options, echConfig) {
 	let innerCH = buildClientHello(clientRandom, 真实SNI, keyShares, options);
-	innerCH = addPaddingToClientHello(innerCH, 512);
+	// 3: ECH padding 随机化 — 目标在 [464, 560] 步长 8 共 13 个离散值
+	const paddingTarget = 512 + (Math.floor(Math.random() * 13) - 6) * 8;
+	innerCH = addPaddingToClientHello(innerCH, Math.max(innerCH.length + 32, paddingTarget));
 	const outerCH_Base = buildClientHello(clientRandom, publicName, keyShares, options);
 	const echLabel = $encoder.encode('tls13-ech');
 	const configHash = await TLS摘要('SHA-256', concatBytes(echLabel, echConfig.raw));
@@ -4279,25 +4385,37 @@ async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShare
 
 // 构建ClientHello
 function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTls13 = true, tls12: enableTls12 = true, alpn = null, chacha = true } = {}) {
+	// 1c: 密码套件排序对齐 Chrome 120+
 	const cipherIds = [];
 	if (enableTls13) {
-		cipherIds.push(4865, 4866);
-		if (chacha) cipherIds.push(4867);
+		cipherIds.push(4865, 4866);  // TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384
+		if (chacha) cipherIds.push(4867);  // TLS_CHACHA20_POLY1305_SHA256
 	}
 	if (enableTls12) {
-		cipherIds.push(49199, 49200, 49195, 49196);
-		if (chacha) cipherIds.push(52392, 52393);
+		cipherIds.push(49199, 49195, 49200);  // ECDHE + AES (Chrome order)
+		if (chacha) cipherIds.push(52392, 52393);  // ECDHE + ChaCha
+		cipherIds.push(49196);  // ECDHE + AES 256
 	}
 	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
+	// 1a: 扩展顺序对齐 Chrome 120+
+	// Chrome 顺序: SNI → ALPN → SupportedVersions → KeyShare → [GREASE] → SignatureAlgorithms → PSKKeyExchangeModes → SupportedGroups → ECPointFormats
+	// 注意: GREASE 在 Chrome 中通常不在首位，但原代码依赖其位置且索引重构成本高（~30-45min），保留原位
 	const extensions = [tlsBytes(255, 1, 0, 1, 0)];
 	if (serverName) {
 		const serverNameBytes = TLS文本编码器.encode(serverName);
 		const serverNameList = tlsBytes(0, uint16be(serverNameBytes.length), serverNameBytes);
 		extensions.push(tlsBytes(uint16be(EXT_SERVER_NAME), uint16be(serverNameList.length + 2), uint16be(serverNameList.length), serverNameList));
 	}
+	if (alpn) {
+		const alpnBytes = TLS文本编码器.encode(alpn);
+		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), tlsBytes(alpnBytes.length + 1, alpnBytes.length, alpnBytes)));
+	}
+	const supportedVersions = [];
+	if (enableTls13) supportedVersions.push(TLS_VERSION_13);
+	if (enableTls12) supportedVersions.push(TLS_VERSION_12);
+	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
 	if (keyShares) {
 		const keyShareEntries = [];
-		const supportedGroupsExt = tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), 4, 0, 1, 0);
 		for (const [groupId, keyShare] of keyShares) {
 			const publicKeyBytes = keyShare.publicKeyRaw;
 			keyShareEntries.push(tlsBytes(uint16be(groupId), uint16be(publicKeyBytes.length), publicKeyBytes));
@@ -4306,15 +4424,17 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 			const keyShareExt = tlsBytes(0, concatBytes(...keyShareEntries));
 			extensions.push(tlsBytes(uint16be(EXT_KEY_SHARE), uint16be(keyShareExt.length), keyShareExt));
 		}
-		extensions.push(supportedGroupsExt);
 	}
-	const supportedVersions = [];
-	if (enableTls13) supportedVersions.push(TLS_VERSION_13);
-	if (enableTls12) supportedVersions.push(TLS_VERSION_12);
-	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
-	if (alpn) {
-		const alpnBytes = TLS文本编码器.encode(alpn);
-		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), tlsBytes(alpnBytes.length + 1, alpnBytes.length, alpnBytes)));
+	// SignatureAlgorithms (type 13) — Chrome 必带
+	{
+		const sigAlgs = [0x0804, 0x0805, 0x0806, 0x0403, 0x0503, 0x0603, 0x0807, 0x0808, 0x0809];
+		extensions.push(tlsBytes(uint16be(EXT_SIGNATURE_ALGORITHMS), uint16be(sigAlgs.length * 2 + 2), uint16be(sigAlgs.length * 2), ...sigAlgs.flatMap(uint16be)));
+	}
+	// PSKKeyExchangeModes (type 45) — TLS 1.3 浏览器必带
+	extensions.push(tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), 2, 1, 1));
+	if (keyShares) {
+		const supportedGroupsExt = tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), 4, 0, 1, 0);
+		extensions.push(supportedGroupsExt);
 	}
 	if (chacha) {
 		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), 2, 1, 0));
@@ -6121,8 +6241,8 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = nul
 			rejectClosed = reject;
 		});
 
-		const close = () => {
-			try { tlsSocket.close() } catch (e) { }
+		const close = async () => {
+			try { await tlsSocket.close() } catch (e) { }
 			settleClosed(resolveClosed);
 		};
 		const readable = new ReadableStream({
@@ -6141,8 +6261,8 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = nul
 					settleClosed(rejectClosed, error);
 				}
 			},
-			cancel() {
-				close();
+			async cancel() {
+				await close();
 			}
 		});
 		const writable = new WritableStream({
@@ -6157,7 +6277,7 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = nul
 		});
 		return { readable, writable, closed, close };
 	} catch (error) {
-		try { tlsSocket?.close() } catch (e) { }
+		try { await tlsSocket?.close() } catch (e) { }
 		throw error;
 	}
 }
