@@ -934,7 +934,7 @@ export default {
                         } else { // 订阅转换
                             const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + '&asOrg=' + 识别运营商(request) + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
                             try {
-                                const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel (https://github.com/cmliu/edge' + 'tunnel)' } });
+                                const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36' } });
                                 if (response.ok) {
                                     订阅内容 = await response.text();
                                     if (url.searchParams.has('surge') || ua.includes('surge')) 订阅内容 = await Surge订阅配置文件热补丁(订阅内容, url.protocol + '//' + url.host + '/sub?token=' + 订阅TOKEN + '&surge', config_JSON);
@@ -3516,13 +3516,13 @@ class TlsClient {
 		this.keyPairs = new Map([[23, p256Share], [29, x25519Share]]);
 		this.ecdhKeyPair = p256Share.keyPair;
 		// ★ ECH: 以 [groupId, shareObj][] 格式保存 keyShares (Step E)
-		// 密钥共享随机化: 80% X25519-only (Chrome 行为), 20% dual (兼容性兜底)
+		// 密钥共享随机化: 80% dual key share (对齐 Chrome), 20% X25519-only (兼容性兜底)
 		// 使用 crypto.getRandomValues() 而非 Math.random() 避免 PRNG 可预测性
 		const rand = new Uint8Array(1);
 		crypto.getRandomValues(rand);
 		this.keyShares = rand[0] < 205  // 205/256 ≈ 80%
-			? [[29, x25519Share]]
-			: [[29, x25519Share], [23, p256Share]];
+			? [[29, x25519Share], [23, p256Share]]
+			: [[29, x25519Share]];
 		const reader = this.socket.readable.getReader();
 		const writer = this.socket.writable.getWriter();
         try {
@@ -3539,7 +3539,7 @@ class TlsClient {
                         this.echConfig
                     );
                     this.recordHandshake(echResult.outerCH);
-                    await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, echResult.outerCH, TLS_VERSION_10));
+                    await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, echResult.outerCH, TLS_VERSION_12));
                     // ★ ECH 统计 (Step H2)
                     if (typeof 全局ECH统计 !== 'undefined') 全局ECH统计.attempted++;
                 } catch (echErr) {
@@ -3548,12 +3548,12 @@ class TlsClient {
                     if (typeof 全局ECH统计 !== 'undefined') 全局ECH统计.failed++;
                     const ch = buildClientHello(this.clientRandom, this.发送SNI, this.keyShares, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
                     this.recordHandshake(ch);
-                    await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, ch, TLS_VERSION_10));
+                    await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, ch, TLS_VERSION_12));
                 }
             } else {
                 const ch = buildClientHello(this.clientRandom, this.发送SNI, this.keyShares, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
                 this.recordHandshake(ch);
-                await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, ch, TLS_VERSION_10));
+                await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, ch, TLS_VERSION_12));
             }
             const serverHello = await this.receiveServerHello(reader);
             if (serverHello.isHRR) throw new Error('HelloRetryRequest is not supported');
@@ -4422,63 +4422,44 @@ function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, opti
 		if (swap) { extensions.push(pskModesExt); extensions.push(sigAlgsExt); }
 		else { extensions.push(sigAlgsExt); extensions.push(pskModesExt); }
 	}
-	// 8. GREASE(2) — ~61% 概率（需有 GREASE1 时）
+	// 8. signed_certificate_timestamp (18) — 空请求，Chrome ~60% 概率
+	if (seededRand(clientRandom, 6) < 0.6) {
+		extensions.push(tlsBytes(uint16be(18), uint16be(0)));
+	}
+	// 9. GREASE(2) — ~61% 概率（需有 GREASE1 时）
 	if (hasGrease1 && seededRand(clientRandom, 2) < 0.61) {
 		const exclude = [lastGreaseType];
 		const available = GREASE_TYPES.filter(t => !exclude.includes(t));
 		const type2 = seededChoice(clientRandom, 3, available);
 		extensions.push(greaseExt(type2, clientRandom, 5));
 	}
-	// 9. SupportedGroups (10) — 动态编码
+	// 10. SupportedGroups (10) — 动态编码
 	if (keyShares) {
 		const groupIds = keyShares.map(([groupId]) => uint16be(groupId));
 		const groupList = concatBytes(...groupIds);
 		extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), uint16be(groupList.length + 2), uint16be(groupList.length), ...groupList));
 	}
-	// 10. ECPointFormats (11)
+	// 11. ECPointFormats (11)
 	if (options?.chacha !== false) {
-		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), 2, 1, 0));
+		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), uint16be(3), 3, 0, 1, 2));
 	}
-	// 11. ECH (57)
+	// 12. ECH (57)
 	if (echExt) extensions.push(echExt);
 	const clientHello = tlsBytes(TLS_VERSION_12, clientRandom, tlsBytes(0), cipherBytes, tlsBytes(1, 0), tlsBytes(uint16be(concatBytes(...extensions).length), ...extensions));
 	return buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_HELLO, clientHello);
 }
 
-// 内层 CH padding (RFC 7685 type=21)
-function addPaddingToClientHello(clientHelloMsg, targetSize) {
-	const currentSize = clientHelloMsg.length;
-	const paddingNeeded = targetSize - currentSize;
-	if (paddingNeeded <= 4) return clientHelloMsg;
-	const paddingDataLen = paddingNeeded - 4;
-	const paddingExt = concatBytes(uint16be(21), uint16be(paddingDataLen), new Uint8Array(paddingDataLen));
-	const body = clientHelloMsg.slice(4);
-	let offset = 34;
-	offset += 1 + body[offset];
-	offset += 2 + ((body[offset] << 8) | body[offset + 1]);
-	offset += 1 + body[offset];
-	const extLen = (body[offset] << 8) | body[offset + 1];
-	offset += 2;
-	const existingExt = body.slice(offset, offset + extLen);
-	const newExt = concatBytes(existingExt, paddingExt);
-	const newBody = concatBytes(body.slice(0, offset - 2), uint16be(newExt.length), newExt);
-	return buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_HELLO, newBody);
-}
-
 // ECH 内层+外层 ClientHello 构建 (Step C)
 async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShares, options, echConfig) {
-	let innerCH = buildClientHello(clientRandom, 真实SNI, keyShares, options);
-	// 3: ECH padding 随机化 — 目标在 [464, 560] 步长 8 共 13 个离散值
 	const paddingTarget = 512 + (Math.floor(Math.random() * 13) - 6) * 8;
-	innerCH = addPaddingToClientHello(innerCH, Math.max(innerCH.length + 32, paddingTarget));
-	const outerCH_Base = buildClientHello(clientRandom, publicName, keyShares, options);
+	const swap = shouldSwapExtensions(DEPLOYMENT_RNG);
+	const innerCH = buildClientHello(clientRandom, 真实SNI, keyShares, { ...options, forceSwap: swap, paddingTarget });
 	const echLabel = $encoder.encode('tls13-ech');
 	const configHash = await TLS摘要('SHA-256', concatBytes(echLabel, echConfig.raw));
 	const hpkeInfo = concatBytes(echLabel, configHash);
 	const { enc, context } = await HPKE_SetupBaseS(echConfig.publicKey, hpkeInfo);
 	const predictedPayloadSize = innerCH.length + 16;
 	const zeroExt = buildZeroedECHExtension(echConfig, enc, predictedPayloadSize);
-	const swap = shouldSwapExtensions(DEPLOYMENT_RNG);
 	const outerCH_AAD = 构建带ECH扩展的外层CH(clientRandom, publicName, keyShares, options, zeroExt, swap);
 	const encryptedCH = await HPKE_Seal(context, innerCH, outerCH_AAD);
 	const echExt = buildECHExtension(echConfig, enc, encryptedCH);
@@ -4487,7 +4468,7 @@ async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShare
 }
 
 // 构建ClientHello
-function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTls13 = true, tls12: enableTls12 = true, alpn = null, chacha = true } = {}) {
+function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTls13 = true, tls12: enableTls12 = true, alpn = null, chacha = true, forceSwap, paddingTarget } = {}) {
 	const cipherIds = [];
 	const core = [];
 	if (enableTls13) {
@@ -4547,7 +4528,8 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 		const sigAlgs = [0x0804, 0x0805, 0x0806, 0x0403, 0x0503, 0x0603, 0x0807, 0x0808, 0x0809];
 		const sigAlgsExt = tlsBytes(uint16be(EXT_SIGNATURE_ALGORITHMS), uint16be(sigAlgs.length * 2 + 2), uint16be(sigAlgs.length * 2), ...sigAlgs.flatMap(uint16be));
 		const pskModesExt = tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), 2, 1, 1);
-		if (shouldSwapExtensions(DEPLOYMENT_RNG)) {
+		const swap = forceSwap !== undefined ? forceSwap : shouldSwapExtensions(DEPLOYMENT_RNG);
+		if (swap) {
 			extensions.push(pskModesExt);
 			extensions.push(sigAlgsExt);
 		} else {
@@ -4555,23 +4537,40 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 			extensions.push(pskModesExt);
 		}
 	}
-	// 8. GREASE(2) — ~61% 概率（需有 GREASE1 时）
+	// 8. signed_certificate_timestamp (18) — 空请求，Chrome ~60% 概率
+	if (seededRand(clientRandom, 6) < 0.6) {
+		extensions.push(tlsBytes(uint16be(18), uint16be(0)));
+	}
+	// 9. GREASE(2) — ~61% 概率（需有 GREASE1 时）
 	if (hasGrease1 && seededRand(clientRandom, 2) < 0.61) {
 		const exclude = [lastGreaseType];
 		const available = GREASE_TYPES.filter(t => !exclude.includes(t));
 		const type2 = seededChoice(clientRandom, 3, available);
 		extensions.push(greaseExt(type2, clientRandom, 5));
 	}
-	// 9. SupportedGroups (10) — 动态编码
+	// 10. SupportedGroups (10) — 动态编码
 	if (keyShares) {
 		const groupIds = keyShares.map(([groupId]) => uint16be(groupId));
 		const groupList = concatBytes(...groupIds);
 		extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), uint16be(groupList.length + 2), uint16be(groupList.length), ...groupList));
 	}
-	// 10. ECPointFormats (11)
+	// 11. ECPointFormats (11)
 	if (chacha) {
-		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), 2, 1, 0));
+		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), uint16be(3), 3, 0, 1, 2));
 	}
+	// padding (21): 插入在 pre_shared_key 之前，确保 RFC 8446 §4.2.11 顺序
+	if (paddingTarget) {
+		const extBytes = concatBytes(...extensions);
+		const pskBytes = tlsBytes(uint16be(41), uint16be(4), uint16be(0), uint16be(0));
+		const estimatedBase = 4 + 2 + 32 + 1 + cipherBytes.length + 2 + 2 + extBytes.length + pskBytes.length;
+		const finalTarget = Math.max(paddingTarget, estimatedBase + 32);
+		let padNeeded = Math.max(finalTarget - estimatedBase, 0);
+		if (padNeeded > 4) {
+			extensions.push(tlsBytes(uint16be(21), uint16be(padNeeded - 4), ...new Uint8Array(padNeeded - 4)));
+		}
+	}
+	// 12. pre_shared_key (41) — 空 PSK 列表，Chrome 始终发送，RFC 8446 §4.2.11 要求必须最后
+	extensions.push(tlsBytes(uint16be(41), uint16be(4), uint16be(0), uint16be(0)));
 	const clientHello = tlsBytes(
 		TLS_VERSION_12,
 		clientRandom,
@@ -6300,6 +6299,21 @@ async function socks5Connect(targetHost, targetPort, initialData, TCP连接 = nu
     }
 }
 
+// CONNECT 隧道浏览器 UA 池 (与代理路径 浏览器UA池 一致)
+const PICK_CONNECT_UA = () => {
+    const pool = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/135.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15',
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7041.38 Mobile Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+    ];
+    return pool[Math.floor(Math.random() * pool.length)];
+};
+
 async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = null, allowInsecure = config_JSON?.跳过证书验证 ?? false) {
 	const { username, password, hostname, port } = parsedSocks5Address;
 	const encoder = $encoder;
@@ -6342,7 +6356,13 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = nul
 		}
 
 		const auth = username && password ? `Proxy-Authorization: Basic ${btoa(`${username}:${password}`)}\r\n` : '';
-		const request = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n${auth}User-Agent: Mozilla/5.0\r\nConnection: keep-alive\r\n\r\n`;
+		const request = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
+			`Host: ${targetHost}:${targetPort}\r\n` +
+			`${auth}User-Agent: ${PICK_CONNECT_UA()}\r\n` +
+			`Accept: */*\r\n` +
+			`Accept-Encoding: gzip, deflate, br\r\n` +
+			`Accept-Language: en-US,en;q=0.9\r\n` +
+			`Connection: keep-alive\r\n\r\n`;
 		await tlsSocket.write(encoder.encode(request));
 
 		let responseBuffer = new Uint8Array(0), headerEndIndex = -1, bytesRead = 0;
@@ -6421,7 +6441,13 @@ async function httpConnect(targetHost, targetPort, initialData, TCP连接 = null
     const writer = socket.writable.getWriter(), reader = socket.readable.getReader();
     try {
         const auth = username && password ? `Proxy-Authorization: Basic ${btoa(`${username}:${password}`)}\r\n` : '';
-        const request = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n${auth}User-Agent: Mozilla/5.0\r\nConnection: keep-alive\r\n\r\n`;
+        const request = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
+            `Host: ${targetHost}:${targetPort}\r\n` +
+            `${auth}User-Agent: ${PICK_CONNECT_UA()}\r\n` +
+            `Accept: */*\r\n` +
+            `Accept-Encoding: gzip, deflate, br\r\n` +
+            `Accept-Language: en-US,en;q=0.9\r\n` +
+            `Connection: keep-alive\r\n\r\n`;
         await writer.write(SS文本编码器.encode(request));
         writer.releaseLock();
 
@@ -7722,7 +7748,7 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
 
     try {
         const response = await fetch(优选订阅生成器URL, {
-            headers: { 'User-Agent': 'v2rayN/edge' + 'tunnel (https://github.com/cmliu/edge' + 'tunnel)' }
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36' }
         });
 
         if (!response.ok) {
