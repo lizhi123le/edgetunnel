@@ -998,6 +998,10 @@ export default {
         // 如果伪装页 URL 无效，直接返回 nginx 默认页，避免 fetch 挂起
         if (伪装页URL === 'nginx') return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
         try {
+            // Phase 3b: 清除 CF 相关入站头，避免透传给目标服务器
+            const CF_HEADERS = ['CF-Connecting-IP', 'CF-IPCountry', 'CF-Ray', 'CF-Visitor',
+                                 'CF-Worker', 'CF-Cache-Status', 'True-Client-IP'];
+            for (const h of CF_HEADERS) request.headers.delete(h);
             const 反代URL = new URL(伪装页URL), 新请求头 = new Headers(request.headers);
             新请求头.set('Host', 反代URL.host);
             新请求头.set('Referer', 反代URL.origin);
@@ -2650,6 +2654,71 @@ const TLS文本编码器 = $encoder;
 const TLS文本解码器 = $decoder;
 const TLS_EMPTY_BYTES = new Uint8Array(0);
 
+// TLS 指纹增强配置开关（Phase 1-2）
+const TLS_GREASE = true;           // Phase 1: GREASE 总开关
+const TLS_CIPHER_SHUFFLE = true;   // Phase 2a: 密码套件随机 shuffle
+const TLS_EXT_SWAP = true;        // Phase 2c: 扩展顺序微调
+const TLS_GREASE_SEED = 0;         // Phase 2b: 部署级种子，0=完全随机
+
+// GREASE 类型池 (10 种 Chrome 120+ 常见值)
+const GREASE_TYPES = [0x0A0A, 0x1A1A, 0x2A2A, 0x3A3A, 0x4A4A, 0x5A5A, 0x6A6A, 0x7A7A, 0x8A8A, 0x9A9A];
+
+// 确定性种子函数：clientRandom 每连接不同，同一连接内不变
+// 使用 2 字节模 65536 确保均匀 [0,1) 分布
+const seededRand = (clientRandom, index) => {
+    const i = (index * 2) % (clientRandom.length - 1);
+    return ((clientRandom[i] * 256 + clientRandom[i + 1]) % 65536) / 65536;
+};
+
+const seededChoice = (clientRandom, index, options) => {
+    const i = (index * 2) % (clientRandom.length - 1);
+    return options[((clientRandom[i] * 256 + clientRandom[i + 1]) >>> 0) % options.length];
+};
+
+// 确定性 GREASE 扩展构建：长度+内容完全由 clientRandom 决定
+// offset 区分同一 CH 内不同位置的 GREASE
+const greaseExt = (type, clientRandom, offset) => {
+    const i = offset % (clientRandom.length - 1);
+    const len = 1 + (clientRandom[i] % 4);
+    const data = new Uint8Array(len);
+    for (let j = 0; j < len; j++) data[j] = clientRandom[(i + 1 + j) % clientRandom.length];
+    return tlsBytes(uint16be(type), uint16be(data.length), ...data);
+};
+
+// ===== Phase 2a: 密码套件微随机化 =====
+// 调用方已按 chacha 条件过滤好 core/optional 数组
+function deterministicShuffleCiphers(core, optional, clientRandom, seedIndex) {
+    if (!TLS_CIPHER_SHUFFLE) return [...core, ...optional];
+    const result = [];
+    let remaining = [...optional];
+    for (let k = 0; remaining.length > 0; k++) {
+        const pick = ((clientRandom[(seedIndex + k) % clientRandom.length] * 256 +
+                       clientRandom[(seedIndex + k + 1) % clientRandom.length]) % remaining.length) >>> 0;
+        result.push(remaining[pick]);
+        remaining.splice(pick, 1);
+    }
+    return [...core, ...result];
+}
+
+// ===== Phase 2b: 部署级随机种子 =====
+const DEPLOYMENT_SEED = parseInt(TLS_GREASE_SEED || '0', 10);
+
+function createSeededRNG(seed) {
+    return function() {
+        seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+        let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}
+const DEPLOYMENT_RNG = DEPLOYMENT_SEED ? createSeededRNG(DEPLOYMENT_SEED) : Math.random;
+
+// ===== Phase 2c: 扩展顺序微调 =====
+function shouldSwapExtensions(rng) {
+    if (!TLS_EXT_SWAP) return false;
+    return (rng || DEPLOYMENT_RNG)() < 0.3;
+}
+
 // TLS 密码套件定义 (包含 ChaCha20 支持)
 const CIPHER_SUITES_BY_ID = new Map([
 	[4865, { id: 4865, keyLen: 16, ivLen: 12, hash: 'SHA-256', tls13: true }],
@@ -4294,30 +4363,39 @@ function buildZeroedECHExtension(echConfig, enc, payloadLength) {
 }
 
 // 构建带 ECH 扩展的外层 ClientHello (Step C helper)
-function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, options, echExt) {
-	// 1c: 密码套件排序对齐 Chrome 120+
+function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, options, echExt, forceSwap) {
 	const cipherIds = [];
-	if (options?.tls13 !== false) cipherIds.push(4865, 4866);
-	if (options?.tls13 !== false && options?.chacha !== false) cipherIds.push(4867);
-	if (options?.tls12 !== false) cipherIds.push(49199, 49195, 49200);
-	if (options?.tls12 !== false && options?.chacha !== false) cipherIds.push(52392, 52393);
-	if (options?.tls12 !== false) cipherIds.push(49196);
+	const core = [];
+	if (options?.tls13 !== false) core.push(4865, 4866);
+	if (options?.tls13 !== false && options?.chacha !== false) core.push(4867);
+	const optional = [];
+	if (options?.tls12 !== false) optional.push(49199, 49195, 49200);
+	if (options?.tls12 !== false && options?.chacha !== false) optional.push(52392, 52393);
+	if (options?.tls12 !== false) optional.push(49196);
+	if (TLS_CIPHER_SHUFFLE) {
+		cipherIds.push(...deterministicShuffleCiphers(core, optional, clientRandom, 8));
+	} else {
+		cipherIds.push(...core, ...optional);
+	}
 	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
-	// 1a: 扩展顺序对齐 Chrome 120+
-	const extensions = [tlsBytes(255, 1, 0, 1, 0)];
+	const extensions = [];
+	// 1. SNI (0)
 	if (serverName) {
 		const serverNameBytes = TLS文本编码器.encode(serverName);
 		const serverNameList = tlsBytes(0, uint16be(serverNameBytes.length), serverNameBytes);
 		extensions.push(tlsBytes(uint16be(EXT_SERVER_NAME), uint16be(serverNameList.length + 2), uint16be(serverNameList.length), serverNameList));
 	}
+	// 2. ALPN (16)
 	if (options?.alpn) {
 		const alpnBytes = TLS文本编码器.encode(options.alpn);
 		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), tlsBytes(alpnBytes.length + 1, alpnBytes.length, alpnBytes)));
 	}
+	// 3. SupportedVersions (43)
 	const supportedVersions = [];
 	if (options?.tls13 !== false) supportedVersions.push(TLS_VERSION_13);
 	if (options?.tls12 !== false) supportedVersions.push(TLS_VERSION_12);
 	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
+	// 4. KeyShare (51)
 	if (keyShares) {
 		const keyShareEntries = [];
 		for (const [groupId, keyShare] of keyShares) {
@@ -4328,20 +4406,40 @@ function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, opti
 			extensions.push(tlsBytes(uint16be(EXT_KEY_SHARE), uint16be(keyShareExt.length), keyShareExt));
 		}
 	}
-	// SignatureAlgorithms (type 13) — Chrome 必带
+	// 5. GREASE(1) — ~90% 概率（使用 clientRandom 确定性种子，确保 ECH AAD/final 一致）
+	let lastGreaseType = null;
+	const hasGrease1 = TLS_GREASE && seededRand(clientRandom, 0) < 0.9;
+	if (hasGrease1) {
+		lastGreaseType = seededChoice(clientRandom, 1, GREASE_TYPES);
+		extensions.push(greaseExt(lastGreaseType, clientRandom, 4));
+	}
+	// 6/7. SignatureAlgorithms (13) / PSKKeyExchangeModes (45) — 可互换顺序（forceSwap 由调用方传入确保 ECH AAD/final 一致）
 	{
 		const sigAlgs = [0x0804, 0x0805, 0x0806, 0x0403, 0x0503, 0x0603, 0x0807, 0x0808, 0x0809];
-		extensions.push(tlsBytes(uint16be(EXT_SIGNATURE_ALGORITHMS), uint16be(sigAlgs.length * 2 + 2), uint16be(sigAlgs.length * 2), ...sigAlgs.flatMap(uint16be)));
+		const sigAlgsExt = tlsBytes(uint16be(EXT_SIGNATURE_ALGORITHMS), uint16be(sigAlgs.length * 2 + 2), uint16be(sigAlgs.length * 2), ...sigAlgs.flatMap(uint16be));
+		const pskModesExt = tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), 2, 1, 1);
+		const swap = forceSwap !== undefined ? forceSwap : (TLS_EXT_SWAP && DEPLOYMENT_RNG() < 0.3);
+		if (swap) { extensions.push(pskModesExt); extensions.push(sigAlgsExt); }
+		else { extensions.push(sigAlgsExt); extensions.push(pskModesExt); }
 	}
-	// PSKKeyExchangeModes (type 45) — TLS 1.3 浏览器必带
-	extensions.push(tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), 2, 1, 1));
+	// 8. GREASE(2) — ~61% 概率（需有 GREASE1 时）
+	if (hasGrease1 && seededRand(clientRandom, 2) < 0.61) {
+		const exclude = [lastGreaseType];
+		const available = GREASE_TYPES.filter(t => !exclude.includes(t));
+		const type2 = seededChoice(clientRandom, 3, available);
+		extensions.push(greaseExt(type2, clientRandom, 5));
+	}
+	// 9. SupportedGroups (10) — 动态编码
 	if (keyShares) {
-		const supportedGroupsExt = tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), 4, 0, 1, 0);
-		extensions.push(supportedGroupsExt);
+		const groupIds = keyShares.map(([groupId]) => uint16be(groupId));
+		const groupList = concatBytes(...groupIds);
+		extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), uint16be(groupList.length + 2), uint16be(groupList.length), ...groupList));
 	}
+	// 10. ECPointFormats (11)
 	if (options?.chacha !== false) {
 		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), 2, 1, 0));
 	}
+	// 11. ECH (57)
 	if (echExt) extensions.push(echExt);
 	const clientHello = tlsBytes(TLS_VERSION_12, clientRandom, tlsBytes(0), cipherBytes, tlsBytes(1, 0), tlsBytes(uint16be(concatBytes(...extensions).length), ...extensions));
 	return buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_HELLO, clientHello);
@@ -4380,44 +4478,52 @@ async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShare
 	const { enc, context } = await HPKE_SetupBaseS(echConfig.publicKey, hpkeInfo);
 	const predictedPayloadSize = innerCH.length + 16;
 	const zeroExt = buildZeroedECHExtension(echConfig, enc, predictedPayloadSize);
-	const outerCH_AAD = 构建带ECH扩展的外层CH(clientRandom, publicName, keyShares, options, zeroExt);
+	const swap = shouldSwapExtensions(DEPLOYMENT_RNG);
+	const outerCH_AAD = 构建带ECH扩展的外层CH(clientRandom, publicName, keyShares, options, zeroExt, swap);
 	const encryptedCH = await HPKE_Seal(context, innerCH, outerCH_AAD);
 	const echExt = buildECHExtension(echConfig, enc, encryptedCH);
-	const outerCH_Final = 构建带ECH扩展的外层CH(clientRandom, publicName, keyShares, options, echExt);
+	const outerCH_Final = 构建带ECH扩展的外层CH(clientRandom, publicName, keyShares, options, echExt, swap);
 	return { outerCH: outerCH_Final, innerCH, enc };
 }
 
 // 构建ClientHello
 function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTls13 = true, tls12: enableTls12 = true, alpn = null, chacha = true } = {}) {
-	// 1c: 密码套件排序对齐 Chrome 120+
 	const cipherIds = [];
+	const core = [];
 	if (enableTls13) {
-		cipherIds.push(4865, 4866);  // TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384
-		if (chacha) cipherIds.push(4867);  // TLS_CHACHA20_POLY1305_SHA256
+		core.push(4865, 4866);
+		if (chacha) core.push(4867);
 	}
+	const optional = [];
 	if (enableTls12) {
-		cipherIds.push(49199, 49195, 49200);  // ECDHE + AES (Chrome order)
-		if (chacha) cipherIds.push(52392, 52393);  // ECDHE + ChaCha
-		cipherIds.push(49196);  // ECDHE + AES 256
+		optional.push(49199, 49195, 49200);
+		if (chacha) optional.push(52392, 52393);
+		optional.push(49196);
+	}
+	if (TLS_CIPHER_SHUFFLE) {
+		cipherIds.push(...deterministicShuffleCiphers(core, optional, clientRandom, 8));
+	} else {
+		cipherIds.push(...core, ...optional);
 	}
 	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
-	// 1a: 扩展顺序对齐 Chrome 120+
-	// Chrome 顺序: SNI → ALPN → SupportedVersions → KeyShare → [GREASE] → SignatureAlgorithms → PSKKeyExchangeModes → SupportedGroups → ECPointFormats
-	// 注意: GREASE 在 Chrome 中通常不在首位，但原代码依赖其位置且索引重构成本高（~30-45min），保留原位
-	const extensions = [tlsBytes(255, 1, 0, 1, 0)];
+	const extensions = [];
+	// 1. SNI (0)
 	if (serverName) {
 		const serverNameBytes = TLS文本编码器.encode(serverName);
 		const serverNameList = tlsBytes(0, uint16be(serverNameBytes.length), serverNameBytes);
 		extensions.push(tlsBytes(uint16be(EXT_SERVER_NAME), uint16be(serverNameList.length + 2), uint16be(serverNameList.length), serverNameList));
 	}
+	// 2. ALPN (16)
 	if (alpn) {
 		const alpnBytes = TLS文本编码器.encode(alpn);
 		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), tlsBytes(alpnBytes.length + 1, alpnBytes.length, alpnBytes)));
 	}
+	// 3. SupportedVersions (43)
 	const supportedVersions = [];
 	if (enableTls13) supportedVersions.push(TLS_VERSION_13);
 	if (enableTls12) supportedVersions.push(TLS_VERSION_12);
 	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
+	// 4. KeyShare (51)
 	if (keyShares) {
 		const keyShareEntries = [];
 		for (const [groupId, keyShare] of keyShares) {
@@ -4429,17 +4535,40 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 			extensions.push(tlsBytes(uint16be(EXT_KEY_SHARE), uint16be(keyShareExt.length), keyShareExt));
 		}
 	}
-	// SignatureAlgorithms (type 13) — Chrome 必带
+	// 5. GREASE(1) — ~90% 概率（使用 clientRandom 确定性种子）
+	let lastGreaseType = null;
+	const hasGrease1 = TLS_GREASE && seededRand(clientRandom, 0) < 0.9;
+	if (hasGrease1) {
+		lastGreaseType = seededChoice(clientRandom, 1, GREASE_TYPES);
+		extensions.push(greaseExt(lastGreaseType, clientRandom, 4));
+	}
+	// 6/7. SignatureAlgorithms (13) / PSKKeyExchangeModes (45) — 可互换顺序（单调用，内部自决）
 	{
 		const sigAlgs = [0x0804, 0x0805, 0x0806, 0x0403, 0x0503, 0x0603, 0x0807, 0x0808, 0x0809];
-		extensions.push(tlsBytes(uint16be(EXT_SIGNATURE_ALGORITHMS), uint16be(sigAlgs.length * 2 + 2), uint16be(sigAlgs.length * 2), ...sigAlgs.flatMap(uint16be)));
+		const sigAlgsExt = tlsBytes(uint16be(EXT_SIGNATURE_ALGORITHMS), uint16be(sigAlgs.length * 2 + 2), uint16be(sigAlgs.length * 2), ...sigAlgs.flatMap(uint16be));
+		const pskModesExt = tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), 2, 1, 1);
+		if (shouldSwapExtensions(DEPLOYMENT_RNG)) {
+			extensions.push(pskModesExt);
+			extensions.push(sigAlgsExt);
+		} else {
+			extensions.push(sigAlgsExt);
+			extensions.push(pskModesExt);
+		}
 	}
-	// PSKKeyExchangeModes (type 45) — TLS 1.3 浏览器必带
-	extensions.push(tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), 2, 1, 1));
+	// 8. GREASE(2) — ~61% 概率（需有 GREASE1 时）
+	if (hasGrease1 && seededRand(clientRandom, 2) < 0.61) {
+		const exclude = [lastGreaseType];
+		const available = GREASE_TYPES.filter(t => !exclude.includes(t));
+		const type2 = seededChoice(clientRandom, 3, available);
+		extensions.push(greaseExt(type2, clientRandom, 5));
+	}
+	// 9. SupportedGroups (10) — 动态编码
 	if (keyShares) {
-		const supportedGroupsExt = tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), 4, 0, 1, 0);
-		extensions.push(supportedGroupsExt);
+		const groupIds = keyShares.map(([groupId]) => uint16be(groupId));
+		const groupList = concatBytes(...groupIds);
+		extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), uint16be(groupList.length + 2), uint16be(groupList.length), ...groupList));
 	}
+	// 10. ECPointFormats (11)
 	if (chacha) {
 		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), 2, 1, 0));
 	}
