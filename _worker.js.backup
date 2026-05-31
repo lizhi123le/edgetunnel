@@ -4379,6 +4379,12 @@ function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, opti
 	}
 	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
 	const extensions = [];
+	// 0. GREASE(0) — ~50% 概率，放在 SNI 之前，类型被后续 GREASE 自动排除
+	let lastGreaseType = null;
+	if (TLS_GREASE && seededRand(clientRandom, 7) < 0.5) {
+		lastGreaseType = seededChoice(clientRandom, 8, GREASE_TYPES);
+		extensions.push(greaseExt(lastGreaseType, clientRandom, 3));
+	}
 	// 1. SNI (0)
 	if (serverName) {
 		const serverNameBytes = TLS文本编码器.encode(serverName);
@@ -4395,6 +4401,22 @@ function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, opti
 	if (options?.tls13 !== false) supportedVersions.push(TLS_VERSION_13);
 	if (options?.tls12 !== false) supportedVersions.push(TLS_VERSION_12);
 	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
+	// ★ 预选 GREASE(1) 类型（推迟扩展推送，使 GREASE(1b) 能排除其类型）
+	const hasGrease1 = TLS_GREASE && seededRand(clientRandom, 0) < 0.9;
+	let grease1Type = null;
+	if (hasGrease1) {
+		grease1Type = seededChoice(clientRandom, 1,
+			lastGreaseType
+				? GREASE_TYPES.filter(t => t !== lastGreaseType)
+				: GREASE_TYPES
+		);
+	}
+	// ★ 3.5. GREASE(1b) — ~40%，排除 GREASE(0) 和 GREASE(1) 的类型
+	if (TLS_GREASE && seededRand(clientRandom, 10) < 0.4) {
+		const usedTypes = [lastGreaseType, grease1Type].filter(Boolean);
+		const available = GREASE_TYPES.filter(t => !usedTypes.includes(t));
+		extensions.push(greaseExt(seededChoice(clientRandom, 11, available), clientRandom, 6));
+	}
 	// 4. KeyShare (51)
 	if (keyShares) {
 		const keyShareEntries = [];
@@ -4406,12 +4428,10 @@ function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, opti
 			extensions.push(tlsBytes(uint16be(EXT_KEY_SHARE), uint16be(keyShareExt.length), keyShareExt));
 		}
 	}
-	// 5. GREASE(1) — ~90% 概率（使用 clientRandom 确定性种子，确保 ECH AAD/final 一致）
-	let lastGreaseType = null;
-	const hasGrease1 = TLS_GREASE && seededRand(clientRandom, 0) < 0.9;
+	// 5. GREASE(1) — ~90% 概率（实际推送扩展，类型已在 SupportedVersions 后预选）
 	if (hasGrease1) {
-		lastGreaseType = seededChoice(clientRandom, 1, GREASE_TYPES);
-		extensions.push(greaseExt(lastGreaseType, clientRandom, 4));
+		lastGreaseType = grease1Type;
+		extensions.push(greaseExt(grease1Type, clientRandom, 4));
 	}
 	// 6/7. SignatureAlgorithms (13) / PSKKeyExchangeModes (45) — 可互换顺序（forceSwap 由调用方传入确保 ECH AAD/final 一致）
 	{
@@ -4439,19 +4459,21 @@ function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, opti
 		const groupList = concatBytes(...groupIds);
 		extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), uint16be(groupList.length + 2), uint16be(groupList.length), ...groupList));
 	}
-	// 11. ECPointFormats (11)
-	if (options?.chacha !== false) {
-		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), uint16be(3), 3, 0, 1, 2));
+	// 11. ECPointFormats (11) — TLS 1.2 启用时始终发送，否则 ~50% 概率
+	if ((options?.tls12 !== false) || seededRand(clientRandom, 9) < 0.5) {
+		if (options?.chacha !== false) {
+			extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), uint16be(3), 3, 0, 1, 2));
+		}
 	}
 	// 12. ECH (57)
 	if (echExt) extensions.push(echExt);
-	const clientHello = tlsBytes(TLS_VERSION_12, clientRandom, tlsBytes(0), cipherBytes, tlsBytes(1, 0), tlsBytes(uint16be(concatBytes(...extensions).length), ...extensions));
+	const clientHello = tlsBytes(uint16be(TLS_VERSION_12), clientRandom, tlsBytes(0), cipherBytes, tlsBytes(1, 0), tlsBytes(uint16be(concatBytes(...extensions).length), ...extensions));
 	return buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_HELLO, clientHello);
 }
 
 // ECH 内层+外层 ClientHello 构建 (Step C)
 async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShares, options, echConfig) {
-	const paddingTarget = 512 + (Math.floor(Math.random() * 13) - 6) * 8;
+	const paddingTarget = 512 + (Math.floor(seededRand(clientRandom, 12) * 13) - 6) * 8;
 	const swap = shouldSwapExtensions(DEPLOYMENT_RNG);
 	const innerCH = buildClientHello(clientRandom, 真实SNI, keyShares, { ...options, forceSwap: swap, paddingTarget });
 	const echLabel = $encoder.encode('tls13-ech');
@@ -4488,6 +4510,12 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 	}
 	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
 	const extensions = [];
+	// 0. GREASE(0) — ~50% 概率，放在 SNI 之前，类型被后续 GREASE 自动排除
+	let lastGreaseType = null;
+	if (TLS_GREASE && seededRand(clientRandom, 7) < 0.5) {
+		lastGreaseType = seededChoice(clientRandom, 8, GREASE_TYPES);
+		extensions.push(greaseExt(lastGreaseType, clientRandom, 3));
+	}
 	// 1. SNI (0)
 	if (serverName) {
 		const serverNameBytes = TLS文本编码器.encode(serverName);
@@ -4504,6 +4532,22 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 	if (enableTls13) supportedVersions.push(TLS_VERSION_13);
 	if (enableTls12) supportedVersions.push(TLS_VERSION_12);
 	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
+	// ★ 预选 GREASE(1) 类型（推迟扩展推送，使 GREASE(1b) 能排除其类型）
+	const hasGrease1 = TLS_GREASE && seededRand(clientRandom, 0) < 0.9;
+	let grease1Type = null;
+	if (hasGrease1) {
+		grease1Type = seededChoice(clientRandom, 1,
+			lastGreaseType
+				? GREASE_TYPES.filter(t => t !== lastGreaseType)
+				: GREASE_TYPES
+		);
+	}
+	// ★ 3.5. GREASE(1b) — ~40%，排除 GREASE(0) 和 GREASE(1) 的类型
+	if (TLS_GREASE && seededRand(clientRandom, 10) < 0.4) {
+		const usedTypes = [lastGreaseType, grease1Type].filter(Boolean);
+		const available = GREASE_TYPES.filter(t => !usedTypes.includes(t));
+		extensions.push(greaseExt(seededChoice(clientRandom, 11, available), clientRandom, 6));
+	}
 	// 4. KeyShare (51)
 	if (keyShares) {
 		const keyShareEntries = [];
@@ -4516,12 +4560,10 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 			extensions.push(tlsBytes(uint16be(EXT_KEY_SHARE), uint16be(keyShareExt.length), keyShareExt));
 		}
 	}
-	// 5. GREASE(1) — ~90% 概率（使用 clientRandom 确定性种子）
-	let lastGreaseType = null;
-	const hasGrease1 = TLS_GREASE && seededRand(clientRandom, 0) < 0.9;
+	// 5. GREASE(1) — ~90% 概率（实际推送扩展，类型已在 SupportedVersions 后预选）
 	if (hasGrease1) {
-		lastGreaseType = seededChoice(clientRandom, 1, GREASE_TYPES);
-		extensions.push(greaseExt(lastGreaseType, clientRandom, 4));
+		lastGreaseType = grease1Type;
+		extensions.push(greaseExt(grease1Type, clientRandom, 4));
 	}
 	// 6/7. SignatureAlgorithms (13) / PSKKeyExchangeModes (45) — 可互换顺序（单调用，内部自决）
 	{
@@ -4554,9 +4596,11 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 		const groupList = concatBytes(...groupIds);
 		extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), uint16be(groupList.length + 2), uint16be(groupList.length), ...groupList));
 	}
-	// 11. ECPointFormats (11)
-	if (chacha) {
-		extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), uint16be(3), 3, 0, 1, 2));
+	// 11. ECPointFormats (11) — TLS 1.2 启用时始终发送，否则 ~50% 概率
+	if (enableTls12 || seededRand(clientRandom, 9) < 0.5) {
+		if (chacha) {
+			extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), uint16be(3), 3, 0, 1, 2));
+		}
 	}
 	// padding (21): 插入在 pre_shared_key 之前，确保 RFC 8446 §4.2.11 顺序
 	if (paddingTarget) {
@@ -4572,7 +4616,7 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 	// 12. pre_shared_key (41) — 空 PSK 列表，Chrome 始终发送，RFC 8446 §4.2.11 要求必须最后
 	extensions.push(tlsBytes(uint16be(41), uint16be(4), uint16be(0), uint16be(0)));
 	const clientHello = tlsBytes(
-		TLS_VERSION_12,
+		uint16be(TLS_VERSION_12),
 		clientRandom,
 		tlsBytes(0),
 		cipherBytes,
@@ -8422,7 +8466,13 @@ async function SOCKS5可用性验证(代理协议 = 'socks5', 代理参数, requ
         if (!tcpSocket) return { success: false, error: '无法连接到代理服务器', proxy: 代理协议 + "://" + 完整代理参数, responseTime: Date.now() - startTime };
         try {
             const writer = tcpSocket.writable.getWriter();
-            await writer.write(SS文本编码器.encode(`GET /cdn-cgi/trace HTTP/1.1\r\nHost: check.socks5.090227.xyz\r\nConnection: close\r\n\r\n`));
+            await writer.write(SS文本编码器.encode(
+                `GET /cdn-cgi/trace HTTP/1.1\r\n` +
+                `Host: check.socks5.090227.xyz\r\n` +
+                `User-Agent: ${PICK_CONNECT_UA()}\r\n` +
+                `Accept: */*\r\n` +
+                `Connection: close\r\n\r\n`
+            ));
             writer.releaseLock();
             const reader = tcpSocket.readable.getReader();
             let response = '';
