@@ -730,7 +730,12 @@ export default {
                         if (configVersion) cacheUrl.searchParams.set('v', configVersion);
                         cacheUrl.searchParams.set('_client_ua', ua);
                         let cacheKey = new Request(cacheUrl.toString(), request);
-                        let cachedResponse = await cache.match(cacheKey);
+                        let cachedResponse;
+                        try {
+                            cachedResponse = await cache.match(cacheKey);
+                        } catch (e) {
+                            console.warn('[Cache] 读取失败，降级为未命中:', e?.message || e);
+                        }
                         if (cachedResponse) return cachedResponse;
                         
                         // 缓存未命中 → 读取最新 config_version，更新缓存键后重试
@@ -970,7 +975,9 @@ export default {
                         }
 
                         const subResponse = new Response(订阅内容, { status: 200, headers: responseHeaders });
-                        ctx.waitUntil(cache.put(cacheKey, subResponse.clone()));
+                        ctx.waitUntil(cache.put(cacheKey, subResponse.clone()).catch(e => {
+                            console.warn('[Cache] 写入失败:', e?.message || e);
+                        }));
                         return subResponse;
                     }
                 } else if (访问路径 === 'locations') {//反代locations列表
