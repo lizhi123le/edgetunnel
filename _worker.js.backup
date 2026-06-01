@@ -1,4 +1,4 @@
-const Version = '2026-05-29 01:48:18(Enhanced)';
+const Version = '2026-06-01 15:49:39(Enhanced)';
 
 // 全局 TextEncoder/TextDecoder 复用提升性能
 const $encoder = new TextEncoder();
