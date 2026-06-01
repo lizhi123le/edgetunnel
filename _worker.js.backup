@@ -4,6 +4,12 @@ const Version = '2026-05-29 01:48:18(Enhanced)';
 const $encoder = new TextEncoder();
 const $decoder = new TextDecoder();
 
+// 预编码常用字符串常量（避免运行时重复 TextEncoder.encode）
+const ENC_HPKEv1 = $encoder.encode('HPKE-v1');
+const ENC_tls13ech = $encoder.encode('tls13-ech');
+const ENC_ssSubkey = $encoder.encode('ss-subkey');
+const ENC_empty = $encoder.encode('');
+
 // ★ 全局 SNI 混合器实例（启动时初始化，未初始化时为 null）
 let 全局SNI混合器 = null;
 // ★ 全局 ECH 统计计数器 (Step H1)
@@ -141,7 +147,7 @@ const 预加载DNS缓存最大 = 100;
 
 // === 统一 CPU Yield 策略 ===
 // 使用 performance.now() + intervalMs 间隔，避免长时间循环导致 Cloudflare Workers CPU 超时
-function createYieldStrategy(intervalMs = 3) {
+function createYieldStrategy(intervalMs = 5) {
     let lastYield = 0;
     return async function yieldToEventLoop() {
         const now = performance.now();
@@ -842,7 +848,8 @@ export default {
                                     if (config_JSON.启用0RTT && !ssPath.includes('ed=2560')) {
                                         ssPath = ssPath.includes('?') ? (ssPath + '&ed=2560') : (ssPath + '?ed=2560');
                                     }
-                                    return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + uuidToUse)}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + ssPath + (config_JSON.SS.TLS ? ';tls' : '')) + SS_ECH参数 + TLS分片参数}#${encodeURIComponent(节点备注)}`;
+                                    const __subB64 = config_JSON.SS.加密方式 + ':' + uuidToUse; let __subB64Result = __btoaCache.get(__subB64); if (!__subB64Result) __btoaCache.set(__subB64, __subB64Result = btoa(__subB64));
+                                    return `${协议类型}://${__subB64Result}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + ssPath + (config_JSON.SS.TLS ? ';tls' : '')) + SS_ECH参数 + TLS分片参数}#${encodeURIComponent(节点备注)}`;
                                 } else {
                                     const 传输路径参数值 = 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器);
                                     return `${协议类型}://${uuidToUse}@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none${config_JSON.跳过证书验证 ? '&insecure=1&allowInsecure=1' : ''}#${encodeURIComponent(节点备注)}`;
@@ -1819,7 +1826,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 					return 入站主密钥任务缓存.get(cacheKey);
 				};
 				const 入站状态 = {
-					buffer: new Uint8Array(0), hasSalt: false, waitPayloadLength: null,
+					buffer: new Uint8Array(0), offset: 0, hasSalt: false, waitPayloadLength: null,
 					decryptKey: null, nonceCounter: new Uint8Array(SSNonce长度), 加密配置: null,
 					cpuYieldByteCounter: 0,
 				};
@@ -1844,7 +1851,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 								if (payloadLength < 0 || payloadLength > 加密配置.maxChunk) continue;
 								if (offset > 0) log(`[SS入站] 检测到前导噪声 ${offset}B，已自动对齐`);
 								if (加密配置.method !== 首选加密配置.method) log(`[SS入站] URL enc=${请求加密方式 || 首选加密配置.method} 与实际 ${加密配置.method} 不一致，已自动切换`);
-								入站状态.buffer = 入站状态.buffer.subarray(初始化最小长度);
+								入站状态.offset = 初始化最小长度;
 								入站状态.decryptKey = decryptKey;
 								入站状态.nonceCounter = nonceCounter;
 								入站状态.waitPayloadLength = payloadLength;
@@ -1860,10 +1867,17 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 					}
 					return false;
 				};
+				const _bufRemaining = () => 入站状态.buffer.byteLength - 入站状态.offset;
 				const 入站解密器 = {
 					async 输入(dataChunk) {
 						const chunk = SS数据转Uint8Array(dataChunk);
-						if (chunk.byteLength > 0) 入站状态.buffer = SS拼接字节(入站状态.buffer, chunk);
+						if (chunk.byteLength > 0) {
+							if (入站状态.offset > 65536) {
+								入站状态.buffer = 入站状态.buffer.subarray(入站状态.offset);
+								入站状态.offset = 0;
+							}
+							入站状态.buffer = SS拼接字节(入站状态.buffer, chunk);
+						}
 						if (!入站状态.hasSalt) {
 							const 初始化成功 = await 初始化入站解密状态();
 							if (!初始化成功) return [];
@@ -1873,9 +1887,9 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 					while (true) {
 						if (入站状态.waitPayloadLength === null) {
 							const lengthCipherTotalLength = 2 + SSAEAD标签长度;
-							if (入站状态.buffer.byteLength < lengthCipherTotalLength) break;
-							const lengthCipher = 入站状态.buffer.subarray(0, lengthCipherTotalLength);
-							入站状态.buffer = 入站状态.buffer.subarray(lengthCipherTotalLength);
+							if (_bufRemaining() < lengthCipherTotalLength) break;
+							const lengthCipher = 入站状态.buffer.subarray(入站状态.offset, 入站状态.offset + lengthCipherTotalLength);
+							入站状态.offset += lengthCipherTotalLength;
 							const lengthPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, lengthCipher);
 							if (lengthPlain.byteLength !== 2) throw new Error('SS length decrypt failed');
 							const payloadLength = (lengthPlain[0] << 8) | lengthPlain[1];
@@ -1883,9 +1897,9 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 							入站状态.waitPayloadLength = payloadLength;
 						}
 						const payloadCipherTotalLength = 入站状态.waitPayloadLength + SSAEAD标签长度;
-						if (入站状态.buffer.byteLength < payloadCipherTotalLength) break;
-						const payloadCipher = 入站状态.buffer.subarray(0, payloadCipherTotalLength);
-						入站状态.buffer = 入站状态.buffer.subarray(payloadCipherTotalLength);
+						if (_bufRemaining() < payloadCipherTotalLength) break;
+						const payloadCipher = 入站状态.buffer.subarray(入站状态.offset, 入站状态.offset + payloadCipherTotalLength);
+						入站状态.offset += payloadCipherTotalLength;
 						const payloadPlain = await SSAEAD解密(入站状态.decryptKey, 入站状态.nonceCounter, payloadCipher);
 						plaintextChunks.push(payloadPlain); 入站状态.waitPayloadLength = null;
 						
@@ -2382,7 +2396,7 @@ const SS支持加密配置 = {
 
 const SSAEAD标签长度 = 16;
 const SSNonce长度 = 12;
-const SS子密钥信息 = $encoder.encode('ss-subkey');
+const SS子密钥信息 = ENC_ssSubkey;
 const SS文本编码器 = $encoder;
 const SS文本解码器 = $decoder;
 const SS主密钥缓存 = new Map();
@@ -2601,20 +2615,28 @@ async function SSAEAD解密(cryptoKey, nonceCounter, ciphertext) {
 function 创建SS入站解密器(config, passwordText) {
 	const state = {
 		buffer: new Uint8Array(0),
+		offset: 0,
 		hasSalt: false,
 		waitPayloadLength: null,
 		decryptKey: null,
 		nonceCounter: new Uint8Array(SSNonce长度),
 	};
+	const bufRemaining = () => state.buffer.byteLength - state.offset;
 	const masterKeyPromise = SS派生主密钥(passwordText, config.keyLen);
 	return {
 		async 输入(dataChunk) {
 			const chunk = SS数据转Uint8Array(dataChunk);
-			if (chunk.byteLength > 0) state.buffer = SS拼接字节(state.buffer, chunk);
+			if (chunk.byteLength > 0) {
+				if (state.offset > 65536) {
+					state.buffer = state.buffer.subarray(state.offset);
+					state.offset = 0;
+				}
+				state.buffer = SS拼接字节(state.buffer, chunk);
+			}
 			if (!state.hasSalt) {
-				if (state.buffer.byteLength < config.saltLen) return [];
-				const salt = state.buffer.subarray(0, config.saltLen);
-				state.buffer = state.buffer.subarray(config.saltLen);
+				if (bufRemaining() < config.saltLen) return [];
+				const salt = state.buffer.subarray(state.offset, state.offset + config.saltLen);
+				state.offset += config.saltLen;
 				const masterKey = await masterKeyPromise;
 				state.decryptKey = await SS派生会话密钥(config, masterKey, salt, ['decrypt']);
 				state.hasSalt = true;
@@ -2623,9 +2645,9 @@ function 创建SS入站解密器(config, passwordText) {
 			while (true) {
 				if (state.waitPayloadLength === null) {
 					const lengthCipherTotalLength = 2 + SSAEAD标签长度;
-					if (state.buffer.byteLength < lengthCipherTotalLength) break;
-					const lengthCipher = state.buffer.subarray(0, lengthCipherTotalLength);
-					state.buffer = state.buffer.subarray(lengthCipherTotalLength);
+					if (bufRemaining() < lengthCipherTotalLength) break;
+					const lengthCipher = state.buffer.subarray(state.offset, state.offset + lengthCipherTotalLength);
+					state.offset += lengthCipherTotalLength;
 					const lengthPlain = await SSAEAD解密(state.decryptKey, state.nonceCounter, lengthCipher);
 					if (lengthPlain.byteLength !== 2) throw new Error('SS length decrypt failed');
 					const payloadLength = SS读取U16BE(lengthPlain, 0);
@@ -2633,9 +2655,9 @@ function 创建SS入站解密器(config, passwordText) {
 					state.waitPayloadLength = payloadLength;
 				}
 				const payloadCipherTotalLength = state.waitPayloadLength + SSAEAD标签长度;
-				if (state.buffer.byteLength < payloadCipherTotalLength) break;
-				const payloadCipher = state.buffer.subarray(0, payloadCipherTotalLength);
-				state.buffer = state.buffer.subarray(payloadCipherTotalLength);
+				if (bufRemaining() < payloadCipherTotalLength) break;
+				const payloadCipher = state.buffer.subarray(state.offset, state.offset + payloadCipherTotalLength);
+				state.offset += payloadCipherTotalLength;
 				const payloadPlain = await SSAEAD解密(state.decryptKey, state.nonceCounter, payloadCipher);
 				plaintextChunks.push(payloadPlain);
 				state.waitPayloadLength = null;
@@ -2732,8 +2754,30 @@ const GROUPS_BY_ID = new Map([[29, 'X25519'], [23, 'P-256']]);
 const SUPPORTED_SIGNATURE_ALGORITHMS = [2052, 2053, 2054, 1025, 1281, 1537, 1027, 1283, 1539];
 
 const tlsBytes = (...parts) => {
-	const flattenBytes = values => values.flatMap(value => value instanceof Uint8Array ? [...value] : Array.isArray(value) ? flattenBytes(value) : 'number' == typeof value ? [value] : []);
-	return new Uint8Array(flattenBytes(parts));
+	if (parts.length === 1 && parts[0] instanceof Uint8Array) return new Uint8Array(parts[0]);
+	const countLength = (values, idx = 0, end = values.length) => {
+		let len = 0;
+		for (; idx < end; idx++) {
+			const v = values[idx];
+			if (v instanceof Uint8Array) len += v.length;
+			else if (Array.isArray(v)) len += countLength(v);
+			else len += 1;
+		}
+		return len;
+	};
+	const fill = (result, values, offset, idx = 0, end = values.length) => {
+		for (; idx < end; idx++) {
+			const v = values[idx];
+			if (v instanceof Uint8Array) { result.set(v, offset); offset += v.length; }
+			else if (Array.isArray(v)) offset = fill(result, v, offset);
+			else result[offset++] = v;
+		}
+		return offset;
+	};
+	const totalLen = countLength(parts);
+	const result = new Uint8Array(totalLen);
+	fill(result, parts, 0);
+	return result;
 };
 const uint16be = value => [value >> 8 & 255, 255 & value];
 const readUint16 = (buffer, offset) => buffer[offset] << 8 | buffer[offset + 1];
@@ -2911,8 +2955,16 @@ const constantTimeEqual = (left, right) => {
 };
 const TLS哈希长度 = hash => 'SHA-512' === hash ? 64 : 'SHA-384' === hash ? 48 : 32;
 
+const __hmacKeyCache = new Map();
+const __hmacKeyCacheMax = 64;
+const __btoaCache = new Map();
 async function TLS_HMAC(hash, key, data) {
-	const cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash }, false, ['sign']);
+	const cacheKey = hash + ':' + key.toString();
+	let cryptoKey = __hmacKeyCache.get(cacheKey);
+	if (!cryptoKey) {
+		cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash }, false, ['sign']);
+		if (__hmacKeyCache.size < __hmacKeyCacheMax) __hmacKeyCache.set(cacheKey, cryptoKey);
+	}
 	return new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, data));
 }
 async function TLS摘要(hash, data) { return new Uint8Array(await crypto.subtle.digest(hash, data)); }
@@ -3018,7 +3070,7 @@ async function ChaCha20XOR(key, nonce, data) {
         // Poly1305 MAC
         const POLY1305_LIMB_MASK = 0x3ffffffn;
         const POLY1305_MUL5 = 5n;
-        const poly1305Yield = createYieldStrategy(3);
+        const poly1305Yield = createYieldStrategy(5);
         async function Poly1305Mac(key, message) {
             const rKey = (() => {
                 const clamped = new Uint8Array(key);
@@ -3033,7 +3085,7 @@ async function ChaCha20XOR(key, nonce, data) {
                 POLY1305_LIMB_MASK & BigInt(rKey[13] | rKey[14] << 8 | rKey[15] << 16)
             ];
             for (let offset = 0; offset < message.length; offset += 16) {
-                await poly1305Yield();
+                if (offset > 0 && (offset & 16383) === 0) await poly1305Yield();
                 const chunk = message.slice(offset, offset + 16);
                 const paddedChunk = new Uint8Array(17);
                 paddedChunk.set(chunk), paddedChunk[chunk.length] = 1;
@@ -3309,6 +3361,7 @@ class TlsClient {
 		} else {
 			this.发送SNI = this.serverName;
 		}
+		this.发送SNI字节 = this.发送SNI ? TLS文本编码器.encode(this.发送SNI) : null;
 		this.timeout = options.timeout ?? 30000;
 		this.clientRandom = TLS随机字节(32);
 		this.serverRandom = null;
@@ -3527,12 +3580,15 @@ class TlsClient {
 		this.ecdhKeyPair = p256Share.keyPair;
 		// ★ ECH: 以 [groupId, shareObj][] 格式保存 keyShares (Step E)
 		// 密钥共享随机化: 80% dual key share (对齐 Chrome), 20% X25519-only (兼容性兜底)
+		// SINGLE_KEYSHARE 环境变量: 强制单 key share (X25519) 节省 ClientHello 大小
 		// 使用 crypto.getRandomValues() 而非 Math.random() 避免 PRNG 可预测性
 		const rand = new Uint8Array(1);
 		crypto.getRandomValues(rand);
-		this.keyShares = rand[0] < 205  // 205/256 ≈ 80%
-			? [[29, x25519Share], [23, p256Share]]
-			: [[29, x25519Share]];
+		this.keyShares = config_JSON?.SINGLE_KEYSHARE
+			? [[29, x25519Share]]
+			: rand[0] < 205
+				? [[29, x25519Share], [23, p256Share]]
+				: [[29, x25519Share]];
 		const reader = this.socket.readable.getReader();
 		const writer = this.socket.writable.getWriter();
         try {
@@ -3556,17 +3612,40 @@ class TlsClient {
                     log(`[ECH] 构建/发送 ECH CH 失败: ${echErr.message}，降级到普通 ClientHello`);
                     this.echEnabled = false;
                     if (typeof 全局ECH统计 !== 'undefined') 全局ECH统计.failed++;
-                    const ch = buildClientHello(this.clientRandom, this.发送SNI, this.keyShares, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
+                    const ch = buildClientHello(this.clientRandom, this.发送SNI, this.keyShares, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha, preEncodedSN: this.发送SNI字节 });
                     this.recordHandshake(ch);
                     await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, ch, TLS_VERSION_12));
                 }
             } else {
-                const ch = buildClientHello(this.clientRandom, this.发送SNI, this.keyShares, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha });
+                const ch = buildClientHello(this.clientRandom, this.发送SNI, this.keyShares, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha, preEncodedSN: this.发送SNI字节 });
                 this.recordHandshake(ch);
                 await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, ch, TLS_VERSION_12));
             }
             const serverHello = await this.receiveServerHello(reader);
-            if (serverHello.isHRR) throw new Error('HelloRetryRequest is not supported');
+            if (serverHello.isHRR) {
+                if (config_JSON?.SINGLE_KEYSHARE && this.keyShares.length === 1) {
+                    // HRR 回退: 服务器要求其它曲线，包含双 key share 重发 ClientHello
+                    this.keyShares = [[29, x25519Share], [23, p256Share]];
+                    const ch = buildClientHello(this.clientRandom, this.发送SNI, this.keyShares, { tls13: this.supportTls13, tls12: this.supportTls12, alpn: this.alpnProtocols, chacha: this.allowChacha, preEncodedSN: this.发送SNI字节 });
+                    this.recordHandshake(ch);
+                    await writer.write(buildTlsRecord(CONTENT_TYPE_HANDSHAKE, ch, TLS_VERSION_12));
+                    const retryHello = await this.receiveServerHello(reader);
+                    if (retryHello.isHRR) throw new Error('Double HelloRetryRequest not supported');
+                    if (retryHello.keyShare?.group && this.keyPairs.has(retryHello.keyShare.group)) {
+                        this.ecdhKeyPair = this.keyPairs.get(retryHello.keyShare.group).keyPair;
+                    }
+                    if (retryHello.isTls13) {
+                        await this.handshakeTls13(reader, writer, retryHello);
+                    } else {
+                        await this.handshakeTls12(reader, writer);
+                    }
+                } else {
+                    throw new Error('HelloRetryRequest is not supported');
+                }
+                this.handshakeComplete = true;
+                this.setStage('transmission');
+                return;
+            }
             if (serverHello.keyShare?.group && this.keyPairs.has(serverHello.keyShare.group)) {
                 const selectedKeyPair = this.keyPairs.get(serverHello.keyShare.group);
                 this.ecdhKeyPair = selectedKeyPair.keyPair;
@@ -4285,16 +4364,16 @@ const HPKE_KDF_ID = 0x0001;
 const HPKE_AEAD_ID = 0x0001;
 
 function HPKE构建SuiteID() {
-	return concatBytes($encoder.encode('HPKE-v1'), uint16be(HPKE_KEM_ID), uint16be(HPKE_KDF_ID), uint16be(HPKE_AEAD_ID));
+	return concatBytes(ENC_HPKEv1, uint16be(HPKE_KEM_ID), uint16be(HPKE_KDF_ID), uint16be(HPKE_AEAD_ID));
 }
 
 async function HPKE标签化Extract(salt, ikm, label, suiteID) {
-	const labeledIKM = concatBytes($encoder.encode('HPKE-v1'), suiteID, $encoder.encode(label), ikm);
+	const labeledIKM = concatBytes(ENC_HPKEv1, suiteID, $encoder.encode(label), ikm);
 	return hkdfExtract('SHA-256', salt, labeledIKM);
 }
 
 async function HPKE标签化Expand(prk, label, info, length, suiteID) {
-	const labeledInfo = concatBytes(uint16be(length), $encoder.encode('HPKE-v1'), suiteID, $encoder.encode(label), info);
+	const labeledInfo = concatBytes(uint16be(length), ENC_HPKEv1, suiteID, $encoder.encode(label), info);
 	return hkdfExpandRaw('SHA-256', prk, labeledInfo, length);
 }
 
@@ -4326,7 +4405,7 @@ async function HPKE_KeySchedule(mode, sharedSecret, hpkeInfo, psk = '', psk_id =
 	const pskIDHash = await HPKE标签化Extract(null, $encoder.encode(psk_id), 'psk_id_hash', suiteID);
 	const infoHash = await HPKE标签化Extract(null, hpkeInfo, 'info_hash', suiteID);
 	const keyScheduleContext = concatBytes([mode], pskIDHash, infoHash);
-	const secret = await HPKE标签化Extract(sharedSecret, $encoder.encode(''), 'secret', suiteID);
+	const secret = await HPKE标签化Extract(sharedSecret, ENC_empty, 'secret', suiteID);
 	const key = await HPKE标签化Expand(secret, 'key', keyScheduleContext, 16, suiteID);
 	const baseNonce = await HPKE标签化Expand(secret, 'base_nonce', keyScheduleContext, 12, suiteID);
 	const exporterSecret = await HPKE标签化Expand(secret, 'exp', keyScheduleContext, 32, suiteID);
@@ -4499,7 +4578,7 @@ function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, opti
 async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShares, options, echConfig) {
 	const paddingTarget = 512 + (Math.floor(seededRand(clientRandom, 12) * 13) - 6) * 8;
 	const innerCH = buildClientHello(clientRandom, 真实SNI, keyShares, { ...options, paddingTarget });
-	const echLabel = $encoder.encode('tls13-ech');
+	const echLabel = ENC_tls13ech;
 	const configHash = await TLS摘要('SHA-256', concatBytes(echLabel, echConfig.raw));
 	const hpkeInfo = concatBytes(echLabel, configHash);
 	const { enc, context } = await HPKE_SetupBaseS(echConfig.publicKey, hpkeInfo);
@@ -4513,7 +4592,7 @@ async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShare
 }
 
 // 构建ClientHello
-function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTls13 = true, tls12: enableTls12 = true, alpn = null, chacha = true, paddingTarget } = {}) {
+function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTls13 = true, tls12: enableTls12 = true, alpn = null, chacha = true, paddingTarget, preEncodedSN = null } = {}) {
 	const cipherIds = [];
 	const core = [];
 	if (enableTls13) {
@@ -4541,7 +4620,7 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 	}
 	// 1. SNI (0)
 	if (serverName) {
-		const serverNameBytes = TLS文本编码器.encode(serverName);
+		const serverNameBytes = preEncodedSN || TLS文本编码器.encode(serverName);
 		const serverNameList = tlsBytes(0, uint16be(serverNameBytes.length), serverNameBytes);
 		extensions.push(tlsBytes(uint16be(EXT_SERVER_NAME), uint16be(serverNameList.length + 2), uint16be(serverNameList.length), serverNameList));
 	}
@@ -5147,7 +5226,7 @@ function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连�
 	};
 
 	const compact = () => {
-		if (head > 32 && head * 2 >= chunks.length) {
+		if (head > 2048 && head * 3 >= chunks.length) {
 			chunks = chunks.slice(head);
 			head = 0;
 		}
@@ -6426,6 +6505,7 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = nul
 			tlsSocket = await 打开HTTPS代理TLS(false);
 		} catch (error) {
 			if (!/cipher|handshake|TLS Alert|ServerHello|Finished|Unsupported|Missing TLS/i.test(error?.message || `${error || ''}`)) throw error;
+			if (config_JSON?.DISABLE_CHACHA) throw error; // DISABLE_CHACHA 禁止 ChaCha 回退
 			log(`[HTTPS代理] AES-GCM TLS 握手失败，回退 ChaCha20 兼容模式: ${error?.message || error}`);
 			tlsSocket = await 打开HTTPS代理TLS(true);
 		}
@@ -7177,10 +7257,14 @@ async function 批量替换域名(内容, hosts, 每组数量 = 2) {
 
 async function 异步批量转换节点(ips, 转换函数) {
     const batchYield = createYieldStrategy();
+    const BATCH_SIZE = 50;
     let result = [];
-    for (let i = 0; i < ips.length; i++) {
-        const node = await 转换函数(ips[i]);
-        if (node) result.push(node);
+    for (let start = 0; start < ips.length; start += BATCH_SIZE) {
+        const end = Math.min(start + BATCH_SIZE, ips.length);
+        for (let i = start; i < end; i++) {
+            const node = await 转换函数(ips[i]);
+            if (node) result.push(node);
+        }
         await batchYield();
     }
     return result.join('\n');
@@ -7561,6 +7645,11 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 
     if (env.PATH) config_JSON.PATH = env.PATH.startsWith('/') ? env.PATH : '/' + env.PATH;
     else if (!config_JSON.PATH) config_JSON.PATH = '/';
+
+    // 环境变量: 禁用 ChaCha 回退
+    if (env.DISABLE_CHACHA) config_JSON.DISABLE_CHACHA = env.DISABLE_CHACHA === 'true';
+    // 环境变量: 单 key share + HRR 自动回退
+    if (env.SINGLE_KEYSHARE) config_JSON.SINGLE_KEYSHARE = env.SINGLE_KEYSHARE === 'true';
 
     if (!config_JSON.反代.路径模板?.[_p]) {
         config_JSON.反代.路径模板 = {
