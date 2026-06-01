@@ -1,4 +1,4 @@
-const Version = '2026-06-01 15:49:39(Enhanced)';
+const Version = '2026-05-29 01:48:18(Enhanced)';
 
 // 全局 TextEncoder/TextDecoder 复用提升性能
 const $encoder = new TextEncoder();
@@ -59,7 +59,7 @@ class RequestContext {
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0;
 const 节点黑名单 = new Map(); // 缓存失效节点，避免短期内重复尝试导致 loadShed（指数退避: 30s→1min→2min→4min→...→30min）
 // 节点黑名单指数退避常量
-const 节点黑名单基础拉黑时间 = 30 * 1000; // 30秒
+const 节点黑名单基础拉黑时间 = 60 * 1000; // 60秒（减少重试风暴）
 const 节点黑名单最大拉黑时间 = 30 * 60 * 1000; // 30分钟
 const 节点黑名单退避系数 = 2; // 指数退避系数
 // sha224 结果缓存（Trojan 密码验证热路径优化）
@@ -74,7 +74,7 @@ const DOH_CACHE_MAX = 200; // 限制缓存条目数，避免内存泄漏
 // 模拟浏览器请求间隔 20-150ms，防止 DPI 时序指纹检测
 const connectionThrottles = new Map();
 const THROTTLE_MIN = 20;   // 最小间隔 (ms)
-const THROTTLE_MAX = 150;  // 最大间隔 (ms)
+const THROTTLE_MAX = 80;   // 最大间隔 (ms)
 const THROTTLE_CACHE_MAX = 256; // 最大缓存域名数，防止内存泄漏
 function getConnectionThrottle(hostname) {
     const key = hostname || '_default';
@@ -137,9 +137,9 @@ const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 
 // GrainTCP 性能优化常量
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
-const 上行合包目标字节 = 32 * 1024, 上行队列最大字节 = 16 * 1024 * 1024, 上行队列最大条目 = 4096;
+const 上行合包目标字节 = 32 * 1024, 上行队列最大字节 = 2 * 1024 * 1024, 上行队列最大条目 = 1024;
 const 下行Grain包字节 = 64 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
-const 默认TCP并发拨号数 = 2, 默认预加载竞速拨号 = true;
+const 默认TCP并发拨号数 = 2, 默认预加载竞速拨号 = false;
 // TCP 预加载 DNS 缓存（短 TTL，仅用于直连竞速拨号，不与其他 DNS 缓存冲突）
 const 预加载DNS缓存 = new Map();
 const 预加载DNS缓存TTL = 30 * 1000;
@@ -189,7 +189,7 @@ async function getADDtxt(env) {
 
 // xhttp 连接控制（增强稳定性）
 const XHTTP最大并发 = 32;
-const XHTTP空闲超时 = 45000;
+const XHTTP空闲超时 = 30000;
 let xhttp活动连接数 = 0;
 
 // HMAC-SHA256 签名密钥（基于加密秘钥派生）
