@@ -59,7 +59,7 @@ class RequestContext {
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0;
 const 节点黑名单 = new Map(); // 缓存失效节点，避免短期内重复尝试导致 loadShed（指数退避: 30s→1min→2min→4min→...→30min）
 // 节点黑名单指数退避常量
-const 节点黑名单基础拉黑时间 = 60 * 1000; // 60秒（减少重试风暴）
+const 节点黑名单基础拉黑时间 = 30 * 1000; // 30秒
 const 节点黑名单最大拉黑时间 = 30 * 60 * 1000; // 30分钟
 const 节点黑名单退避系数 = 2; // 指数退避系数
 // sha224 结果缓存（Trojan 密码验证热路径优化）
@@ -137,9 +137,9 @@ const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 
 // GrainTCP 性能优化常量
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
-const 上行合包目标字节 = 32 * 1024, 上行队列最大字节 = 2 * 1024 * 1024, 上行队列最大条目 = 2048;
+const 上行合包目标字节 = 64 * 1024, 上行队列最大字节 = 8 * 1024 * 1024, 上行队列最大条目 = 2048;
 const 下行Grain包字节 = 64 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
-const 默认TCP并发拨号数 = 2, 默认预加载竞速拨号 = false;
+const 默认TCP并发拨号数 = 2, 默认预加载竞速拨号 = true;
 // TCP 预加载 DNS 缓存（短 TTL，仅用于直连竞速拨号，不与其他 DNS 缓存冲突）
 const 预加载DNS缓存 = new Map();
 const 预加载DNS缓存TTL = 30 * 1000;
@@ -4837,7 +4837,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, 调试日志打印, TCP并发拨号数, 预加载竞速拨号 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
     log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
-    const 连接超时毫秒 = 2000;
+    const 连接超时毫秒 = 5000;
     let 已通过代理发送首包 = false;
     const TCP连接 = ctx2.request ? 创建请求TCP连接器(ctx2.request) : (() => { throw new Error('ctx2.request unavailable'); })();
 
@@ -5111,7 +5111,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 
 // DNS 响应缓存 (forwardataudp)
 const DNS_CACHE_MAX = 256;
-const DNS_CACHE_TTL = 30 * 1000;
+const DNS_CACHE_TTL = 60 * 1000;
 const dnsResponseCache = new Map();
 
 async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = null, ctx2) {
