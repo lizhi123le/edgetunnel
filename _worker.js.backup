@@ -6842,21 +6842,16 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     const lines = clash_yaml.split('\n');
     const processedLines = [];
     let i = 0;
-    let yieldCounter = 0;
-    const yieldInterval = 50; // 每 50 行 yield 一次，避免逐行 yield 开销
+    let nodeCount = 0; // 追踪已处理节点数，每12个节点yield一次
 
     while (i < lines.length) {
         const line = lines[i];
         const trimmedLine = line.trim();
-        
-        // 批量 yield：每 N 行让出一次 CPU
-        if (++yieldCounter >= yieldInterval) {
-            await yieldToEventLoop();
-            yieldCounter = 0;
-        }
 
         // 处理行格式（Flow）：- {name: ..., uuid: ..., ...}
         if (trimmedLine.startsWith('- {') && (trimmedLine.includes('uuid:') || trimmedLine.includes('password:'))) {
+            nodeCount++;
+            if (nodeCount % 12 === 0) await yieldToEventLoop();
             let fullNode = line;
             let braceCount = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
 
@@ -6892,6 +6887,8 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
         }
         // 处理块格式（Block）：- name: ..., 后续行为属性
         else if (trimmedLine.startsWith('- name:')) {
+            nodeCount++;
+            if (nodeCount % 12 === 0) await yieldToEventLoop();
             // 收集完整的代理节点定义
             let nodeLines = [line];
             let baseIndent = line.search(/\S/);
@@ -6984,7 +6981,11 @@ async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uu
 
         // --- UUID 匹配节点的 TLS 热补丁 (utls & ech) ---
         if (uuid) {
-            config.outbounds.forEach(outbound => {
+            let nodeCount = 0;
+            for (const outbound of config.outbounds) {
+                nodeCount++;
+                if (nodeCount % 12 === 0) await yieldToEventLoop();
+
                 if ((outbound.uuid && outbound.uuid === uuid) || (outbound.password && outbound.password === uuid)) {
                     if (!outbound.tls) {
                         outbound.tls = { enabled: true };
@@ -7005,7 +7006,7 @@ async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uu
                         };
                     }
                 }
-            });
+            }
         }
 
         return JSON.stringify(config, null, 2);
@@ -7256,8 +7257,7 @@ async function 批量替换域名(内容, hosts, 每组数量 = 2) {
 }
 
 async function 异步批量转换节点(ips, 转换函数) {
-    const batchYield = createYieldStrategy();
-    const BATCH_SIZE = 50;
+    const BATCH_SIZE = 12;
     let result = [];
     for (let start = 0; start < ips.length; start += BATCH_SIZE) {
         const end = Math.min(start + BATCH_SIZE, ips.length);
@@ -7265,7 +7265,8 @@ async function 异步批量转换节点(ips, 转换函数) {
             const node = await 转换函数(ips[i]);
             if (node) result.push(node);
         }
-        await batchYield();
+        // 每12个节点yield一次，避免CPU超时
+        await yieldToEventLoop();
     }
     return result.join('\n');
 }
