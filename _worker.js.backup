@@ -76,6 +76,8 @@ const connectionThrottles = new Map();
 const THROTTLE_MIN = 20;   // 最小间隔 (ms)
 const THROTTLE_MAX = 80;   // 最大间隔 (ms)
 const THROTTLE_CACHE_MAX = 256; // 最大缓存域名数，防止内存泄漏
+// 注意：connectionThrottles 是模块级 Map，仅在当前 CF Worker Isolate 内有效。
+// 多 Isolate 场景下节流效果有限。如需跨 Isolate 节流，请使用 KV 或 Durable Objects。
 function getConnectionThrottle(hostname) {
     const key = hostname || '_default';
     if (!connectionThrottles.has(key)) {
@@ -126,7 +128,8 @@ function 节点黑名单计算过期时间(failCount) {
 // 性能优化1: 向后兼容保留全局变量声明，请求级缓存已迁移至 RequestContext 实例属性
 let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
 // 向后兼容：保留全局变量用于快速访问（单请求场景）
-let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
+let config_JSON, 反代IP = '';
+let 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号;
 let 启用反代兜底 = true, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 // 性能优化2: 预编译SOCKS5白名单正则（避免每次创建新RegExp）
@@ -137,7 +140,7 @@ const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 
 // GrainTCP 性能优化常量
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
-const 上行合包目标字节 = 64 * 1024, 上行队列最大字节 = 5 * 1024 * 1024, 上行队列最大条目 = 2048;
+const 上行合包目标字节 = 64 * 1024, 上行队列最大字节 = 6 * 1024 * 1024, 上行队列最大条目 = 2048;
 const 下行Grain包字节 = 64 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
 const 默认TCP并发拨号数 = 2, 默认预加载竞速拨号 = true;
 // TCP 预加载 DNS 缓存（短 TTL，仅用于直连竞速拨号，不与其他 DNS 缓存冲突）
@@ -1874,13 +1877,13 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 				const _bufRemaining = () => 入站状态.buffer.byteLength - 入站状态.offset;
 				const 入站解密器 = {
 					async 输入(dataChunk) {
-						const chunk = SS数据转Uint8Array(dataChunk);
+						const chunk = 数据转Uint8Array(dataChunk);
 						if (chunk.byteLength > 0) {
 							if (入站状态.offset > 65536) {
 								入站状态.buffer = 入站状态.buffer.subarray(入站状态.offset);
 								入站状态.offset = 0;
 							}
-							入站状态.buffer = SS拼接字节(入站状态.buffer, chunk);
+							入站状态.buffer = 拼接字节数据(入站状态.buffer, chunk);
 						}
 						if (!入站状态.hasSalt) {
 							const 初始化成功 = await 初始化入站解密状态();
@@ -1934,7 +1937,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 					let 出站CPU让出字节计数器 = 0;
 					出站加密器 = {
 						async 加密并发送(dataChunk, sendChunk) {
-							const plaintextData = SS数据转Uint8Array(dataChunk);
+							const plaintextData = 数据转Uint8Array(dataChunk);
 							if (!随机字节已发送) {
 								await sendChunk(出站随机字节);
 								随机字节已发送 = true;
@@ -1989,7 +1992,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 				const 回包Socket = {
 					get readyState() { return serverSock.readyState; },
 					send(data) {
-						const chunk = SS数据转Uint8Array(data);
+						const chunk = 数据转Uint8Array(data);
 						if (chunk.byteLength <= SS单批最大字节) {
 							return SS入队发送(chunk);
 						}
@@ -2414,26 +2417,6 @@ const ECH_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
 const ECH_CACHE = new Map();
 
 
-function SS数据转Uint8Array(data) {
-	if (data instanceof Uint8Array) return data;
-	if (data instanceof ArrayBuffer) return new Uint8Array(data);
-	if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-	return new Uint8Array(data || 0);
-}
-
-function SS拼接字节(...chunkList) {
-	if (!chunkList || chunkList.length === 0) return new Uint8Array(0);
-	const chunks = chunkList.map(SS数据转Uint8Array);
-	const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-	const result = new Uint8Array(totalLength);
-	let offset = 0;
-	for (const chunk of chunks) {
-		result.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return result;
-}
-
 // 上游新增：通用数据转换函数
 function 数据转Uint8Array(data) {
 	if (data instanceof Uint8Array) return data;
@@ -2562,7 +2545,7 @@ async function SS派生主密钥(passwordText, keyLen) {
 			input.set(previous, 0);
 			input.set(passwordBytes, previous.byteLength);
 			previous = await SS生成MD5(input);
-			result = SS拼接字节(result, previous);
+			result = 拼接字节数据(result, previous);
 		}
 		return result.slice(0, keyLen);
 	})();
@@ -2587,7 +2570,7 @@ async function SSHKDFSHA1(ikm, salt, info, outputLen) {
 	let written = 0;
 	let counter = 1;
 	while (written < outputLen) {
-		const input = SS拼接字节(previous, info, new Uint8Array([counter]));
+		const input = 拼接字节数据(previous, info, new Uint8Array([counter]));
 		previous = new Uint8Array(await crypto.subtle.sign('HMAC', prkHmacKey, input));
 		const copyLength = Math.min(previous.byteLength, outputLen - written);
 		output.set(previous.subarray(0, copyLength), written);
@@ -2616,60 +2599,7 @@ async function SSAEAD解密(cryptoKey, nonceCounter, ciphertext) {
 	return new Uint8Array(plaintext);
 }
 
-function 创建SS入站解密器(config, passwordText) {
-	const state = {
-		buffer: new Uint8Array(0),
-		offset: 0,
-		hasSalt: false,
-		waitPayloadLength: null,
-		decryptKey: null,
-		nonceCounter: new Uint8Array(SSNonce长度),
-	};
-	const bufRemaining = () => state.buffer.byteLength - state.offset;
-	const masterKeyPromise = SS派生主密钥(passwordText, config.keyLen);
-	return {
-		async 输入(dataChunk) {
-			const chunk = SS数据转Uint8Array(dataChunk);
-			if (chunk.byteLength > 0) {
-				if (state.offset > 65536) {
-					state.buffer = state.buffer.subarray(state.offset);
-					state.offset = 0;
-				}
-				state.buffer = SS拼接字节(state.buffer, chunk);
-			}
-			if (!state.hasSalt) {
-				if (bufRemaining() < config.saltLen) return [];
-				const salt = state.buffer.subarray(state.offset, state.offset + config.saltLen);
-				state.offset += config.saltLen;
-				const masterKey = await masterKeyPromise;
-				state.decryptKey = await SS派生会话密钥(config, masterKey, salt, ['decrypt']);
-				state.hasSalt = true;
-			}
-			const plaintextChunks = [];
-			while (true) {
-				if (state.waitPayloadLength === null) {
-					const lengthCipherTotalLength = 2 + SSAEAD标签长度;
-					if (bufRemaining() < lengthCipherTotalLength) break;
-					const lengthCipher = state.buffer.subarray(state.offset, state.offset + lengthCipherTotalLength);
-					state.offset += lengthCipherTotalLength;
-					const lengthPlain = await SSAEAD解密(state.decryptKey, state.nonceCounter, lengthCipher);
-					if (lengthPlain.byteLength !== 2) throw new Error('SS length decrypt failed');
-					const payloadLength = SS读取U16BE(lengthPlain, 0);
-					if (payloadLength < 0 || payloadLength > config.maxChunk) throw new Error(`SS payload length invalid: ${payloadLength}`);
-					state.waitPayloadLength = payloadLength;
-				}
-				const payloadCipherTotalLength = state.waitPayloadLength + SSAEAD标签长度;
-				if (bufRemaining() < payloadCipherTotalLength) break;
-				const payloadCipher = state.buffer.subarray(state.offset, state.offset + payloadCipherTotalLength);
-				state.offset += payloadCipherTotalLength;
-				const payloadPlain = await SSAEAD解密(state.decryptKey, state.nonceCounter, payloadCipher);
-				plaintextChunks.push(payloadPlain);
-				state.waitPayloadLength = null;
-			}
-			return plaintextChunks;
-		},
-	};
-}
+
 
 ////////////////////////////////////////////TLSClient by: @Alexandre_Kojeve////////////////////////////////////////////////
 // TLS 常量定义
@@ -3406,16 +3336,18 @@ class TlsClient {
             handshake: 10000,
             transmission: 50000
         };
-        this.timeout = options.timeout ?? 5000;
         this.currentStage = 'handshake';
         this.sawCert = false;
     }
 
     setStage(stage) {
-        if (this.currentStage !== stage) {
+        if (!(stage in this.yieldThresholds)) {
+            console.warn(`[TlsClient] 未知阶段: ${stage}，使用 transmission 阈值`);
+            this.currentStage = 'transmission';
+        } else if (this.currentStage !== stage) {
             this.currentStage = stage;
-            this.cpuYieldCounter = 0;
         }
+        this.cpuYieldCounter = 0;
     }
 
     shouldYield() {
@@ -4755,13 +4687,13 @@ async function 创建SS出站加密器(config, passwordText) {
 	let saltSent = false;
 	return {
 		async 加密(dataChunk) {
-			const plaintextData = SS数据转Uint8Array(dataChunk);
+			const plaintextData = 数据转Uint8Array(dataChunk);
 			const outboundChunks = [];
 			if (!saltSent) {
 				outboundChunks.push(salt);
 				saltSent = true;
 			}
-			if (plaintextData.byteLength === 0) return SS拼接字节(...outboundChunks);
+			if (plaintextData.byteLength === 0) return 拼接字节数据(...outboundChunks);
 			let offset = 0;
 			while (offset < plaintextData.byteLength) {
 				const end = Math.min(offset + config.maxChunk, plaintextData.byteLength);
@@ -4773,7 +4705,7 @@ async function 创建SS出站加密器(config, passwordText) {
 				outboundChunks.push(lengthCipher, payloadCipher);
 				offset = end;
 			}
-			return SS拼接字节(...outboundChunks);
+			return 拼接字节数据(...outboundChunks);
 		},
 	};
 }
@@ -4783,7 +4715,7 @@ function 创建SS回包Socket(realSocket, outboundEncryptor) {
 	return {
 		get readyState() { return realSocket.readyState; },
 		send(data) {
-			const chunk = SS数据转Uint8Array(data);
+			const chunk = 数据转Uint8Array(data);
 			sendChain = sendChain.then(async () => {
 				if (realSocket.readyState !== WebSocket.OPEN) return;
 				const encrypted = await outboundEncryptor.加密(chunk);
@@ -4801,7 +4733,7 @@ function 创建SS回包Socket(realSocket, outboundEncryptor) {
 
 function 解析SS请求(chunk, passwordPlainText) {
 	const _ = passwordPlainText;
-	const data = SS数据转Uint8Array(chunk);
+	const data = 数据转Uint8Array(chunk);
 	if (data.byteLength < 3) return { hasError: true, message: 'invalid ss data' };
 	const addressType = data[0];
 	let cursor = 1;
@@ -5029,13 +4961,13 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
             let newSocket;
             if (启用SOCKS5反代 === 'socks5') {
                 log(`[SOCKS5代理] 代理到: ${host}:${portNum}`);
-                newSocket = await socks5Connect(host, portNum, 本次首包数据, TCP连接);
+                newSocket = await socks5Connect(host, portNum, 本次首包数据, TCP连接, parsedSocks5Address);
             } else if (启用SOCKS5反代 === 'http') {
                 log(`[HTTP代理] 代理到: ${host}:${portNum}`);
-                newSocket = await httpConnect(host, portNum, 本次首包数据, TCP连接);
+                newSocket = await httpConnect(host, portNum, 本次首包数据, TCP连接, parsedSocks5Address);
             } else if (启用SOCKS5反代 === 'https') {
                 log(`[HTTPS代理] 代理到: ${host}:${portNum}`);
-                newSocket = await httpsConnect(host, portNum, 本次首包数据, TCP连接);
+                newSocket = await httpsConnect(host, portNum, 本次首包数据, TCP连接, parsedSocks5Address);
             } else if (启用SOCKS5反代 === 'turn') {
                 log(`[TURN代理] 代理到: ${host}:${portNum}`);
                 newSocket = await turnConnect(parsedSocks5Address, host, portNum, TCP连接);
@@ -6421,8 +6353,8 @@ function 创建请求TCP连接器(request) {
 	if (!fetcher || typeof fetcher.connect !== 'function') throw new Error('request.fetcher.connect unavailable');
 	return (options, init) => init === undefined ? fetcher.connect(options) : fetcher.connect(options, init);
 }
-async function socks5Connect(targetHost, targetPort, initialData, TCP连接 = null) {
-    const { username, password, hostname, port } = parsedSocks5Address;
+async function socks5Connect(targetHost, targetPort, initialData, TCP连接 = null, socks5Addr) {
+    const { username, password, hostname, port } = socks5Addr;
     const socket = (TCP连接 || connect)({ hostname, port }), writer = socket.writable.getWriter(), reader = socket.readable.getReader();
     try {
         const authMethods = username && password ? new Uint8Array([0x05, 0x02, 0x00, 0x02]) : new Uint8Array([0x05, 0x01, 0x00]);
@@ -6472,8 +6404,8 @@ const PICK_CONNECT_UA = () => {
     return pool[Math.floor(Math.random() * pool.length)];
 };
 
-async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = null, allowInsecure = config_JSON?.跳过证书验证 ?? false) {
-	const { username, password, hostname, port } = parsedSocks5Address;
+async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = null, socks5Addr, allowInsecure = config_JSON?.跳过证书验证 ?? false) {
+	const { username, password, hostname, port } = socks5Addr;
 	const encoder = $encoder;
 	const decoder = $decoder;
 	let tlsSocket = null;
@@ -6594,8 +6526,8 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = nul
 	}
 }
 
-async function httpConnect(targetHost, targetPort, initialData, TCP连接 = null) {
-    const { username, password, hostname, port } = parsedSocks5Address;
+async function httpConnect(targetHost, targetPort, initialData, TCP连接 = null, socks5Addr) {
+    const { username, password, hostname, port } = socks5Addr;
     const socket = (TCP连接 || connect)({ hostname, port });
     const writer = socket.writable.getWriter(), reader = socket.readable.getReader();
     try {
@@ -8183,6 +8115,13 @@ async function 反代参数获取(url, uuid, ctx2) {
     const { searchParams } = url, pathname = decodeURIComponent(url.pathname);
     const pathLower = pathname.toLowerCase();
 
+    // 从 config_JSON 加载默认代理配置（如果 URL 未覆盖）
+    if (!ctx2.我的SOCKS5账号 && config_JSON?.反代?.SOCKS5?.账号) {
+        ctx2.启用SOCKS5反代 = config_JSON.反代.SOCKS5.启用;
+        ctx2.启用SOCKS5全局反代 = config_JSON.反代.SOCKS5.全局;
+        ctx2.我的SOCKS5账号 = config_JSON.反代.SOCKS5.账号;
+    }
+
     // 链式代理路径解析：/video/<base64-encoded-chain-proxy-json>
     const 链式代理路径匹配 = pathname.match(/\/video\/(.+)$/i);
     if (链式代理路径匹配) {
@@ -8202,7 +8141,7 @@ async function 反代参数获取(url, uuid, ctx2) {
                 hostname: 链式代理地址.hostname,
                 port: Number(链式代理地址.port)
             };
-            if (isNaN(parsedSocks5Address.port)) throw new Error('链式代理端口无效');
+            if (isNaN(ctx2.parsedSocks5Address.port)) throw new Error('链式代理端口无效');
             return;
         } catch (err) {
             console.error('解析链式代理参数失败:', err.message);
@@ -8284,9 +8223,9 @@ async function 反代参数获取(url, uuid, ctx2) {
     // 匹配：/socks5=..., /s5=..., /gs5=..., /http=..., /ghttp=..., /turn=..., /gturn=..., /sstp=..., /gsstp=...
     else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http|g?https|g?turn|g?sstp)=([^/?#\s]+)/i))) {
         const type = socksMatch[1].toLowerCase();
-        我的SOCKS5账号 = socksMatch[2].split('/')[0];
-        启用SOCKS5反代 = type.includes('sstp') ? 'sstp' : (type.includes('turn') ? 'turn' : (type.includes('https') ? 'https' : (type.includes('http') ? 'http' : 'socks5')));
-        启用SOCKS5全局反代 = type.startsWith('g') || 启用SOCKS5全局反代;
+        ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
+        ctx2.启用SOCKS5反代 = type.includes('sstp') ? 'sstp' : (type.includes('turn') ? 'turn' : (type.includes('https') ? 'https' : (type.includes('http') ? 'http' : 'socks5')));
+        ctx2.启用SOCKS5全局反代 = type.startsWith('g') || ctx2.启用SOCKS5全局反代;
     }
 
     // ==================== 第三步：处理路径中的 proxyip/pyip/ip ====================
@@ -8581,23 +8520,24 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
 
 async function SOCKS5可用性验证(代理协议 = 'socks5', 代理参数, request = null) {
     const startTime = Date.now();
-    try { parsedSocks5Address = await 获取SOCKS5账号(代理参数, 获取代理默认端口(代理协议)); } catch (err) { return { success: false, error: err.message, proxy: 代理协议 + "://" + 代理参数, responseTime: Date.now() - startTime }; }
-    const { username, password, hostname, port } = parsedSocks5Address;
+    let socks5Addr;
+    try { socks5Addr = await 获取SOCKS5账号(代理参数, 获取代理默认端口(代理协议)); } catch (err) { return { success: false, error: err.message, proxy: 代理协议 + "://" + 代理参数, responseTime: Date.now() - startTime }; }
+    const { username, password, hostname, port } = socks5Addr;
     const 完整代理参数 = username && password ? `${username}:${password}@${hostname}:${port}` : `${hostname}:${port}`;
     try {
         const initialData = new Uint8Array(0);
         let tcpSocket, TCP连接 = null;
         try { TCP连接 = 创建请求TCP连接器(request); } catch (_) { }
         if (代理协议 === 'socks5') {
-            tcpSocket = await socks5Connect('check.socks5.090227.xyz', 80, initialData, TCP连接);
+            tcpSocket = await socks5Connect('check.socks5.090227.xyz', 80, initialData, TCP连接, socks5Addr);
         } else if (代理协议 === 'turn') {
-            tcpSocket = await turnConnect(parsedSocks5Address, 'check.socks5.090227.xyz', 80, TCP连接);
+            tcpSocket = await turnConnect(socks5Addr, 'check.socks5.090227.xyz', 80, TCP连接);
         } else if (代理协议 === 'sstp') {
-            tcpSocket = await sstpConnect(parsedSocks5Address, 'check.socks5.090227.xyz', 80, TCP连接);
+            tcpSocket = await sstpConnect(socks5Addr, 'check.socks5.090227.xyz', 80, TCP连接);
         } else {
             tcpSocket = 代理协议 === 'https'
-                ? await httpsConnect('check.socks5.090227.xyz', 80, initialData, TCP连接)
-                : await httpConnect('check.socks5.090227.xyz', 80, initialData, TCP连接);
+                ? await httpsConnect('check.socks5.090227.xyz', 80, initialData, TCP连接, socks5Addr)
+                : await httpConnect('check.socks5.090227.xyz', 80, initialData, TCP连接, socks5Addr);
         }
         if (!tcpSocket) return { success: false, error: '无法连接到代理服务器', proxy: 代理协议 + "://" + 完整代理参数, responseTime: Date.now() - startTime };
         try {
