@@ -7009,10 +7009,17 @@ async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uu
             }
         }
 
-        return JSON.stringify(config, null, 2);
+        // yield 后再执行 JSON.stringify，避免同步大对象序列化超 CPU 时间片
+        await yieldToEventLoop();
+        return JSON.stringify(config);
     } catch (e) {
         console.error("Singbox热补丁执行失败:", e);
-        return JSON.stringify(JSON.parse(sb_json_text), null, 2);
+        // 注意：catch 内 sb_json_text 可能为无效 JSON，需兜底防止二次抛异常
+        try {
+            return JSON.stringify(JSON.parse(sb_json_text));
+        } catch {
+            return SingBox_原始订阅内容; // 兜底：返回原始内容
+        }
     }
 }
 
