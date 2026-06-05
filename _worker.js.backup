@@ -3127,20 +3127,28 @@ function 创建SNI混合器(config = {}, env = null) {
 
     function 选择SNI(真实SNI) {
         if (!启用) return 真实SNI;
-        混合计数.总计++;
-        需Flush = true;
 
-        // 动态比率: 正弦波[min, max] + 随机 jitter ±0.01，clamp 到 [min, max]
+        const total = 混合计数.总计;
+
+        // 正弦波生成动态目标比率
         sniCallCount++;
         const phase = Math.sin(sniCallCount * 0.001);
         const midpoint = (min + max) / 2;
         const amplitude = (max - min) / 2;
-        const baseRatio = midpoint + amplitude * phase;
-        const jitter = (Math.random() - 0.5) * 0.02;
-        const currentRatio = Math.max(min, Math.min(max, baseRatio + jitter));
+        const targetProb = midpoint + amplitude * phase;
 
-        // 加权随机：真实SNI比例 vs 掩护比例
-        if (Math.random() < currentRatio) {
+        // 窗口确定性调度：每 W 次请求为一个窗口，精确分配 real 次数
+        // 用边界交叉法均匀交错，保证任意窗口内实际比率严格等于 targetProb
+        const W = 100;
+        const targetInWindow = Math.round(targetProb * W);
+        const pos = total % W;
+        const pickReal = Math.floor(pos * targetInWindow / W)
+                      !== Math.floor((pos + 1) * targetInWindow / W);
+
+        混合计数.总计++;
+        需Flush = true;
+
+        if (pickReal) {
             混合计数.主域++;
             return 真实SNI;
         }
