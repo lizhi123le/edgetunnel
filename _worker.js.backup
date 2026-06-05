@@ -3123,6 +3123,8 @@ function 创建SNI混合器(config = {}, env = null) {
     let 需Flush = false;
     const kvKey = 'sni_mixing_stats';
     let sniCallCount = 0;
+    let 本窗目标 = 0;       // 当前窗口应分配的 real 次数
+    let 本窗已选Real = 0;  // 当前窗口已分配 real 次数
 
     function 选择SNI(真实SNI) {
         if (!启用) return 真实SNI;
@@ -3130,22 +3132,36 @@ function 创建SNI混合器(config = {}, env = null) {
         混合计数.总计++;
         需Flush = true;
 
-        // 窗口确定性调度：每 W 次请求为一个窗口，精确分配 real 次数
-        // LCG 伪随机置换打散位置，窗口内顺序随机但总量严格 = targetInWindow
         const W = 窗口大小;
-        sniCallCount++;
-        const phase = Math.sin(sniCallCount * 0.001);
-        const midpoint = (min + max) / 2;
-        const amplitude = (max - min) / 2;
-        const targetProb = midpoint + amplitude * phase;
-        const targetInWindow = Math.round(targetProb * W);
         const pos = total % W;
         const windowIdx = Math.floor(total / W);
+
+        // ★ 窗口首请求计算此窗口的 targetInWindow（后续请求沿用，消除漂移）
+        if (pos === 0) {
+            sniCallCount++;
+            const phase = Math.sin(sniCallCount * 0.001);
+            const midpoint = (min + max) / 2;
+            const amplitude = (max - min) / 2;
+            const targetProb = midpoint + amplitude * phase;
+            本窗目标 = Math.round(targetProb * W);
+            本窗已选Real = 0;
+        }
+
+        // ★ 累积期望兜底：若当前窗口 real 已满额，剩余全部 decoy
+        if (本窗已选Real >= 本窗目标) {
+            const 候选 = 白名单.filter(d => d !== 真实SNI);
+            if (候选.length === 0) return 真实SNI;
+            混合计数.掩护++;
+            return 候选[Math.floor(Math.random() * 候选.length)];
+        }
+
+        // LCG 置换 + 剩余配额判断：shuffledPos < 本窗目标 且 配额未用完 → real
         const shuffledPos = (pos * lcg乘数 + windowIdx * 31) % W;
-        const pickReal = shuffledPos < targetInWindow;
+        const pickReal = shuffledPos < 本窗目标;
 
         if (pickReal) {
             混合计数.主域++;
+            本窗已选Real++;
             return 真实SNI;
         }
 
