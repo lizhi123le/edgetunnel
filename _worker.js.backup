@@ -3112,6 +3112,12 @@ function 创建SNI混合器(config = {}, env = null) {
     const [min, max] = 真实SNI比例范围;
     const 启用 = config.启用 ?? false;
     const 白名单 = config.白名单 ?? 默认SNI白名单;
+    const 窗口大小 = config.窗口大小 ?? 100;
+
+    // LCG 乘数: floor(W*0.67) 做种子，向下调整到与 W 互质，保证最大混沌度
+    const _gcd = (a, b) => b === 0 ? a : _gcd(b, a % b);
+    let lcg乘数 = Math.max(1, Math.floor(窗口大小 * 0.67));
+    while (lcg乘数 > 1 && _gcd(lcg乘数, 窗口大小) !== 1) lcg乘数--;
 
     let 混合计数 = { 主域: 0, 掩护: 0, 总计: 0 };
     let 需Flush = false;
@@ -3120,20 +3126,25 @@ function 创建SNI混合器(config = {}, env = null) {
 
     function 选择SNI(真实SNI) {
         if (!启用) return 真实SNI;
+        const total = 混合计数.总计;
         混合计数.总计++;
         需Flush = true;
 
-        // 动态比率: 正弦波[min, max] + 随机 jitter ±0.01，clamp 到 [min, max]
+        // 窗口确定性调度：每 W 次请求为一个窗口，精确分配 real 次数
+        // LCG 伪随机置换打散位置，窗口内顺序随机但总量严格 = targetInWindow
+        const W = 窗口大小;
         sniCallCount++;
         const phase = Math.sin(sniCallCount * 0.001);
         const midpoint = (min + max) / 2;
         const amplitude = (max - min) / 2;
-        const baseRatio = midpoint + amplitude * phase;
-        const jitter = (Math.random() - 0.5) * 0.02;
-        const currentRatio = Math.max(min, Math.min(max, baseRatio + jitter));
+        const targetProb = midpoint + amplitude * phase;
+        const targetInWindow = Math.round(targetProb * W);
+        const pos = total % W;
+        const windowIdx = Math.floor(total / W);
+        const shuffledPos = (pos * lcg乘数 + windowIdx * 31) % W;
+        const pickReal = shuffledPos < targetInWindow;
 
-        // 加权随机：真实SNI比例 vs 掩护比例
-        if (Math.random() < currentRatio) {
+        if (pickReal) {
             混合计数.主域++;
             return 真实SNI;
         }
