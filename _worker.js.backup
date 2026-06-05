@@ -3107,8 +3107,15 @@ const 默认SNI白名单 = [
 
 function 创建SNI混合器(config = {}, env = null) {
     // 向后兼容：真实SNI比例范围 支持旧字段 真实SNI比例；null guard 用 ??
-    const 真实SNI比例范围 = config.真实SNI比例范围 ??
-        (config.真实SNI比例 != null ? [config.真实SNI比例, config.真实SNI比例] : [0.75, 0.81]);
+    // ★ 修复：检测 config.真实SNI比例 为数组（如 [0.71, 0.81]）→ 视为范围直接使用
+    //   否则当 config.真实SNI比例范围 有默认值且用户传了 真实SNI比例 数组时会被短路吞掉
+    let 真实SNI比例范围;
+    if (Array.isArray(config.真实SNI比例)) {
+        真实SNI比例范围 = config.真实SNI比例;
+    } else {
+        真实SNI比例范围 = config.真实SNI比例范围 ??
+            (config.真实SNI比例 != null ? [config.真实SNI比例, config.真实SNI比例] : [0.75, 0.81]);
+    }
     const [min, max] = 真实SNI比例范围;
     const 启用 = config.启用 ?? false;
     const 白名单 = config.白名单 ?? 默认SNI白名单;
