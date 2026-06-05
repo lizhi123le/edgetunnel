@@ -3120,6 +3120,10 @@ function 创建SNI混合器(config = {}, env = null) {
     const 启用 = config.启用 ?? false;
     const 白名单 = config.白名单 ?? 默认SNI白名单;
     const 窗口大小 = config.窗口大小 ?? 100;
+    // LCG 乘数: 用 floor(W*0.67) 做种子，向下调整到与 W 互质，保证最大混沌度
+    const _gcd = (a, b) => b === 0 ? a : _gcd(b, a % b);
+    let lcg乘数 = Math.max(1, Math.floor(窗口大小 * 0.67));
+    while (lcg乘数 > 1 && _gcd(lcg乘数, 窗口大小) !== 1) lcg乘数--;
 
     let 混合计数 = { 主域: 0, 掩护: 0, 总计: 0 };
     let 需Flush = false;
@@ -3144,9 +3148,8 @@ function 创建SNI混合器(config = {}, env = null) {
         const targetInWindow = Math.round(targetProb * W);
         const pos = total % W;
         const windowIdx = Math.floor(total / W);
-        // LCG 置换: (W-1) 与 W 互质保证双射，offset 随窗口变化避免跨窗口模式重复
-        const multiplier = W - 1;  // 相邻整数必然互质，适配任意 W
-        const shuffledPos = (pos * multiplier + windowIdx * 31) % W;
+        // LCG 置换: lcg乘数与 W 互质保证双射，offset 随窗口变化避免跨窗口模式重复
+        const shuffledPos = (pos * lcg乘数 + windowIdx * 31) % W;
         const pickReal = shuffledPos < targetInWindow;
 
         混合计数.总计++;
