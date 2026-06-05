@@ -3119,6 +3119,7 @@ function 创建SNI混合器(config = {}, env = null) {
     const [min, max] = 真实SNI比例范围;
     const 启用 = config.启用 ?? false;
     const 白名单 = config.白名单 ?? 默认SNI白名单;
+    const 窗口大小 = config.窗口大小 ?? 100;
 
     let 混合计数 = { 主域: 0, 掩护: 0, 总计: 0 };
     let 需Flush = false;
@@ -3138,12 +3139,15 @@ function 创建SNI混合器(config = {}, env = null) {
         const targetProb = midpoint + amplitude * phase;
 
         // 窗口确定性调度：每 W 次请求为一个窗口，精确分配 real 次数
-        // 用边界交叉法均匀交错，保证任意窗口内实际比率严格等于 targetProb
-        const W = 100;
+        // 用 LCG 伪随机置换打散位置，窗口内位置顺序随机但总量严格 = targetInWindow
+        const W = 窗口大小;
         const targetInWindow = Math.round(targetProb * W);
         const pos = total % W;
-        const pickReal = Math.floor(pos * targetInWindow / W)
-                      !== Math.floor((pos + 1) * targetInWindow / W);
+        const windowIdx = Math.floor(total / W);
+        // LCG 置换: (W-1) 与 W 互质保证双射，offset 随窗口变化避免跨窗口模式重复
+        const multiplier = W - 1;  // 相邻整数必然互质，适配任意 W
+        const shuffledPos = (pos * multiplier + windowIdx * 31) % W;
+        const pickReal = shuffledPos < targetInWindow;
 
         混合计数.总计++;
         需Flush = true;
