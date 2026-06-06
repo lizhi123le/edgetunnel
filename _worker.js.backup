@@ -3244,13 +3244,14 @@ function 创建SNI混合器(config = {}, env = null) {
     }
 
     // ★ 修复3: 重置 KV + 本地计数（&reset 用）
+    // ★ 先清本地（同步）再清 KV（异步），避免 flushToKV 在 await 间隙读到 snapshot=非0 后写出负数
     async function 重置KV统计(env) {
+        混合计数 = { 主域: 0, 掩护: 0, 总计: 0 };
+        需Flush = false;
         if (env?.KV) {
             try { await env.KV.delete(kvKey); } catch (e) { /* ignore */ }
             try { await env.KV.delete('sni_mixing_sync_active'); } catch (e) { /* ignore */ }
         }
-        混合计数 = { 主域: 0, 掩护: 0, 总计: 0 };
-        需Flush = false;
     }
 
     return {
