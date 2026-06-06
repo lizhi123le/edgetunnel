@@ -3260,7 +3260,6 @@ function 创建SNI混合器(config = {}, env = null) {
         flushToKV,
         获取KV统计,
         获取聚合统计,
-        重置统计: () => { 混合计数 = { 主域: 0, 掩护: 0, 总计: 0 }; 需Flush = false; },
         重置KV统计,
     };
 }
