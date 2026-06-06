@@ -3180,7 +3180,7 @@ function 创建SNI混合器(config = {}, env = null) {
                 混合计数.主域 -= snapshot.主域;
                 混合计数.掩护 -= snapshot.掩护;
                 混合计数.总计 -= snapshot.总计;
-                需Flush = 混合计数.总计 > 0;
+                需Flush = false;  // 并发插入随下次选择SNI自然触发flush，避免连续KV写
                 return snapshot;  // ✅ 返回数据，供获取聚合统计直接展示
             }
             // 刷新同步标记 TTL（86400s = 24h，关同步后标记过期 → 下次开同步自动重置）
