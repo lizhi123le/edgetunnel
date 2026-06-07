@@ -498,7 +498,7 @@ export default {
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
                     const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
-                    const authBindingKey = ['1', 'true'].includes(env.AUTH_UA_INDEPENDENT) ? 加密秘钥 + 管理员密码 : UA + 加密秘钥 + 管理员密码; const expectedAuthValue = await MD5MD5(authBindingKey);
+                    const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
                     // 使用 timingSafeEqual 防时序攻击
                     if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin' } });
                     if (request.method === 'POST') {
@@ -512,8 +512,7 @@ export default {
                         if (输入密码 && secureCompare(输入密码, typeof 管理员密码 === 'string' ? 管理员密码.replace(/[\r\n]/g, '') : 管理员密码)) {
                             // 清除失败计数
                             if (env.KV) ctx.waitUntil(env.KV.delete(`login_fail:${访问IP}`));
-                            const authBindingKey = ['1', 'true'].includes(env.AUTH_UA_INDEPENDENT) ? 加密秘钥 + 管理员密码 : UA + 加密秘钥 + 管理员密码;
-                            const authValue = await MD5MD5(authBindingKey);
+                            const authValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
                             const authSig = await generateCookieSignature(authValue, 加密秘钥 + 管理员密码);
                             // Cookie: Secure; SameSite=Strict; Max-Age=3600(1小时)
                             const 响应 = new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -533,7 +532,7 @@ export default {
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
                     const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
-                    const authBindingKey = ['1', 'true'].includes(env.AUTH_UA_INDEPENDENT) ? 加密秘钥 + 管理员密码 : UA + 加密秘钥 + 管理员密码; const expectedAuthValue = await MD5MD5(authBindingKey);
+                    const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
                     // 验证 cookie 值（timingSafeEqual）和签名（HMAC-SHA256）
                     const 认证通过 = authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码);
                     // 没有cookie或cookie错误，跳转到/login页面
@@ -1013,7 +1012,7 @@ export default {
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
                     const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
-                    const authBindingKey = ['1', 'true'].includes(env.AUTH_UA_INDEPENDENT) ? 加密秘钥 + 管理员密码 : UA + 加密秘钥 + 管理员密码; const expectedAuthValue = await MD5MD5(authBindingKey);
+                    const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
                     if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
                 } else if (访问路径 === 'robots.txt') return new Response('User-agent: *\nDisallow: /', { status: 200, headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
             } else if (!envUUID) return fetch(Pages静态页面 + '/noKV').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); });
