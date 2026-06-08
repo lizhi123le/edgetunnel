@@ -968,6 +968,8 @@ export default {
                                     const decoder = new TextDecoder();
                                     let 缓冲区 = '';
                                     订阅内容 = '';
+                                    let 行计数 = 0;
+                                    const YIELD_INTERVAL = 12;
                                     while (true) {
                                         const { done, value } = await reader.read();
                                         if (done) {
@@ -979,7 +981,8 @@ export default {
                                         缓冲区 = 行列表.pop() || '';
                                         for (const 行 of 行列表) {
                                             订阅内容 += 行 + '\n';
-                                            await yieldToEventLoop();
+                                            行计数++;
+                                            if (行计数 % YIELD_INTERVAL === 0) await yieldToEventLoop();
                                         }
                                     }
                                     if (缓冲区) 订阅内容 += 缓冲区;
