@@ -965,7 +965,26 @@ export default {
                             try {
                                 const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' } });
                                 if (response.ok) {
-                                    订阅内容 = await response.text();
+                                    // 逐行读取后端转换响应，每行 yield 避免 CPU 超时
+                                    const reader = response.body.getReader();
+                                    const decoder = new TextDecoder();
+                                    let 缓冲区 = '';
+                                    订阅内容 = '';
+                                    while (true) {
+                                        const { done, value } = await reader.read();
+                                        if (done) {
+                                            订阅内容 += 缓冲区;
+                                            break;
+                                        }
+                                        缓冲区 += decoder.decode(value, { stream: true });
+                                        const 行列表 = 缓冲区.split('\n');
+                                        缓冲区 = 行列表.pop() || '';
+                                        for (const 行 of 行列表) {
+                                            订阅内容 += 行 + '\n';
+                                            await yieldToEventLoop();
+                                        }
+                                    }
+                                    if (缓冲区) 订阅内容 += 缓冲区;
                                     if (url.searchParams.has('surge') || ua.includes('surge')) 订阅内容 = await Surge订阅配置文件热补丁(订阅内容, url.protocol + '//' + url.host + '/sub?token=' + 订阅TOKEN + '&surge', config_JSON);
                                 } else return new Response('订阅转换服务暂时不可用', { status: response.status });
                             } catch (error) {
