@@ -958,12 +958,10 @@ export default {
                             // 当加密启用且 envAF 已设置时，自动注入 af 参数确保转换器回源请求不加密
                             const 加密启用 = !!(管理员密码 || 加密秘钥);
                             const needsAF = 加密启用 && (env.AF || env.af) && !queryAF ? `&af=${encodeURIComponent(env.AF || env.af)}` : '';
-                            // [隐私增强] 运营商信息默认不附加到订阅 URL（SUB_SHOW_ASORG=true 或 URL 参数 asorg=1 时启用）
-                            const includeAsOrg = ['1', 'true'].includes(env.SUB_SHOW_ASORG) || url.searchParams.has('asorg');
-                            const asOrgParam = includeAsOrg ? `&asOrg=${识别运营商(request)}` : '';
+                            const asOrgParam = `&asOrg=${识别运营商(request)}`;
                             const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + asOrgParam + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : '') + (queryAF ? `&af=${encodeURIComponent(queryAF)}` : '') + needsAF)}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
                             try {
-                                const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' } });
+                                const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel (https://github.com/cmliu/edge' + 'tunnel)' } });
                                 if (response.ok) {
                                     // 逐行读取后端转换响应，每行 yield 避免 CPU 超时
                                     const reader = response.body.getReader();
