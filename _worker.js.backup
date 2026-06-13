@@ -16,6 +16,17 @@ let 全局SNI混合器 = null;
 let 全局ECH统计 = { attempted: 0, accepted: 0, rejected: 0, failed: 0 };
 // ★ 查杀特征码（运行时动态生成，规避静态检测）
 const 查杀特征码 = (Proxy.name + "IP").toUpperCase();
+// ★ 伪装页内存缓存（避免重复 fetch + text()）
+const 伪装页缓存 = new Map();
+const 伪装页缓存TTL = 300000; // 5 分钟
+// 伪装页过期清理 & 防内存泄露
+function 清理伪装页缓存() {
+    const now = Date.now();
+    for (const [k, v] of 伪装页缓存) {
+        if (now - v.time >= 伪装页缓存TTL) 伪装页缓存.delete(k);
+    }
+    if (伪装页缓存.size > 100) 伪装页缓存.clear();
+}
 
 // 请求上下文类 - 封装请求级状态，减少全局变量污染
 class RequestContext {
@@ -1051,11 +1062,23 @@ export default {
         // 如果伪装页 URL 无效，直接返回 nginx 默认页，避免 fetch 挂起
         if (伪装页URL === 'nginx') return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
         try {
+            const 反代URL = new URL(伪装页URL);
+            // 内存缓存查询
+            const 缓存键 = 反代URL.origin + url.pathname + url.search;
+            const 缓存条目 = 伪装页缓存.get(缓存键);
+            if (缓存条目 && Date.now() - 缓存条目.time < 伪装页缓存TTL) {
+                const 缓存响应头 = {
+                    'Content-Type': 缓存条目.contentType,
+                    'Cache-Control': 'no-store',
+                    ...(['1', 'true'].includes(env.HSTS_ENABLE) ? {'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload'} : {}),
+                };
+                return new Response(缓存条目.body, { status: 缓存条目.status, headers: 缓存响应头 });
+            }
             // Phase 3b: 清除 CF 相关入站头，避免透传给目标服务器
             const CF_HEADERS = ['CF-Connecting-IP', 'CF-IPCountry', 'CF-Ray', 'CF-Visitor',
                                  'CF-Worker', 'CF-Cache-Status', 'True-Client-IP'];
             for (const h of CF_HEADERS) request.headers.delete(h);
-            const 反代URL = new URL(伪装页URL), 新请求头 = new Headers(request.headers);
+            const 新请求头 = new Headers(request.headers);
             新请求头.set('Host', 反代URL.host);
             新请求头.set('Referer', 反代URL.origin);
             新请求头.set('Origin', 反代URL.origin);
@@ -1133,6 +1156,7 @@ export default {
             // GET 请求不应传入 body，否则 fetch 可能挂起
             if (request.method !== 'GET' && request.body) fetchOptions.body = request.body;
             try {
+                清理伪装页缓存();
                 const 反代响应 = await fetchWithTimeout(反代URL.origin + url.pathname + url.search, fetchOptions, 30000);
                 const 内容类型 = 反代响应.headers.get('content-type') || '';
                 const 内容长度 = parseInt(反代响应.headers.get('content-length') || '0', 10);
@@ -1156,6 +1180,7 @@ export default {
                         if (['1', 'true'].includes(env.HSTS_ENABLE)) {
                             过滤后头['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains; preload';
                         }
+                        伪装页缓存.set(缓存键, { body: 响应内容, contentType: 过滤后头['Content-Type'] || 内容类型, status: 反代响应.status, time: Date.now() });
                         return new Response(响应内容, { status: 反代响应.status, headers: 过滤后头 });
                     } catch (e) {
                         console.warn('伪装页缓冲超时，改为流式转发');
