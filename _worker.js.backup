@@ -1059,43 +1059,75 @@ export default {
             新请求头.set('Host', 反代URL.host);
             新请求头.set('Referer', 反代URL.origin);
             新请求头.set('Origin', 反代URL.origin);
-            // 4: 伪装页 UA 池 — 替换泛化/非浏览器 UA 为真实浏览器
-            const 通用UAs = ['Mozilla/5.0', 'Mozilla/5.0 ', 'Mozilla/5.0 (compatible;', 'curl/', 'wget/'];
-            const 需要接管UA = !UA || UA === 'null' || 通用UAs.some(prefix => UA.startsWith(prefix));
-            if (需要接管UA) {
-                const 浏览器UA池 = [
-                    // Windows
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.52 Safari/537.36',
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
-                    // macOS
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:151.0) Gecko/20100101 Firefox/151.0',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.52 Safari/537.36',
-                    // Linux
-                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.52 Safari/537.36',
-                    'Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0',
-                    // Android
-                    'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.53 Mobile Safari/537.36',
-                    'Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/149.0.7827.53 Mobile Safari/537.36',
-                    'Mozilla/5.0 (Android 15; Mobile; rv:151.0) Gecko/151.0 Firefox/151.0',
-                    // iOS / iPadOS
-                    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1',
-                    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.45 Mobile/15E148 Safari/604.1',
-                    'Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1',
-                    'Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.45 Mobile/15E148 Safari/604.1',
-                    // Opera
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 OPR/132.0.0.0',
-                ];
-                新请求头.set('User-Agent', 浏览器UA池[Math.floor(Math.random() * 浏览器UA池.length)]);
-                if (!新请求头.has('Accept-Language')) 新请求头.set('Accept-Language', 'en-US,en;q=0.9');
-            } else {
-                新请求头.set('User-Agent', UA);
+            // 4: 统一替换所有出站 UA 为随机浏览器（防指纹泄露）
+            const 浏览器UA池 = [
+                // Windows
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
+                // macOS (Intel)
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.0; rv:151.0) Gecko/20100101 Firefox/151.0',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+                // macOS (Apple Silicon)
+                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
+                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0; rv:151.0) Gecko/20100101 Firefox/151.0',
+                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+                // Linux
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0',
+                // ChromeOS
+                'Mozilla/5.0 (X11; CrOS x86_64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; CrOS aarch64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+                // Android
+                'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.103 Mobile Safari/537.36',
+                'Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/149.0.7827.103 Mobile Safari/537.36',
+                'Mozilla/5.0 (Android 15; Mobile; rv:151.0) Gecko/151.0 Firefox/151.0',
+                // iOS / iPadOS
+                'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
+                'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
+                'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
+                'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
+                // Opera
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 OPR/132.0.0.0',
+                // 桌面份额加权: Chrome ~68%, Safari ~17%, Edge ~5.8%, Firefox ~3.7%, Opera ~1.9%, 其余 ~3.6%
+            ];
+            // 加权随机选择（按浏览器真实市场份额 June 2026）
+            const UA权重 = [140, 100, 30, 15, 20, 10, 20, 5, 5, 50, 30, 60, 10, 10, 20, 3, 7, 10, 5, 140, 15, 5, 70, 5, 15, 3, 15];
+            const 总权重 = UA权重.reduce((a, b) => a + b, 0);
+            let 随机值 = Math.random() * 总权重;
+            let UA索引 = 0;
+            for (let i = 0; i < UA权重.length; i++) {
+                随机值 -= UA权重[i];
+                if (随机值 <= 0) { UA索引 = i; break; }
             }
+            新请求头.set('User-Agent', 浏览器UA池[UA索引]);
+            // 随机化 Accept-Language（与随机 UA 保持指纹一致）
+            const Accept语言池 = [
+                'en-US,en;q=0.9',        // 美式英语
+                'en-US,en;q=0.9,zh-CN;q=0.8', // 美式英语+中文
+                'en-GB,en;q=0.9',        // 英式英语
+                'en-CA,en;q=0.9',        // 加拿大英语
+                'zh-CN,zh;q=0.9,en;q=0.8',    // 中文
+                'ja-JP,ja;q=0.9,en;q=0.8',    // 日语
+                'ko-KR,ko;q=0.9,en;q=0.8',    // 韩语
+                'ru-RU,ru;q=0.9,en;q=0.8',    // 俄语
+                'de-DE,de;q=0.9,en;q=0.8',    // 德语
+                'fr-FR,fr;q=0.9,en;q=0.8',    // 法语
+                'pt-BR,pt;q=0.9,en;q=0.8',    // 巴西葡语
+                'es-ES,es;q=0.9,en;q=0.8',    // 西班牙语
+            ];
+            新请求头.set('Accept-Language', Accept语言池[Math.floor(Math.random() * Accept语言池.length)]);
+            // 剥离 Sec-CH-UA 系列头（防止原始浏览器 UA 与伪造 UA 不一致的指纹）
+            const CH_HEADERS = ['Sec-CH-UA', 'Sec-CH-UA-Arch', 'Sec-CH-UA-Bitness', 'Sec-CH-UA-Full-Version',
+                                'Sec-CH-UA-Mobile', 'Sec-CH-UA-Model', 'Sec-CH-UA-Platform', 'Sec-CH-UA-Platform-Version'];
+            for (const h of CH_HEADERS) 新请求头.delete(h);
             // [隐私增强] 不向上游透传 request.cf 地理/连接信息
             const fetchOptions = { method: request.method, headers: 新请求头, cf: {} };
             // GET 请求不应传入 body，否则 fetch 可能挂起
@@ -6472,31 +6504,68 @@ async function socks5Connect(targetHost, targetPort, initialData, TCP连接 = nu
 const PICK_CONNECT_UA = () => {
     const pool = [
         // Windows
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.52 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
-        // macOS
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.52 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:151.0) Gecko/20100101 Firefox/151.0',
+        // macOS (Intel)
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.0; rv:151.0) Gecko/20100101 Firefox/151.0',
+        // macOS (Apple Silicon)
+        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
+        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0; rv:151.0) Gecko/20100101 Firefox/151.0',
         // Linux
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.52 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
         'Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0',
+        // ChromeOS
+        'Mozilla/5.0 (X11; CrOS x86_64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; CrOS aarch64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
         // Android
-        'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.53 Mobile Safari/537.36',
-        'Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/149.0.7827.53 Mobile Safari/537.36',
+        'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.103 Mobile Safari/537.36',
+        'Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/149.0.7827.103 Mobile Safari/537.36',
         'Mozilla/5.0 (Android 15; Mobile; rv:151.0) Gecko/151.0 Firefox/151.0',
         // iOS / iPadOS
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1',
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.45 Mobile/15E148 Safari/604.1',
-        'Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1',
-        'Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.45 Mobile/15E148 Safari/604.1',
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
+        'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
+        'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
         // Opera
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 OPR/132.0.0.0',
+        // 桌面份额加权: Chrome ~68%, Safari ~17%, Edge ~5.8%, Firefox ~3.7%, Opera ~1.9%, 其余 ~3.6%
+    ];
+    // 加权随机选择（按浏览器真实市场份额 June 2026）
+    const UA权重 = [140, 100, 30, 15, 20, 10, 20, 5, 5, 50, 30, 60, 10, 10, 20, 3, 7, 10, 5, 140, 15, 5, 70, 5, 15, 3, 15];
+    const 总权重 = UA权重.reduce((a, b) => a + b, 0);
+    let 随机值 = Math.random() * 总权重;
+    for (let i = 0; i < pool.length; i++) {
+        随机值 -= UA权重[i];
+        if (随机值 <= 0) return pool[i];
+    }
+    return pool[pool.length - 1];
+};
+
+// Accept-Language 随机池（避免所有请求固定 en-US）
+const PICK_ACCEPT_LANG = () => {
+    const pool = [
+        'en-US,en;q=0.9',
+        'en-US,en;q=0.9,zh-CN;q=0.8',
+        'en-GB,en;q=0.9',
+        'en-CA,en;q=0.9',
+        'zh-CN,zh;q=0.9,en;q=0.8',
+        'ja-JP,ja;q=0.9,en;q=0.8',
+        'ko-KR,ko;q=0.9,en;q=0.8',
+        'ru-RU,ru;q=0.9,en;q=0.8',
+        'de-DE,de;q=0.9,en;q=0.8',
+        'fr-FR,fr;q=0.9,en;q=0.8',
+        'pt-BR,pt;q=0.9,en;q=0.8',
+        'es-ES,es;q=0.9,en;q=0.8',
     ];
     return pool[Math.floor(Math.random() * pool.length)];
 };
@@ -6549,7 +6618,7 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接 = nul
 			`${auth}User-Agent: ${PICK_CONNECT_UA()}\r\n` +
 			`Accept: */*\r\n` +
 			`Accept-Encoding: gzip, deflate, br\r\n` +
-			`Accept-Language: en-US,en;q=0.9\r\n` +
+			`Accept-Language: ${PICK_ACCEPT_LANG()}\r\n` +
 			`Proxy-Connection: keep-alive\r\n\r\n`;
 		await tlsSocket.write(encoder.encode(request));
 
@@ -6634,7 +6703,7 @@ async function httpConnect(targetHost, targetPort, initialData, TCP连接 = null
             `${auth}User-Agent: ${PICK_CONNECT_UA()}\r\n` +
             `Accept: */*\r\n` +
             `Accept-Encoding: gzip, deflate, br\r\n` +
-            `Accept-Language: en-US,en;q=0.9\r\n` +
+            `Accept-Language: ${PICK_ACCEPT_LANG()}\r\n` +
             `Proxy-Connection: keep-alive\r\n\r\n`;
         await writer.write(SS文本编码器.encode(request));
         writer.releaseLock();
@@ -8039,7 +8108,7 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
 
     try {
         const response = await fetch(优选订阅生成器URL, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' }
+            headers: { 'User-Agent': PICK_CONNECT_UA() }
         });
 
         if (!response.ok) {
