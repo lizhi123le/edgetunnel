@@ -1052,15 +1052,16 @@ export default {
         }
 
         let 伪装页URL = env.URL || 'nginx';
+        const hsts头 = ['1', 'true'].includes(env.HSTS_ENABLE) ? {'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload'} : {};
         if (伪装页URL && 伪装页URL !== 'nginx' && 伪装页URL !== '1101') {
             伪装页URL = 伪装页URL.trim().replace(/\/$/, '');
             if (!伪装页URL.match(/^https?:\/\//i)) 伪装页URL = 'https://' + 伪装页URL;
             if (伪装页URL.toLowerCase().startsWith('http://')) 伪装页URL = 'https://' + 伪装页URL.substring(7);
             try { const u = new URL(伪装页URL); 伪装页URL = u.protocol + '//' + u.host; } catch (e) { 伪装页URL = 'nginx'; }
         }
-        if (伪装页URL === '1101') return new Response(await html1101(url.host, 访问IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+        if (伪装页URL === '1101') return new Response(await html1101(url.host, 访问IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
         // 如果伪装页 URL 无效，直接返回 nginx 默认页，避免 fetch 挂起
-        if (伪装页URL === 'nginx') return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+        if (伪装页URL === 'nginx') return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
         try {
             const 反代URL = new URL(伪装页URL);
             // 内存缓存查询
@@ -1186,6 +1187,11 @@ export default {
                         console.warn('伪装页缓冲超时，改为流式转发');
                     }
                 }
+                if (['1', 'true'].includes(env.HSTS_ENABLE)) {
+                    const hsts头 = new Headers(反代响应.headers);
+                    hsts头.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+                    return new Response(反代响应.body, { status: 反代响应.status, statusText: 反代响应.statusText, headers: hsts头 });
+                }
                 return 反代响应;
             } catch (fetchError) {
                 console.error('伪装页获取失败:', fetchError.message);
@@ -1193,7 +1199,7 @@ export default {
         } catch (error) {
             console.error('伪装页初始化失败:', error.message);
         }
-        return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+        return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
         } catch (err) {
             const msg = err?.message || String(err);
             console.error('[uncaught]', request.method, sanitizeURL(request.url), msg);
