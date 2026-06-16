@@ -161,15 +161,19 @@ const 预加载DNS缓存 = new Map();
 const 预加载DNS缓存TTL = 30 * 1000;
 const 预加载DNS缓存最大 = 100;
 
-// === 统一 CPU Yield 策略 ===
-// 使用 performance.now() + intervalMs 间隔，避免长时间循环导致 Cloudflare Workers CPU 超时
+// === 统一 CPU Yield 策略（混合方案） ===
+// 优先使用 scheduler.yield()（现代浏览器/Worker 运行时，优先级更高、无 4ms 钳制）
+// 降级到 setTimeout(r, 0)，配合 intervalMs 节流避免过度让出
 function createYieldStrategy(intervalMs = 5) {
     let lastYield = 0;
+    const yieldFn = typeof scheduler?.yield === 'function'
+        ? scheduler.yield
+        : () => new Promise(r => setTimeout(r, 0));
     return async function yieldToEventLoop() {
         const now = performance.now();
         if (now - lastYield > intervalMs) {
             lastYield = now;
-            await new Promise(r => setTimeout(r, 0));
+            await yieldFn();
         }
     };
 }
