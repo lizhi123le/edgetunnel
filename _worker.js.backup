@@ -2740,8 +2740,6 @@ async function SSAEAD解密(cryptoKey, nonceCounter, ciphertext) {
 	return new Uint8Array(plaintext);
 }
 
-
-
 ////////////////////////////////////////////TLSClient by: @Alexandre_Kojeve////////////////////////////////////////////////
 // TLS 常量定义
 const TLS_VERSION_10 = 769, TLS_VERSION_12 = 771, TLS_VERSION_13 = 772;
@@ -5469,7 +5467,6 @@ function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连�
 	};
 }
 
-
 function 创建下行Grain发送器(webSocket, headerData = null) {
 	const packetCap = 下行Grain包字节;
 	const tailBytes = 下行Grain尾部阈值;
@@ -5634,8 +5631,6 @@ function 创建下行Grain发送器(webSocket, headerData = null) {
 		flush
 	};
 }
-
-
 
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 	let header = headerData, hasData = false, reader, useBYOB = false;
@@ -7551,7 +7546,6 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
         const qdcount = dv.getUint16(4);
         const ancount = dv.getUint16(6);
 
-
         // 解析域名（处理指针压缩）
         const 解析域名 = (pos) => {
             const labels = [];
@@ -8399,7 +8393,6 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
     return [resultsMap, 需要订阅转换订阅URLs, Array.from(反代IP池)];
 }
 
-
 async function 反代参数获取(url, uuid, ctx2) {
     const { searchParams } = url, pathname = decodeURIComponent(url.pathname);
     const pathLower = pathname.toLowerCase();
@@ -8901,7 +8894,6 @@ async function html1101(host, 访问IP) {
 <link rel="stylesheet" id="cf_styles-css" href="/cdn-cgi/styles/cf.errors.css" />
 <!--[if lt IE 9]><link rel="stylesheet" id='cf_styles-ie-css' href="/cdn-cgi/styles/cf.errors.ie.css" /><![endif]-->
 <style>body{margin:0;padding:0}</style>
-
 
 <!--[if gte IE 10]><!-->
 <script>
