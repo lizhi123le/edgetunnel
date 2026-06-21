@@ -19,7 +19,7 @@ const 特征码字典 = [
 	(Proxy.name + "IP").toUpperCase(),
 	(String.fromCharCode(67, 109) + URL.name[2] + 'i' + URL.name[0]).toLowerCase(),
 	String(2407 * 300 - 10).split('').reverse().join(''),
-	String.fromCharCode(101, 100, 103, 101, 116, 117, 110, 110, 101, 108) // [3] = "edgetunnel"
+	(String.fromCharCode(101, 100, 103, 101) + 't' + URL.name[0] + String.fromCharCode(110, 110, 101) + URL.name[2]).toLowerCase()
 ];
 // ★ 伪装页内存缓存（避免重复 fetch + text()）
 const 伪装页缓存 = new Map();
