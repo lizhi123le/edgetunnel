@@ -343,7 +343,7 @@ async function withTimeout(promise, timeoutMs = 3000, message = '操作超时') 
 }
 
 // Fetch 超时包装器 - 防止外部 API 请求无限挂起
-const fetchWithTimeout = (url, options = {}, timeoutMs = 30000) => {
+const fetchWithTimeout = (url, options = {}, timeoutMs = 39000) => {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
     return fetch(url, { ...options, signal: controller.signal })
@@ -1167,7 +1167,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
             if (request.method !== 'GET' && request.body) fetchOptions.body = request.body;
             try {
                 清理伪装页缓存();
-                const 反代响应 = await fetchWithTimeout(反代URL.origin + url.pathname + url.search, fetchOptions, 30000);
+                const 反代响应 = await fetchWithTimeout(反代URL.origin + url.pathname + url.search, fetchOptions, 39000);
                 const 内容类型 = 反代响应.headers.get('content-type') || '';
                 const 内容长度 = parseInt(反代响应.headers.get('content-length') || '0', 10);
                 // 优化：只有文本类型且大小小于 2MB 才进行全量缓冲和替换，否则直接流式转发避免挂起
