@@ -32,6 +32,25 @@ function 清理伪装页缓存() {
     }
     if (伪装页缓存.size > 100) 伪装页缓存.clear();
 }
+// ★ 伪装图片缓存（最多12张，每张不超过2048KB，FIFO淘汰）
+const 伪装图片缓存 = new Map();
+const 伪装图片缓存最大 = 12;
+function 字节转HTML图片(字节, 内容类型) {
+    const 视图 = new Uint8Array(字节);
+    const 块 = [];
+    for (let i = 0; i < 视图.length; i += 8192) {
+        const end = Math.min(i + 8192, 视图.length);
+        const 片段 = [];
+        for (let j = i; j < end; j++) 片段.push(视图[j]);
+        块.push(String.fromCharCode(...片段));
+    }
+    return `data:${内容类型 || 'image/jpeg'};base64,${btoa(块.join(''))}`;
+}
+function 生成图片HTML(数据URI) {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>edgetunnel</title><style>body{margin:0;padding:0;overflow:hidden;background:#000;display:flex;align-items:center;justify-content:center;height:100vh}img{width:100vw;height:100vh;object-fit:fill}</style></head><body><img src="${数据URI}" alt="homepage"></body></html>`;
+}
+// 图片URL正则检测（多种URL格式）
+const 图片URL正则 = /\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)(\?|$)|[?&]f=(jpg|jpeg|png|gif|webp|bmp|svg|ico)\b|\/image\/|\/img\/|\/photo\/|\/thumb\/|\/photo-|[?&](auto|fm|format)=(jpg|jpeg|png|gif|webp|bmp|svg|ico)\b/i;
 
 // 请求上下文类 - 封装请求级状态，减少全局变量污染
 class RequestContext {
@@ -1064,8 +1083,56 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
         const hsts头 = ['1', 'true'].includes(env.HSTS_ENABLE) ? {'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload'} : {};
         if (伪装页URL && 伪装页URL !== 'nginx' && 伪装页URL !== '1101') {
             伪装页URL = 伪装页URL.trim().replace(/\/$/, '');
+            // ★ 多地址支持：竖线分隔，随机抽取一个
+            const 全部地址列表 = 伪装页URL.split('|').map(u => u.trim()).filter(u => u);
+            if (全部地址列表.length > 0) 伪装页URL = 全部地址列表[Math.floor(Math.random() * 全部地址列表.length)];
             if (!伪装页URL.match(/^https?:\/\//i)) 伪装页URL = 'https://' + 伪装页URL;
             if (伪装页URL.toLowerCase().startsWith('http://')) 伪装页URL = 'https://' + 伪装页URL.substring(7);
+        }
+        // ★ 图片URL检测（需在 host-only 归一化之前，保持完整路径用于抓取）
+        if (伪装页URL && 伪装页URL !== 'nginx' && 伪装页URL !== '1101' && 图片URL正则.test(伪装页URL)) {
+            try {
+                const 缓存命中 = 伪装图片缓存.get(伪装页URL);
+                if (缓存命中) {
+                    const 数据URI = 字节转HTML图片(缓存命中.body, 缓存命中.contentType);
+                    return new Response(生成图片HTML(数据URI), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', ...hsts头 } });
+                }
+                const 图片源 = new URL(伪装页URL);
+                const 图片反代响应 = await fetchWithTimeout(伪装页URL, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+                        'Referer': 图片源.origin + '/',
+                    }
+                }, 10000);
+                const 内容类型 = 图片反代响应.headers.get('content-type') || 'image/jpeg';
+                // 正则假阳性保护：服务器返回 HTML 说明不是图片，降级到普通反代
+                if (内容类型.startsWith('text/html')) throw new Error('非图片响应(' + 内容类型 + ')，跳过图片伪装');
+                const 图片长度 = parseInt(图片反代响应.headers.get('content-length') || '0', 10);
+                if (图片长度 > 0 && 图片长度 < 2 * 1024 * 1024) {
+                    const 图片字节 = await withTimeout(图片反代响应.arrayBuffer(), 5000, '图片代理响应体读取超时');
+                    if (图片字节.byteLength < 2 * 1024 * 1024) {
+                        if (伪装图片缓存.size >= 伪装图片缓存最大) {
+                            const 最旧键 = 伪装图片缓存.keys().next().value;
+                            if (最旧键) 伪装图片缓存.delete(最旧键);
+                        }
+                        伪装图片缓存.set(伪装页URL, { body: 图片字节, contentType: 内容类型, time: Date.now() });
+                        const 数据URI = 字节转HTML图片(图片字节, 内容类型);
+                        return new Response(生成图片HTML(数据URI), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', ...hsts头 } });
+                    }
+                    // content-length 虚标：改为纯流式
+                    const 图片头 = { 'Content-Type': 内容类型, 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=86400', ...hsts头 };
+                    return new Response(图片字节, { status: 图片反代响应.status, headers: 图片头 });
+                }
+                // 未知或大文件：直接流式转发
+                const 图片头 = { 'Content-Type': 内容类型, 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=86400', ...hsts头 };
+                return new Response(图片反代响应.body, { status: 图片反代响应.status, headers: 图片头 });
+            } catch (e) {
+                console.error('伪装图片代理失败:', e.message);
+                // 图片处理失败，fallthrough 到普通伪装页逻辑
+            }
+        }
+        // ★ 非图片 URL：归一化到 host-only 用于反向代理
+        if (伪装页URL && 伪装页URL !== 'nginx' && 伪装页URL !== '1101') {
             try { const u = new URL(伪装页URL); 伪装页URL = u.protocol + '//' + u.host; } catch (e) { 伪装页URL = 'nginx'; }
         }
         if (伪装页URL === '1101') return new Response(await html1101(url.host, 访问IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
@@ -1084,11 +1151,17 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                 };
                 return new Response(缓存条目.body, { status: 缓存条目.status, headers: 缓存响应头 });
             }
-            // Phase 3b: 清除 CF 相关入站头，避免透传给目标服务器
+            // Phase 3b: 清除 CF 相关入站头，避免透传给目标服务器（先克隆再删除，避免修改不可变 request.headers）
             const CF_HEADERS = ['CF-Connecting-IP', 'CF-IPCountry', 'CF-Ray', 'CF-Visitor',
-                                 'CF-Worker', 'CF-Cache-Status', 'True-Client-IP'];
-            for (const h of CF_HEADERS) request.headers.delete(h);
+                                 'CF-Worker', 'CF-Cache-Status', 'True-Client-IP',
+                                 'X-Forwarded-For', 'X-Forwarded-For-Original',
+                                 'X-Forwarded-Proto', 'X-Forwarded-Host',
+                                 'Forwarded', 'Via', 'X-Real-IP', 'X-Originating-IP',
+                                 'X-Remote-IP', 'X-Client-IP', 'Client-IP',
+                                 'X-Cluster-Client-IP',
+                                 'CF-Connecting-IPv6', 'CF-Pseudo-IPv4'];
             const 新请求头 = new Headers(request.headers);
+            for (const h of CF_HEADERS) 新请求头.delete(h);
             新请求头.set('Host', 反代URL.host);
             新请求头.set('Referer', 反代URL.origin);
             新请求头.set('Origin', 反代URL.origin);
@@ -1180,7 +1253,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                             'content-type', 'content-length', 'content-encoding', 'transfer-encoding',
                             'accept-ranges', 'content-range', 'content-language',
                             'cache-control', 'expires', 'last-modified', 'age',
-                            'vary', 'date', 'content-disposition',
+                            'vary', 'date', 'content-disposition', 'connection',
                         ]);
                         const 过滤后头 = {};
                         for (const [k, v] of 反代响应.headers) {
