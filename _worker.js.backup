@@ -52,6 +52,35 @@ function 生成图片HTML(数据URI) {
 // 图片URL正则检测（多种URL格式）
 const 图片URL正则 = /\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)(\?|$)|[?&]f=(jpg|jpeg|png|gif|webp|bmp|svg|ico)\b|\/image\/|\/img\/|\/photo\/|\/thumb\/|\/photo-|[?&](auto|fm|format)=(jpg|jpeg|png|gif|webp|bmp|svg|ico)\b/i;
 
+// ★ 常用路径目录（随机路径用，全局复用避免重复分配）
+const 常用路径目录 = ["#","about","account","acg","act","activity","ad","admin","ads","ajax","album","albums","anime","api","app","apps","archive","archives","article","articles","ask","auth","avatar","bbs","bd","blog","blogs","book","books","bt","buy","cart","category","categories","cb","channel","channels","chat","china","city","class","classify","clip","clips","club","cn","code","collect","collection","comic","comics","community","company","config","contact","content","course","courses","cp","data","detail","details","dh","directory","discount","discuss","dl","dload","doc","docs","document","documents","doujin","download","downloads","drama","edu","en","ep","episode","episodes","event","events","f","faq","favorite","favourites","favs","feedback","file","files","film","films","forum","forums","friend","friends","game","games","gif","go","go.html","go.php","group","groups","help","home","hot","htm","html","image","images","img","index","info","intro","item","items","ja","jp","jump","jump.html","jump.php","jumping","knowledge","lang","lesson","lessons","lib","library","link","links","list","live","lives","login","logout","m","mag","magnet","mall","manhua","map","member","members","message","messages","mobile","movie","movies","music","my","new","news","note","novel","novels","online","order","out","out.html","out.php","outbound","p","page","pages","pay","payment","pdf","photo","photos","pic","pics","picture","pictures","play","player","playlist","post","posts","product","products","program","programs","project","qa","question","rank","ranking","read","readme","redirect","redirect.html","redirect.php","reg","register","res","resource","retrieve","sale","search","season","seasons","section","seller","series","service","services","setting","settings","share","shop","show","shows","site","soft","sort","source","special","star","stars","static","stock","store","stream","streaming","streams","student","study","tag","tags","task","teacher","team","tech","temp","test","thread","tool","tools","topic","topics","torrent","trade","travel","tv","txt","type","u","upload","uploads","url","urls","user","users","v","version","video","videos","view","vip","vod","watch","web","wenku","wiki","work","www","zh","zh-cn","zh-tw","zip","about-us","access","accounting","activation","address","advertising","affiliate","agreement","alert","alerts","analytics-dashboard","announcement","api-docs","apply","archive-news","article-detail","attendance","author","auto","backup","banner","billing","board","brand","browse-all","business","calendar","campaign","career","cart-checkout","catalog","certificate","checkout-success","client","cloud","comment","company-info","competition","complaint","conference","connect","console","contact-form","contest","contract","contribute","control","cookie","copyright","coupon","create","crm","currency","custom","customer","dashboard-admin","data-center","deal","default","demo","department","design","developer","development","device","directory-list","discounts","display","donate","editor","email","employee","employment","enterprise","entry","environment","error-log","estimate","exam","example","exchange","experience","expert","export","faq-page","feature","feedback-form","finance","financial","fleet","flow","form","gallery","gateway","general","global","guide","hardware","health","history-page","holiday","host","hosting","identity","image-gallery","import","index-page","industry","info-center","information","inquiry","install","instruction","insurance","integration","interface","internal","invoice","issue","job","join","journal","key","knowledge-base","lab","landing","language","launch","legal","license","limited","location","log","logging","logs","machine","mail","manage","management","manual","map-view","market","marketing","master","media-center","member-area","menu","merchant","message-board","meta","method","metrics","misc","moderator","module","monitor","monthly","navigation","network","newsletter","notification","office","official","open","operation","opinion","option","order-detail","organization","overview","owner","package","partner","password","payment-info","people","performance","personal","phone","photo-gallery","plan","platform","policy","portal","portfolio","position","preferences","press-release","preview","pricing","print","privacy-policy","problem","process","profile-edit","project-detail","promotion","property","proposal","public","publication","purchase","quality","queue","quote","ranking-list","rate","rating","record","register-form","release","report","reporting","request","requirement","research","resource-center","response","result","resume","review","role","rule","sales","sample","schedule","school","score","screen","script","search-results","section-list","security","server","session","setting-page","setup","shop-cart","shopping","signin","signup-form","site-map","solution","staff","statistics","status-page","storage","store-front","studio","submission","subscribe-form","subscription","success","summary","support-center","survey","system","table","task-list","team-member","template","terms-of-service","test-case","ticket","timeline","toolbox","topic-list","tour","tracking-info","training","transaction","transfer","translation","tutorial","update","upgrade","upload-file","usage","user-guide","utility","validation","value","vendor","verification","version-info","visitor","voice","webmail","workflow"];
+
+// ★ 非管理员/非随机路径请求速率限制（基于 CF-Connecting-IP，每 IP 每小时最多 12 次）
+const 速率限制池 = new Map();
+const 速率限制窗口毫秒 = 3600000;
+const 登录限流计数 = new Map();  // 登录失败内存计数 { count, time }，1h 自动过期
+
+function 检查速率限制(客户端IP) {
+    if (!客户端IP) return true;
+    const 当前时间 = Date.now();
+    const 窗口起点 = 当前时间 - 速率限制窗口毫秒;
+    const 记录 = 速率限制池.get(客户端IP);
+    if (!记录) return true;
+    记录.时间戳队列 = 记录.时间戳队列.filter(t => t > 窗口起点);
+    if (记录.时间戳队列.length >= 12) return false;
+    return true;
+}
+
+function 记录速率限制请求(客户端IP) {
+    if (!客户端IP) return;
+    const 当前时间 = Date.now();
+    const 窗口起点 = 当前时间 - 速率限制窗口毫秒;
+    let 记录 = 速率限制池.get(客户端IP);
+    if (!记录) { 记录 = { 时间戳队列: [] }; 速率限制池.set(客户端IP, 记录); }
+    记录.时间戳队列 = 记录.时间戳队列.filter(t => t > 窗口起点);
+    记录.时间戳队列.push(当前时间);
+}
+
 // 请求上下文类 - 封装请求级状态，减少全局变量污染
 class RequestContext {
     constructor(env) {
@@ -543,15 +572,19 @@ export default {
                     // 使用 timingSafeEqual 防时序攻击
                     if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/admin' } });
                     if (request.method === 'POST') {
-                        // 登录速率限制：5次/10分钟（阈值设为4容忍并发溢出）
-                        const 登录尝试次数 = env.KV ? (await env.KV.get(`login_fail:${访问IP}`) || 0) : 0;
-                        if (Number(登录尝试次数) >= 4) return sanitizedErrorResponse('登录尝试次数过多，请10分钟后再试', 429);
+                        // 登录速率限制：5次/15分钟（内存计数 + KV 持久锁）
+                        const kv锁 = env.KV ? Number(await env.KV.get(`login_fail:${访问IP}`) || 0) : 0;
+                        const 内存记录 = 登录限流计数.get(访问IP);
+                        const 内存计数 = (内存记录 && Date.now() - 内存记录.time < 3600000) ? 内存记录.count : 0;
+                        if (kv锁 >= 5 || 内存计数 >= 5) return sanitizedErrorResponse('登录尝试次数过多，请15分钟后再试', 429);
+                        const 当前计数 = Math.max(kv锁, 内存计数);
                         const formData = await request.text();
                         const params = new URLSearchParams(formData);
                         const 输入密码 = params.get('password');
                         // 使用 timingSafeEqual 防时序攻击
                         if (输入密码 && secureCompare(输入密码, typeof 管理员密码 === 'string' ? 管理员密码.replace(/[\r\n]/g, '') : 管理员密码)) {
-                            // 清除失败计数
+                            // 清除失败计数（内存 + KV）
+                            登录限流计数.delete(访问IP);
                             if (env.KV) ctx.waitUntil(env.KV.delete(`login_fail:${访问IP}`));
                             const authValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
                             const authSig = await generateCookieSignature(authValue, 加密秘钥 + 管理员密码);
@@ -561,10 +594,11 @@ export default {
                             响应.headers.append('Set-Cookie', `auth_sig=${authSig}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict`);
                             return 响应;
                         } else {
-                            // 记录失败次数
-                            if (env.KV) {
-                                const 新次数 = Number(登录尝试次数) + 1;
-                                ctx.waitUntil(env.KV.put(`login_fail:${访问IP}`, String(新次数), { expirationTtl: 600 }));
+                            // 失败：递增内存计数，仅跨阈值（>=5）时写 KV 持久锁
+                            const 新次数 = 当前计数 + 1;
+                            登录限流计数.set(访问IP, { count: 新次数, time: Date.now() });
+                            if (新次数 >= 5 && env.KV) {
+                                ctx.waitUntil(env.KV.put(`login_fail:${访问IP}`, String(新次数), { expirationTtl: 900 }));
                             }
                         }
                     }
@@ -1077,6 +1111,20 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                     if (authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码)) return fetch(new Request('https://speed.cloudflare.com/locations', { headers: { 'Referer': 'https://speed.cloudflare.com/' } }));
                 } else if (访问路径 === 'robots.txt') return new Response('User-agent: *\nDisallow: /', { status: 200, headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
             } else if (!envUUID) return fetch(Pages静态页面 + '/noKV').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); });
+        }
+
+        // ★ 速率限制：非管理路径的请求段必须在常用路径目录中，否则限流（每 IP 每小时最多 12 次）
+        if (管理员密码 && request.method === 'GET' && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && 访问路径 !== 'version') {
+            const 路径段 = 访问路径.split('/').filter(Boolean);
+            if (路径段.length > 0 && !路径段.every(段 => 常用路径目录.includes(段))) {
+                const 客户端IP = request.headers.get('CF-Connecting-IP') || '';
+                if (!检查速率限制(客户端IP)) {
+                    console.warn(`[速率限制] IP ${客户端IP} 超过非管理员路径请求限制`);
+                    const hsts头 = ['1', 'true'].includes(env.HSTS_ENABLE) ? {'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload'} : {};
+                    return new Response(await nginx(), { status: 429, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Retry-After': '3600', ...hsts头 } });
+                }
+                记录速率限制请求(客户端IP);
+            }
         }
 
         let 伪装页URL = env.URL || 'nginx';
@@ -7505,7 +7553,7 @@ function 获取ECH_SNI(config_JSON, fallbackHost) {
 }
 
 function 随机路径(完整节点路径 = "/") {
-    const 常用路径目录 = ["#","about","account","acg","act","activity","ad","admin","ads","ajax","album","albums","anime","api","app","apps","archive","archives","article","articles","ask","auth","avatar","bbs","bd","blog","blogs","book","books","bt","buy","cart","category","categories","cb","channel","channels","chat","china","city","class","classify","clip","clips","club","cn","code","collect","collection","comic","comics","community","company","config","contact","content","course","courses","cp","data","detail","details","dh","directory","discount","discuss","dl","dload","doc","docs","document","documents","doujin","download","downloads","drama","edu","en","ep","episode","episodes","event","events","f","faq","favorite","favourites","favs","feedback","file","files","film","films","forum","forums","friend","friends","game","games","gif","go","go.html","go.php","group","groups","help","home","hot","htm","html","image","images","img","index","info","intro","item","items","ja","jp","jump","jump.html","jump.php","jumping","knowledge","lang","lesson","lessons","lib","library","link","links","list","live","lives","login","logout","m","mag","magnet","mall","manhua","map","member","members","message","messages","mobile","movie","movies","music","my","new","news","note","novel","novels","online","order","out","out.html","out.php","outbound","p","page","pages","pay","payment","pdf","photo","photos","pic","pics","picture","pictures","play","player","playlist","post","posts","product","products","program","programs","project","qa","question","rank","ranking","read","readme","redirect","redirect.html","redirect.php","reg","register","res","resource","retrieve","sale","search","season","seasons","section","seller","series","service","services","setting","settings","share","shop","show","shows","site","soft","sort","source","special","star","stars","static","stock","store","stream","streaming","streams","student","study","tag","tags","task","teacher","team","tech","temp","test","thread","tool","tools","topic","topics","torrent","trade","travel","tv","txt","type","u","upload","uploads","url","urls","user","users","v","version","video","videos","view","vip","vod","watch","web","wenku","wiki","work","www","zh","zh-cn","zh-tw","zip","about-us","access","accounting","activation","address","advertising","affiliate","agreement","alert","alerts","analytics-dashboard","announcement","api-docs","apply","archive-news","article-detail","attendance","author","auto","backup","banner","billing","board","brand","browse-all","business","calendar","campaign","career","cart-checkout","catalog","certificate","checkout-success","client","cloud","comment","company-info","competition","complaint","conference","connect","console","contact-form","contest","contract","contribute","control","cookie","copyright","coupon","create","crm","currency","custom","customer","dashboard-admin","data-center","deal","default","demo","department","design","developer","development","device","directory-list","discounts","display","donate","editor","email","employee","employment","enterprise","entry","environment","error-log","estimate","exam","example","exchange","experience","expert","export","faq-page","feature","feedback-form","finance","financial","fleet","flow","form","gallery","gateway","general","global","guide","hardware","health","history-page","holiday","host","hosting","identity","image-gallery","import","index-page","industry","info-center","information","inquiry","install","instruction","insurance","integration","interface","internal","invoice","issue","job","join","journal","key","knowledge-base","lab","landing","language","launch","legal","license","limited","location","log","logging","logs","machine","mail","manage","management","manual","map-view","market","marketing","master","media-center","member-area","menu","merchant","message-board","meta","method","metrics","misc","moderator","module","monitor","monthly","navigation","network","newsletter","notification","office","official","open","operation","opinion","option","order-detail","organization","overview","owner","package","partner","password","payment-info","people","performance","personal","phone","photo-gallery","plan","platform","policy","portal","portfolio","position","preferences","press-release","preview","pricing","print","privacy-policy","problem","process","profile-edit","project-detail","promotion","property","proposal","public","publication","purchase","quality","queue","quote","ranking-list","rate","rating","record","register-form","release","report","reporting","request","requirement","research","resource-center","response","result","resume","review","role","rule","sales","sample","schedule","school","score","screen","script","search-results","section-list","security","server","session","setting-page","setup","shop-cart","shopping","signin","signup-form","site-map","solution","staff","statistics","status-page","storage","store-front","studio","submission","subscribe-form","subscription","success","summary","support-center","survey","system","table","task-list","team-member","template","terms-of-service","test-case","ticket","timeline","toolbox","topic-list","tour","tracking-info","training","transaction","transfer","translation","tutorial","update","upgrade","upload-file","usage","user-guide","utility","validation","value","vendor","verification","version-info","visitor","voice","webmail","workflow"];
+    // 使用全局 常用路径目录（已在顶层定义）
     const 随机数 = Math.floor(Math.random() * 3 + 1);
     const shuffleArr = [...常用路径目录];
     // 部分洗牌: 只随机选取前 k 个元素，O(k) 替代 O(n)
