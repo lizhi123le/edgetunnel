@@ -575,7 +575,7 @@ export default {
                         // 登录速率限制：5次/15分钟（内存计数 + KV 持久锁）
                         const kv锁 = env.KV ? Number(await env.KV.get(`login_fail:${访问IP}`) || 0) : 0;
                         const 内存记录 = 登录限流计数.get(访问IP);
-                        const 内存计数 = (内存记录 && Date.now() - 内存记录.time < 3600000) ? 内存记录.count : 0;
+                        const 内存计数 = (内存记录 && Date.now() - 内存记录.time < 900000) ? 内存记录.count : 0;
                         if (kv锁 >= 5 || 内存计数 >= 5) return sanitizedErrorResponse('登录尝试次数过多，请15分钟后再试', 429);
                         const 当前计数 = Math.max(kv锁, 内存计数);
                         const formData = await request.text();
@@ -603,15 +603,14 @@ export default {
                         }
                     }
                     return fetchWithTimeout(Pages静态页面 + '/login', {}, 10000);
-                } else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {//验证cookie后响应管理页面
+                } else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
                     const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
                     const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
-                    // 验证 cookie 值（timingSafeEqual）和签名（HMAC-SHA256）
+                    // 验证 cookie，未认证则跌落到伪装代理（不 return）
                     const 认证通过 = authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码);
-                    // 没有cookie或cookie错误，跳转到/login页面
-                    if (!认证通过) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
+                    if (认证通过) {
                     if (访问路径 === 'admin/log.json') {// 读取日志内容
                         try {
                             const 读取日志内容 = await withTimeout(env.KV.get('log.json'), 3000) || '[]';
@@ -788,6 +787,7 @@ export default {
 
                     ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Admin_Login', config_JSON));
                     return fetchWithTimeout(Pages静态页面 + '/admin' + url.search, {}, 10000);
+                    }
                 } else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
                     const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
                     响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict');
