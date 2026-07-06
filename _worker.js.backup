@@ -81,6 +81,53 @@ function 记录速率限制请求(客户端IP) {
     记录.时间戳队列.push(当前时间);
 }
 
+// 永久黑名单 — IP 累计违规超过 22 次后永久封禁（内存缓存 + KV 持久化）
+let 永久黑名单缓存 = null;
+let 永久黑名单缓存时间 = 0;
+const 永久黑名单缓存TTL = 60000;
+const 永久黑名单阈值 = 22;
+
+async function 加载永久黑名单(env) {
+    if (!env.KV) return new Set();
+    const now = Date.now();
+    if (永久黑名单缓存 && (now - 永久黑名单缓存时间) < 永久黑名单缓存TTL) return 永久黑名单缓存;
+    try {
+        const raw = await withTimeout(env.KV.get('永久黑名单'), 3000);
+        永久黑名单缓存 = raw ? new Set(JSON.parse(raw)) : new Set();
+        永久黑名单缓存时间 = now;
+    } catch (e) {
+        永久黑名单缓存 = 永久黑名单缓存 || new Set();
+    }
+    return 永久黑名单缓存;
+}
+
+async function 检查永久黑名单(客户端IP, env) {
+    if (!客户端IP) return false;
+    const 黑名单 = await 加载永久黑名单(env);
+    return 黑名单.has(客户端IP);
+}
+
+async function 记录违规并检查拉黑(客户端IP, env, ctx) {
+    if (!客户端IP || !env.KV) return;
+    try {
+        const key = `违规计数:${客户端IP}`;
+        const raw = await withTimeout(env.KV.get(key), 3000);
+        const 当前计数 = (raw ? Number(raw) : 0) + 1;
+        ctx.waitUntil(env.KV.put(key, String(当前计数), { expirationTtl: 86400 * 30 }));
+        if (当前计数 >= 永久黑名单阈值) {
+            const 黑名单 = await 加载永久黑名单(env);
+            if (!黑名单.has(客户端IP)) {
+                黑名单.add(客户端IP);
+                永久黑名单缓存时间 = Date.now();
+                ctx.waitUntil(env.KV.put('永久黑名单', JSON.stringify([...黑名单])));
+                console.warn(`[永久黑名单] IP ${客户端IP} 累计违规 ${当前计数} 次，已加入永久黑名单`);
+            }
+        }
+    } catch (err) {
+        console.warn('[永久黑名单] 记录违规失败:', err.message);
+    }
+}
+
 // 请求上下文类 - 封装请求级状态，减少全局变量污染
 class RequestContext {
     constructor(env) {
@@ -1113,14 +1160,19 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
             } else if (!envUUID) return fetch(Pages静态页面 + '/noKV').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); });
         }
 
-        // ★ 速率限制：非管理路径的请求段必须在常用路径目录中，否则限流（每 IP 每小时最多 12 次）
+        // ★ 速率限制 + 永久黑名单：非管理路径的请求段必须在常用路径目录中，否则限流（每 IP 每小时最多 12 次）
         if (管理员密码 && request.method === 'GET' && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && 访问路径 !== 'version') {
             const 路径段 = 访问路径.split('/').filter(Boolean);
             if (路径段.length > 0 && !路径段.every(段 => 常用路径目录.includes(段))) {
                 const 客户端IP = request.headers.get('CF-Connecting-IP') || '';
+                const hsts头 = ['1', 'true'].includes(env.HSTS_ENABLE) ? {'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload'} : {};
+                if (await 检查永久黑名单(客户端IP, env)) {
+                    console.warn(`[永久黑名单] IP ${客户端IP} 命中永久黑名单，直接拦截`);
+                    return new Response(await nginx(), { status: 429, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Retry-After': '3600', ...hsts头 } });
+                }
                 if (!检查速率限制(客户端IP)) {
                     console.warn(`[速率限制] IP ${客户端IP} 超过非管理员路径请求限制`);
-                    const hsts头 = ['1', 'true'].includes(env.HSTS_ENABLE) ? {'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload'} : {};
+                    ctx.waitUntil(记录违规并检查拉黑(客户端IP, env, ctx));
                     return new Response(await nginx(), { status: 429, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Retry-After': '3600', ...hsts头 } });
                 }
                 记录速率限制请求(客户端IP);
