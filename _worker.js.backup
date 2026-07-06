@@ -889,7 +889,7 @@ export default {
                         let 订阅内容 = '';
 
                         if (['mixed', 'base64', 'v2ray'].includes(订阅类型)) {
-                            const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('0-5,100-1200,100-200,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('100-1200,0-5,tlshello,100-200')}` : config_JSON.TLS填充 ? `&padding=${encodeURIComponent('0-128')}` : '';
+                            const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1-10,3-500,100-200,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3-500,1-10,tlshello,100-200')}` : config_JSON.TLS填充 ? `&padding=${encodeURIComponent('0-128')}` : '';
                             const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 
                             const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
