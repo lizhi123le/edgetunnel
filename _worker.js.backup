@@ -3428,6 +3428,8 @@ function 创建SNI混合器(config = {}, env = null) {
     const 白名单 = config.白名单 ?? 默认SNI白名单;
     let 混合计数 = { 主域: 0, 掩护: 0, 总计: 0 };
     let 需Flush = false;
+    let 上次KVFlush时间 = 0;
+    const KV_FLUSH最小间隔 = 180000; // 180秒（3分钟）最小间隔 — KV免费写入限额1000/天，每次flush约2次put，480次*2=960写/天 < 1000安全线
     const kvKey = 'sni_mixing_stats';
 
     function 选择SNI(真实SNI) {
@@ -3465,6 +3467,10 @@ function 创建SNI混合器(config = {}, env = null) {
     async function flushToKV(env) {
         if (!需Flush) return null;
         if (!env?.KV) return null;
+        // 惰性写入：至少间隔 KV_FLUSH最小间隔 才实际写入 KV，避免高频请求打爆写入限额
+        const 当前时间 = Date.now();
+        if (当前时间 - 上次KVFlush时间 < KV_FLUSH最小间隔) return null;
+        上次KVFlush时间 = 当前时间;
         try {
             // 检测 OFF→ON 切换：同步状态标记不存在或已过期则重置
             const state = await env.KV.get('sni_mixing_sync_active');
