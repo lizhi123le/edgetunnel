@@ -834,35 +834,18 @@ export default {
 
                     ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Admin_Login', config_JSON));
                     const 管理页响应 = await fetchWithTimeout(Pages静态页面 + '/admin' + url.search, {}, 10000);
-                    const 管理页伪装URLs = (env.URL || '').split(',').map(s => s.trim()).filter(u => u);
-                    if (管理页伪装URLs.length > 0) {
-                        const 管理页HTML = await 管理页响应.text();
-                        const 管理页随机背景图 = 管理页伪装URLs[Math.floor(Math.random() * 管理页伪装URLs.length)];
-                        const 管理页背景CSS = `<style>
-html { background: transparent !important; }
-body { background: transparent !important; }
-#background-img { position: fixed; top: 0; left: 0; width: 100%; height: 100%; border: 0; z-index: -3 !important; object-fit: fill; }
+                    const 管理页HTML = await 管理页响应.text();
+                    const 管理页背景CSS = `<style>
+html, body { background: transparent !important; }
 #background-iframe { position: fixed; top: 0; left: 0; width: 100%; height: 100%; border: 0; z-index: -3 !important; }
 #blur-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(135deg, rgba(102,126,234,0.1) 0, rgba(118,75,162,0.15) 100%); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); z-index: -2 !important; animation: blurOverlayAppear 1.5s ease-out forwards .3s; pointer-events: none; opacity: 0; }
 @keyframes blurOverlayAppear { 0% { opacity: 0; -webkit-backdrop-filter: blur(0px); backdrop-filter: blur(0px); } 100% { opacity: 1; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); } }
 </style>`;
-                        let 管理页背景元素;
-                        if (管理页随机背景图 === 'nginx') {
-                            管理页背景元素 = `<iframe id="background-iframe" src="data:text/html;charset=utf-8,${encodeURIComponent(await nginx())}" title="背景内容"></iframe>`;
-                        } else if (管理页随机背景图 === '1101') {
-                            管理页背景元素 = `<iframe id="background-iframe" src="data:text/html;charset=utf-8,${encodeURIComponent(await html1101(url.host, 访问IP))}" title="背景内容"></iframe>`;
-                        } else if (/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|$)/i.test(管理页随机背景图)) {
-                            管理页背景元素 = `<img id="background-img" src="${管理页随机背景图}" alt="背景">`;
-                        } else {
-                            管理页背景元素 = `<iframe id="background-iframe" src="${管理页随机背景图}" title="背景内容"></iframe>`;
-                        }
-                        const 管理页背景HTML = 管理页背景元素 + `<div id="blur-overlay"></div>`;
-                        const 管理页body插入位 = 管理页HTML.lastIndexOf('</body>');
-                        const 管理页注入前置 = 管理页HTML.slice(0, 管理页body插入位).replace('</head>', 管理页背景CSS + '</head>').replace('<body>', '<body style="background: transparent !important">');
-                        const 管理页注入后置 = 管理页HTML.slice(管理页body插入位);
-                        return new Response(管理页注入前置 + 管理页背景HTML + 管理页注入后置, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-                    }
-                    return 管理页响应;
+                    const 管理页背景HTML = `<iframe id="background-iframe" src="/" title="背景内容"></iframe><div id="blur-overlay"></div>`;
+                    const 管理页body插入位 = 管理页HTML.lastIndexOf('</body>');
+                    const 管理页注入前置 = 管理页HTML.slice(0, 管理页body插入位).replace('</head>', 管理页背景CSS + '</head>').replace('<body>', '<body style="background: transparent !important">');
+                    const 管理页注入后置 = 管理页HTML.slice(管理页body插入位);
+                    return new Response(管理页注入前置 + 管理页背景HTML + 管理页注入后置, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
                     }
                 } else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
                     const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
