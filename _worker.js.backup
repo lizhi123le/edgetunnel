@@ -388,47 +388,6 @@ const buildApiResponse = (data, status = 200, extraHeaders = {}) => {
     });
 };
 
-// ★ 获取带伪装背景的管理/登录页面（env.URL 设置时使用伪装页作为半透明背景，参考 login 背景风格逻辑）
-async function 获取带伪装背景的页面(页面路径, env, url, 额外搜索 = '') {
-    const 原始伪装URL = env.URL;
-    if (!原始伪装URL || 原始伪装URL === 'nginx' || 原始伪装URL === '1101') {
-        return fetchWithTimeout(Pages静态页面 + 页面路径 + 额外搜索, {}, 10000);
-    }
-    let 伪装页 = 原始伪装URL.trim().replace(/\/$/, '');
-    const 全部地址列表 = 伪装页.split('|').map(u => u.trim()).filter(u => u);
-    if (全部地址列表.length > 0) 伪装页 = 全部地址列表[Math.floor(Math.random() * 全部地址列表.length)];
-    if (!伪装页.match(/^https?:\/\//i)) 伪装页 = 'https://' + 伪装页;
-    if (伪装页.toLowerCase().startsWith('http://')) 伪装页 = 'https://' + 伪装页.substring(7);
-    try {
-        const 伪装URL对象 = new URL(伪装页);
-        const [静态响应, 伪装响应] = await Promise.all([
-            fetchWithTimeout(Pages静态页面 + 页面路径 + 额外搜索, {}, 10000),
-            fetchWithTimeout(伪装URL对象.origin, {}, 15000)
-        ]);
-        if (!静态响应.ok || !伪装响应.ok) return 静态响应;
-        const [静态内容, 伪装内容] = await Promise.all([
-            withTimeout(静态响应.text(), 5000),
-            withTimeout(伪装响应.text(), 8000)
-        ]);
-        let 伪装处理 = 伪装内容
-            .replaceAll(伪装URL对象.host, url.host)
-            .replaceAll(伪装URL对象.origin, url.origin);
-        const 伪装body = 伪装处理.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-        if (伪装body) 伪装处理 = 伪装body[1];
-        伪装处理 = 伪装处理.replace(/<script[\s\S]*?<\/script>/gi, '');
-        const 静态head = 静态内容.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
-        const 静态body = 静态内容.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-        const 静态head内容 = 静态head ? 静态head[1] : '';
-        const 静态body内容 = 静态body ? 静态body[1] : 静态内容;
-        const hsts标签 = ['1', 'true'].includes(env.HSTS_ENABLE) ? '<meta http-equiv="Strict-Transport-Security" content="max-age=31536000; includeSubDomains; preload">' : '';
-        const 合并HTML = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1.0">\n' + hsts标签 + '\n' + 静态head内容 + '\n<style>\n*{margin:0;padding:0;box-sizing:border-box}\nbody{min-height:100vh;position:relative}\n#camouflage-bg{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;overflow:hidden;background:#fff}\n#camouflage-bg>div{width:100%;height:100%;overflow:hidden}\n#overlay{position:fixed;top:0;left:0;width:100%;height:100%;z-index:1;background:rgba(0,0,0,0.45);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}\n#content{position:relative;z-index:2;min-height:100vh}\n</style>\n</head>\n<body>\n<div id="camouflage-bg"><div>' + 伪装处理 + '</div></div>\n<div id="overlay"></div>\n<div id="content">' + 静态body内容 + '</div>\n</body>\n</html>';
-        return new Response(合并HTML, { status: 静态响应.status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
-    } catch (e) {
-        console.warn('伪装背景页面生成失败，降级到原始页面:', e.message);
-        return fetchWithTimeout(Pages静态页面 + 页面路径 + 额外搜索, {}, 10000);
-    }
-}
-
 // 统一错误响应（不泄露内部细节）
 function sanitizedErrorResponse(message, status = 500) {
     const publicMessages = {
@@ -690,7 +649,7 @@ export default {
                             }
                         }
                     }
-                    return 获取带伪装背景的页面('/login', env, url);
+                    return fetchWithTimeout(Pages静态页面 + '/login', {}, 10000);
                 } else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {
                     const cookies = request.headers.get('Cookie') || '';
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
@@ -874,7 +833,20 @@ export default {
                     }
 
                     ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Admin_Login', config_JSON));
-                    return 获取带伪装背景的页面('/admin', env, url, url.search);
+                    const 管理页响应 = await fetchWithTimeout(Pages静态页面 + '/admin' + url.search, {}, 10000);
+                    const 管理页伪装URL = env.URL || '';
+                    if (管理页伪装URL && 管理页伪装URL !== 'nginx' && 管理页伪装URL !== '1101') {
+                        const 管理页HTML = await 管理页响应.text();
+                        const 管理页背景CSS = `<style>
+body { background: transparent !important; }
+#background-iframe { position: fixed; top: 0; left: 0; width: 100%; height: 100%; border: 0; z-index: -3 !important; }
+#blur-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(135deg, rgba(102,126,234,0.1) 0, rgba(118,75,162,0.15) 100%); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); z-index: -2 !important; animation: blurOverlayAppear 1.5s ease-out forwards .3s; pointer-events: none; opacity: 0; }
+@keyframes blurOverlayAppear { 0% { opacity: 0; -webkit-backdrop-filter: blur(0px); backdrop-filter: blur(0px); } 100% { opacity: 1; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); } }
+</style>`;
+                        const 管理页背景HTML = `<iframe id="background-iframe" src="/" title="背景内容"></iframe><div id="blur-overlay"></div>`;
+                        return new Response(管理页HTML.replace('</head>', 管理页背景CSS + '</head>').replace('</body>', 管理页背景HTML + '</body>'), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+                    }
+                    return 管理页响应;
                     }
                 } else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
                     const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
