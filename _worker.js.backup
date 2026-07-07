@@ -844,8 +844,11 @@ body { background: transparent !important; }
 #blur-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(135deg, rgba(102,126,234,0.1) 0, rgba(118,75,162,0.15) 100%); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); z-index: -2 !important; animation: blurOverlayAppear 1.5s ease-out forwards .3s; pointer-events: none; opacity: 0; }
 @keyframes blurOverlayAppear { 0% { opacity: 0; -webkit-backdrop-filter: blur(0px); backdrop-filter: blur(0px); } 100% { opacity: 1; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); } }
 </style>`;
-                        const 管理页背景HTML = `<iframe id="background-iframe" src="/" title="背景内容"></iframe><div id="blur-overlay"></div>`;
-                        return new Response(管理页HTML.replace('</head>', 管理页背景CSS + '</head>').replace('<body>', '<body style="background: transparent !important">').replace('</body>', 管理页背景HTML + '</body>'), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+                        const 管理页背景HTML = `<iframe id="background-iframe" src="${管理页伪装URL}" title="背景内容"></iframe><div id="blur-overlay"></div>`;
+                        const 管理页body插入位 = 管理页HTML.lastIndexOf('</body>');
+                        const 管理页注入前置 = 管理页HTML.slice(0, 管理页body插入位).replace('</head>', 管理页背景CSS + '</head>').replace('<body>', '<body style="background: transparent !important">');
+                        const 管理页注入后置 = 管理页HTML.slice(管理页body插入位);
+                        return new Response(管理页注入前置 + 管理页背景HTML + 管理页注入后置, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
                     }
                     return 管理页响应;
                     }
