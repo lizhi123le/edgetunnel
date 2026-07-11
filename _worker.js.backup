@@ -1487,7 +1487,7 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
                 }
             }, 8000);
             let udpRespHeader = 首包.respHeader;
-            const 木马UDP上下文 = { 缓存: new Uint8Array(0), 木马回退Socket: null };
+            const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: ctx2.木马反代地址 };
             const xhttpBridge = {
                 readyState: WebSocket.OPEN,
                 send(data) {
@@ -1535,7 +1535,7 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
                         const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
                         if (改写结果) rawData = 改写结果;
                     }
-                    await forwardataTCP(首包.hostname, 首包.port, rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID, ctx2, 首包.协议 === 'trojan', ctx2.木马反代地址, 首包.fullTrojanData || 首包.rawData);
+                    await forwardataTCP(首包.hostname, 首包.port, rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID, ctx2, 首包.协议 === 'trojan', ctx2.木马反代地址, 首包.原始数据);
                 }
 
                 while (true) {
@@ -1711,7 +1711,7 @@ const 尝试解析木马首包 = (data) => {
                 port,
                 isUDP: trojanIsUDP,
                 rawData: data.subarray(dataOffset),
-                fullTrojanData: data,  // 完整 Trojan 数据（header + payload），用于反代回退
+                原始数据: data,  // 完整 Trojan 数据（header + payload），用于反代回退
                 respHeader: null,
             }
         };
@@ -1767,7 +1767,7 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
     const remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
     let isDnsQuery = false;
     let 判断是否是木马 = null;
-    const 木马UDP上下文 = { 缓存: new Uint8Array(0), 木马回退Socket: null };
+    const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: ctx2.木马反代地址 };
     let 当前写入Socket = null;
     let 远端写入器 = null;
     let gRPC上行写入队列 = null;
@@ -2105,7 +2105,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	serverSock.binaryType = 'arraybuffer';
 	let remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
 	let isDnsQuery = false;
-	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 木马回退Socket: null };
+	const 木马UDP上下文 = { 缓存: new Uint8Array(0), 反代地址: ctx2.木马反代地址 };
 	// earlyData / SS模式禁用EarlyData 已移至上方操作 A，此处不再重复读取
 	let WS上行写入队列 = null;
 	let WS显式传输链 = Promise.resolve();
@@ -2774,13 +2774,11 @@ function 拼接字节数据(...chunkList) {
 async function 转发木马UDP数据(chunk, webSocket, 上下文, ctx2) {
 	const { 调试日志打印 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
+	const 当前块 = 数据转Uint8Array(chunk);
 
 	// Trojan回退: 如果配置了回退地址，走TCP转发（首次调用会自动创建socket）
-	if (ctx2.木马反代地址) {
-		return 转发木马UDP反代数据(chunk, webSocket, 上下文, ctx2);
-	}
+	if (上下文?.反代地址) return 转发木马UDP反代数据(当前块, webSocket, 上下文, ctx2.request);
 
-	const 当前块 = 数据转Uint8Array(chunk);
 	const 缓存块 = 上下文?.缓存 instanceof Uint8Array ? 上下文.缓存 : new Uint8Array(0);
 	const input = 缓存块.byteLength ? 拼接字节数据(缓存块, 当前块) : 当前块;
 	let cursor = 0;
@@ -5122,7 +5120,8 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, 调试日志打印, TCP并发拨号数, 预加载竞速拨号 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
 	const 木马回退启用 = isTrojan && 木马反代地址;
-	const 木马握手数据 = 木马回退启用 ? 提取木马反代握手数据(原始数据 || rawData) : null;
+	const 木马反代首包数据 = 木马回退启用 ? (原始数据 || rawData) : null;
+	const 木马握手数据 = 木马回退启用 ? 提取木马反代握手数据(木马反代首包数据, rawData) : null;
     log(`[TCP转发] 目标: ${sanitizeHostname(host)}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 特征码字典[0].toLowerCase()} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
     const 连接超时毫秒 = 5000;
     let 已通过代理发送首包 = false;
@@ -5309,14 +5308,24 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
             return;
         }
 
-        const 本次发送首包 = 允许发送首包 && !已通过代理发送首包 && 有效数据长度(rawData) > 0;
-        const 本次首包数据 = 本次发送首包 ? rawData : null;
+		let 本次发送首包 = false, 本次首包数据 = null;
+		if (木马回退启用) {
+			if (允许发送首包 && !已通过代理发送首包 && 有效数据长度(木马反代首包数据) > 0) {
+				本次首包数据 = 木马反代首包数据;
+				本次发送首包 = 有效数据长度(rawData) > 0;
+			} else {
+				本次首包数据 = 木马握手数据;
+			}
+		} else {
+			本次发送首包 = 允许发送首包 && !已通过代理发送首包 && 有效数据长度(rawData) > 0;
+			本次首包数据 = 本次发送首包 ? rawData : null;
+		}
 
-        const 当前连接任务 = (async () => {
-            let newSocket;
-            if (木马回退启用) {
-                log(`[Trojan回退] 尝试 ${host}:${portNum} -> ${stripIPv6Brackets(木马反代地址.hostname)}:${木马反代地址.port}`);
-                newSocket = await 连接木马反代(木马握手数据 || 本次首包数据, TCP连接, 木马反代地址);
+		const 当前连接任务 = (async () => {
+			let newSocket;
+			if (木马回退启用) {
+				log(`[木马反代] 代理到: ${host}:${portNum}`);
+				newSocket = await 连接木马反代(本次首包数据, TCP连接, 木马反代地址);
             } else if (启用SOCKS5反代 === 'socks5') {
                 log(`[SOCKS5代理] 代理到: ${host}:${portNum}`);
                 newSocket = await socks5Connect(host, portNum, 本次首包数据, TCP连接, parsedSocks5Address);
@@ -8690,23 +8699,31 @@ async function 连接木马反代(data, TCP连接, 木马反代地址) {
 // 提取木马反代握手数据：返回完整 Trojan 数据（header + payload）发送到反代服务器
 // 不能只返回 header：首包 payload 已从 ws 流中消费，connectStreams 只会转发后续包，
 // 如果只发 header 到反代，代理服务器收不到首包 payload（TLS ClientHello）导致连接失败
-function 提取木马反代握手数据(data) {
-    return 数据转Uint8Array(data);
+function 提取木马反代握手数据(首包数据, rawData) {
+    const 首包 = 数据转Uint8Array(首包数据);
+    const payload = 数据转Uint8Array(rawData);
+    if (!payload.byteLength) return 首包;
+    const 握手长度 = 首包.byteLength - payload.byteLength;
+    if (握手长度 <= 0) return 首包;
+    for (let i = 0; i < payload.byteLength; i++) {
+        if (首包[握手长度 + i] !== payload[i]) return 首包;
+    }
+    return 首包.subarray(0, 握手长度);
 }
 
 // 转发木马UDP反代数据：通过 Trojan fallback 转发 UDP 数据
-async function 转发木马UDP反代数据(chunk, webSocket, 上下文, ctx2) {
+async function 转发木马UDP反代数据(chunk, webSocket, 上下文, request) {
     const data = 数据转Uint8Array(chunk);
-    if (!上下文.木马回退Socket) {
-        const TCP连接 = 创建请求TCP连接器(ctx2.request);
-        const socket = await 连接木马反代(data, TCP连接, ctx2.木马反代地址);
-        上下文.木马回退Socket = socket;
+    if (!上下文.反代Socket) {
+        const TCP连接 = 创建请求TCP连接器(request);
+        const socket = await 连接木马反代(data, TCP连接, 上下文.反代地址);
+        上下文.反代Socket = socket;
         socket.closed.catch(() => { }).finally(() => closeSocketQuietly(webSocket));
         connectStreams(socket, webSocket, null, null);
         return;
     }
     if (!data.byteLength) return;
-    const writer = 上下文.木马回退Socket.writable.getWriter();
+    const writer = 上下文.反代Socket.writable.getWriter();
     try { await writer.write(data) }
     finally { try { writer.releaseLock() } catch (e) { } }
 }
