@@ -2772,7 +2772,6 @@ function 拼接字节数据(...chunkList) {
 
 // 上游新增：转发木马UDP数据函数
 async function 转发木马UDP数据(chunk, webSocket, 上下文, ctx2) {
-	const { 调试日志打印 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
 	const 当前块 = 数据转Uint8Array(chunk);
 
@@ -8696,9 +8695,9 @@ async function 连接木马反代(data, TCP连接, 木马反代地址) {
     }
 }
 
-// 提取木马反代握手数据：返回完整 Trojan 数据（header + payload）发送到反代服务器
-// 不能只返回 header：首包 payload 已从 ws 流中消费，connectStreams 只会转发后续包，
-// 如果只发 header 到反代，代理服务器收不到首包 payload（TLS ClientHello）导致连接失败
+// 提取木马反代握手数据：仅返回 Trojan header（不含 payload）用于后续重连
+// 首次连接发送完整数据（header + payload），后续重连只发 header，
+// 因为 payload 已从流中消费，connectStreams 会转发后续包
 function 提取木马反代握手数据(首包数据, rawData) {
     const 首包 = 数据转Uint8Array(首包数据);
     const payload = 数据转Uint8Array(rawData);
