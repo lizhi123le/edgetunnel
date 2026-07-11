@@ -145,6 +145,7 @@ class RequestContext {
         // 调试状态
         this.调试日志打印 = false;
         this.TCP并发拨号数 = 默认TCP并发拨号数;
+        this.反代并发拨号数 = 默认反代并发拨号数;
         this.预加载竞速拨号 = 默认预加载竞速拨号;
         
         // Trojan Fallback
@@ -261,7 +262,7 @@ const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
 const 上行合包目标字节 = 64 * 1024, 上行队列最大字节 = 8 * 1024 * 1024, 上行队列最大条目 = 4096;
 const 下行Grain包字节 = 64 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
-const 默认TCP并发拨号数 = 2, 默认预加载竞速拨号 = false;
+const 默认TCP并发拨号数 = 2, 默认反代并发拨号数 = 1, 默认预加载竞速拨号 = false;
 // TCP 预加载 DNS 缓存（短 TTL，仅用于直连竞速拨号，不与其他 DNS 缓存冲突）
 const 预加载DNS缓存 = new Map();
 const 预加载DNS缓存TTL = 30 * 1000;
@@ -527,7 +528,9 @@ export default {
             ctx2.启用反代兜底 = true;
         }
         ctx2.预加载竞速拨号 = ['1', 'true'].includes(env.PRELOAD_RACE_DIAL) || 默认预加载竞速拨号;
-        ctx2.TCP并发拨号数 = (默认TCP并发拨号数 !== 1 && 识别运营商(request) === 'cmcc') ? 1 : 默认TCP并发拨号数;
+        ctx2.反代并发拨号数 = Math.max(1, Number(env.PROXY_CONCURRENT_DIAL) || 默认反代并发拨号数);
+        ctx2.TCP并发拨号数 = Math.max(1, Number(env.TCP_CONCURRENT_DIAL) || 默认TCP并发拨号数);
+        if (!env.TCP_CONCURRENT_DIAL && 默认TCP并发拨号数 !== 1 && 识别运营商(request) === 'cmcc') ctx2.TCP并发拨号数 = 1;
         // 全局变量同步已移除，统一使用 ctx2 实例属性避免跨请求 Race Condition
 
         const 访问IP = request.headers.get('CF-Connecting-IP') || request.headers.get('True-Client-IP') || request.headers.get('X-Real-IP') || request.headers.get('X-Forwarded-For') || request.headers.get('Fly-Client-IP') || request.headers.get('X-Appengine-Remote-Addr') || request.headers.get('X-Cluster-Client-IP') || '未知IP';
@@ -641,10 +644,10 @@ export default {
                             if (env.KV) ctx.waitUntil(env.KV.delete(`login_fail:${访问IP}`));
                             const authValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
                             const authSig = await generateCookieSignature(authValue, 加密秘钥 + 管理员密码);
-                            // Cookie: Secure; SameSite=Strict; Max-Age=3600(1小时)
+                            // Cookie: Secure; SameSite=Lax; Max-Age=3600(1小时)
                             const 响应 = new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-                            响应.headers.set('Set-Cookie', `auth=${authValue}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict`);
-                            响应.headers.append('Set-Cookie', `auth_sig=${authSig}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict`);
+                            响应.headers.set('Set-Cookie', `auth=${authValue}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Lax`);
+                            响应.headers.append('Set-Cookie', `auth_sig=${authSig}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Lax`);
                             return 响应;
                         } else {
                             // 失败：递增内存计数，仅跨阈值（>=5）时写 KV 持久锁
@@ -1711,7 +1714,7 @@ const 尝试解析木马首包 = (data) => {
                 port,
                 isUDP: trojanIsUDP,
                 rawData: data.subarray(dataOffset),
-                原始数据: data,  // 完整 Trojan 数据（header + payload），用于反代回退
+                原始数据: null,
                 respHeader: null,
             }
         };
@@ -5116,7 +5119,7 @@ function 解析SS请求(chunk, passwordPlainText) {
 }
 
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID, ctx2, isTrojan = false, 木马反代地址 = null, 原始数据 = null) {
-	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, 调试日志打印, TCP并发拨号数, 预加载竞速拨号 } = ctx2;
+	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, 调试日志打印, TCP并发拨号数, 反代并发拨号数, 预加载竞速拨号 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
 	const 木马回退启用 = isTrojan && 木马反代地址;
 	const 木马反代首包数据 = 木马回退启用 ? (原始数据 || rawData) : null;
@@ -5256,9 +5259,10 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
         if (所有反代数组 && 所有反代数组.length > 0) {
             const 最大重试深度 = 5;
             let 已尝试批次 = 0;
-            for (let i = 0; i < 所有反代数组.length && 已尝试批次 < 最大重试深度; i += TCP并发拨号数) {
+            const 实际并发数 = Math.max(1, 反代并发拨号数);
+            for (let i = 0; i < 所有反代数组.length && 已尝试批次 < 最大重试深度; i += 实际并发数) {
                 const 候选列表 = [];
-                for (let j = 0; j < TCP并发拨号数 && i + j < 所有反代数组.length; j++) {
+                for (let j = 0; j < 实际并发数 && i + j < 所有反代数组.length; j++) {
                     const 反代数组索引 = (缓存反代数组索引 + i + j) % 所有反代数组.length;
                     const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
                     const 节点标识 = `${反代地址}:${反代端口}`;
