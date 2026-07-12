@@ -1425,6 +1425,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
 async function 处理XHTTP请求(request, yourUUID, ctx2) {
     const { 反代IP, 调试日志打印 } = ctx2;
     const log = (...args) => ctx2.log(...args);
+    ctx2.request = request;
     if (!request.body) return new Response('Bad Request', { status: 400 });
     const reader = request.body.getReader();
     const 首包 = await 读取XHTTP首包(reader, yourUUID);
@@ -1765,6 +1766,7 @@ const 尝试解析木马首包 = (data) => {
 async function 处理gRPC请求(request, yourUUID, ctx2) {
     const { 反代IP, 调试日志打印 } = ctx2;
     const log = (...args) => ctx2.log(...args);
+    ctx2.request = request;
     if (!request.body) return new Response('Bad Request', { status: 400 });
     const reader = request.body.getReader();
     const remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
