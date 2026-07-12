@@ -113,15 +113,20 @@ async function 记录违规并检查拉黑(客户端IP, env, ctx) {
         const key = `违规计数:${客户端IP}`;
         const raw = await withTimeout(env.KV.get(key), 3000);
         const 当前计数 = (raw ? Number(raw) : 0) + 1;
-        ctx.waitUntil(env.KV.put(key, String(当前计数), { expirationTtl: 86400 * 30 }));
-        if (当前计数 >= 永久黑名单阈值) {
-            const 黑名单 = await 加载永久黑名单(env);
-            if (!黑名单.has(客户端IP)) {
-                黑名单.add(客户端IP);
-                永久黑名单缓存时间 = Date.now();
-                ctx.waitUntil(env.KV.put('永久黑名单', JSON.stringify([...黑名单])));
-                console.warn(`[永久黑名单] IP ${客户端IP} 累计违规 ${当前计数} 次，已加入永久黑名单`);
-            }
+        const 黑名单 = await 加载永久黑名单(env);
+        const 已永久封禁 = 黑名单.has(客户端IP);
+        if (已永久封禁) {
+            // 已永久黑名单 IP：计数持久保存，不重置（无 expirationTtl）
+            ctx.waitUntil(env.KV.put(key, String(当前计数)));
+        } else {
+            // 非永久黑名单 IP：计数每日重置（1 天过期自动归零）
+            ctx.waitUntil(env.KV.put(key, String(当前计数), { expirationTtl: 86400 }));
+        }
+        if (当前计数 >= 永久黑名单阈值 && !已永久封禁) {
+            黑名单.add(客户端IP);
+            永久黑名单缓存时间 = Date.now();
+            ctx.waitUntil(env.KV.put('永久黑名单', JSON.stringify([...黑名单])));
+            console.warn(`[永久黑名单] IP ${客户端IP} 累计违规 ${当前计数} 次，已加入永久黑名单`);
         }
     } catch (err) {
         console.warn('[永久黑名单] 记录违规失败:', err.message);
