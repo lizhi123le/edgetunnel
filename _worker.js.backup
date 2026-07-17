@@ -1226,7 +1226,8 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                 const 图片源 = new URL(伪装页URL);
                 const 图片反代响应 = await fetchWithTimeout(伪装页URL, {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+                        'User-Agent': PICK_CONNECT_UA(),
+                        'Accept-Language': PICK_ACCEPT_LANG(),
                         'Referer': 图片源.origin + '/',
                     }
                 }, 10000);
@@ -7501,7 +7502,7 @@ async function sendMessage(BotToken, ChatID, 日志内容, config_JSON) {
             headers: {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;',
                 'Accept-Encoding': 'gzip, deflate, br',
-                'User-Agent': 日志内容.UA || 'Unknown',
+                'User-Agent': PICK_CONNECT_UA(),
             }
         }, 10000);
     } catch (error) { console.error('Error sending message:', error) }
