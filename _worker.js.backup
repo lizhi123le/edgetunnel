@@ -7428,7 +7428,11 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
         const 日志CC = 缩略地区
             ? (request.cf?.country || 'N/A')
             : `${request.cf?.country || 'N/A'} ${request.cf?.city || 'N/A'}`;
-        const 日志内容 = { TYPE: 请求类型, IP: 日志IP, ASN: `AS${request.cf?.asn || '0'} ${request.cf?.asOrganization || 'Unknown'}`, CC: 日志CC, URL: sanitizeURL(request.url), UA: sanitizedUA, TIME: 当前时间.getTime() };
+        // [隐私增强] ASN 组织名称默认隐藏（设 LOG_ASN_ORG=true 显示），防止缩小定位范围
+        const 显示ASN组织 = ['1', 'true'].includes(env.LOG_ASN_ORG);
+        const ASN编号 = `AS${request.cf?.asn || '0'}`;
+        const ASN文本 = 显示ASN组织 ? `${ASN编号} ${request.cf?.asOrganization || 'Unknown'}` : ASN编号;
+        const 日志内容 = { TYPE: 请求类型, IP: 日志IP, ASN: ASN文本, CC: 日志CC, URL: sanitizeURL(request.url), UA: sanitizedUA, TIME: 当前时间.getTime() };
         if (config_JSON.TG.启用) {
             try {
                 if (!tgJSONCache || Date.now() - tgJSONCacheTime > 300000) {
@@ -7495,14 +7499,18 @@ async function sendMessage(BotToken, ChatID, 日志内容, config_JSON) {
             `📅 <b>时间：</b>${请求时间}\n` +
             `${config_JSON.CF.Usage.success ? `📊 <b>请求用量：</b>${config_JSON.CF.Usage.total}/${config_JSON.CF.Usage.max} <b>${((config_JSON.CF.Usage.total / config_JSON.CF.Usage.max) * 100).toFixed(2)}%</b>\n` : ''}`;
 
-        const url = `https://api.telegram.org/bot${BotToken}/sendMessage?chat_id=${ChatID}&parse_mode=HTML&text=${encodeURIComponent(msg)}`;
-        return fetchWithTimeout(url, {
-            method: 'GET',
+        // [隐私增强] 改用 POST 发送，避免消息内容和 BotToken 暴露在 URL 中
+        const tgApiUrl = `https://api.telegram.org/bot${BotToken}/sendMessage`;
+        return fetchWithTimeout(tgApiUrl, {
+            method: 'POST',
             headers: {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'User-Agent': 日志内容.UA || 'Unknown',
-            }
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                chat_id: ChatID,
+                parse_mode: 'HTML',
+                text: msg,
+            }),
         }, 10000);
     } catch (error) { console.error('Error sending message:', error) }
 }
