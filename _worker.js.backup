@@ -1,4 +1,4 @@
-const Version = '2026-07-11 19:02:35(Enhanced)';
+const Version = '2026-07-22 19:14:26(Enhanced)';
 
 // 全局 TextEncoder/TextDecoder 复用提升性能
 const $encoder = new TextEncoder();
@@ -1446,7 +1446,14 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
     xhttp活动连接数++;
     if (isSpeedTestSite(首包.hostname)) {
         try { reader.releaseLock(); } catch (e) { }
-        return new Response('Forbidden', { status: 403 });
+        return new Response(构造本地204响应(首包.respHeader), {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/octet-stream',
+                'X-Accel-Buffering': 'no',
+                'Cache-Control': 'no-store'
+            }
+        });
     }
     if (首包.isUDP && 首包.协议 !== 'trojan' && 首包.port !== 53) {
         try { reader.releaseLock(); } catch (e) { }
@@ -1974,7 +1981,10 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
                                 const 解析结果 = 解析木马请求(有效首包, yourUUID);
                                 if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
                                 const { port, hostname, rawClientData, isUDP } = 解析结果;
-                                if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+                                if (isSpeedTestSite(hostname)) {
+                                    grpcBridge.send(构造本地204响应());
+                                    return;
+                                }
                                 if (isUDP) {
                                     if (port !== 53) throw new Error('UDP is not supported');
                                     isDnsQuery = true;
@@ -1993,12 +2003,15 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
                                 const 解析结果 = 解析魏烈思请求(有效首包, yourUUID);
                                 if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
                                 const { port, hostname, rawClientData, version, isUDP } = 解析结果;
-                                if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+                                const respHeader = new Uint8Array([version, 0]);
+                                if (isSpeedTestSite(hostname)) {
+                                    grpcBridge.send(构造本地204响应(respHeader));
+                                    return;
+                                }
                                 if (isUDP) {
                                     if (port !== 53) throw new Error('UDP is not supported');
                                     isDnsQuery = true;
                                 }
-                                const respHeader = new Uint8Array([version, 0]);
                                 grpcBridge.send(respHeader);
                                 let rawData = rawClientData;
                                 // SNI 改写: 如果是 TLS ClientHello，改写 SNI
@@ -2123,6 +2136,52 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	let WS显式队列字节 = 0, WS显式队列条目 = 0;
 	let 判断协议类型 = null, 判断是否是木马 = null, 当前写入Socket = null, 远端写入器 = null;
 	let ss上下文 = null, ss初始化任务 = null;
+	let WS本地测速模式 = false, WS本地测速回包Socket = null;
+	let WS本地测速请求缓存 = new Uint8Array(0);
+	let WS本地测速首包响应头 = null;
+	const WS本地测速请求上限 = 64 * 1024;
+
+	const 发送WS本地测速响应 = async () => {
+		if (!WS本地测速回包Socket) return;
+		const respHeader = WS本地测速首包响应头;
+		WS本地测速首包响应头 = null;
+		await WebSocket发送并等待(WS本地测速回包Socket, 构造WS本地204响应(respHeader));
+	};
+
+	const 查找HTTP请求头结尾 = (data) => {
+		for (let i = 0; i <= data.byteLength - 4; i++) {
+			if (data[i] === 0x0d && data[i + 1] === 0x0a && data[i + 2] === 0x0d && data[i + 3] === 0x0a) return i + 4;
+		}
+		return -1;
+	};
+
+	const 处理WS本地测速数据 = async (data) => {
+		const chunk = 数据转Uint8Array(data);
+		if (!chunk.byteLength) return;
+		if (WS本地测速请求缓存.byteLength + chunk.byteLength > WS本地测速请求上限) throw new Error('WS local speed-test request is too large');
+		WS本地测速请求缓存 = 拼接字节数据(WS本地测速请求缓存, chunk);
+
+		while (WS本地测速请求缓存.byteLength) {
+			const headerEnd = 查找HTTP请求头结尾(WS本地测速请求缓存);
+			if (headerEnd === -1) return;
+			const headerText = VLESS文本解码器.decode(WS本地测速请求缓存.subarray(0, headerEnd));
+			const contentLengthMatch = headerText.match(/(?:^|\r\n)content-length\s*:\s*(\d+)/i);
+			const contentLength = contentLengthMatch ? Number(contentLengthMatch[1]) : 0;
+			const requestLength = headerEnd + contentLength;
+			if (!Number.isSafeInteger(contentLength) || requestLength > WS本地测速请求上限) throw new Error('WS local speed-test request body is too large');
+			if (WS本地测速请求缓存.byteLength < requestLength) return;
+			WS本地测速请求缓存 = WS本地测速请求缓存.slice(requestLength);
+			await 发送WS本地测速响应();
+		}
+	};
+
+	const 启用WS本地测速模式 = async (回包Socket, respHeader = null, 首请求数据 = null) => {
+		WS本地测速模式 = true;
+		WS本地测速回包Socket = 回包Socket;
+		WS本地测速请求缓存 = new Uint8Array(0);
+		WS本地测速首包响应头 = respHeader;
+		if (有效数据长度(首请求数据) > 0) await 处理WS本地测速数据(首请求数据);
+	};
 
 	const 释放远端写入器 = () => {
 		if (远端写入器) {
@@ -2369,6 +2428,10 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			throw err;
 		}
 		for (const 明文块 of 明文块数组) {
+			if (WS本地测速模式) {
+				await 处理WS本地测速数据(明文块);
+				continue;
+			}
 			let 已写入 = false;
 			try {
 				已写入 = await 写入远端(明文块, false);
@@ -2384,7 +2447,10 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			const 解析结果 = 解析SS请求(明文块, yourUUID);
 			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid ss request');
 			const { port, hostname, rawClientData } = 解析结果;
-			if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+			if (isSpeedTestSite(hostname)) {
+				await 启用WS本地测速模式(上下文.回包Socket, null, rawClientData);
+				return;
+			}
 			上下文.首包已建立 = true;
 			上下文.目标主机 = hostname;
 			上下文.目标端口 = port;
@@ -2411,6 +2477,10 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			await 处理SS数据(有效块);
 			return;
 		}
+		if (WS本地测速模式) {
+			await 处理WS本地测速数据(chunk);
+			return;
+		}
 		if (await 写入远端(有效块)) return;
 
 		if (判断协议类型 === null) {
@@ -2433,7 +2503,10 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			const 解析结果 = 解析木马请求(有效块, yourUUID);
 			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
 			const { port, hostname, rawClientData, isUDP } = 解析结果;
-			if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+			if (isSpeedTestSite(hostname)) {
+				await 启用WS本地测速模式(serverSock, null, rawClientData);
+				return;
+			}
 			if (isUDP) {
 				isDnsQuery = true;
 				if (有效数据长度(rawClientData) > 0) return 转发木马UDP数据(rawClientData, serverSock, 木马UDP上下文, ctx2);
@@ -2453,12 +2526,15 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			const 解析结果 = 解析魏烈思请求(bytes, yourUUID);
 			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
 			const { port, hostname, version, isUDP, rawClientData } = 解析结果;
-			if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+			const respHeader = new Uint8Array([version, 0]);
+			if (isSpeedTestSite(hostname)) {
+				await 启用WS本地测速模式(serverSock, respHeader, rawClientData);
+				return;
+			}
 			if (isUDP) {
 				if (port === 53) isDnsQuery = true;
 				else throw new Error('UDP is not supported');
 			}
-			const respHeader = new Uint8Array([version, 0]);
 			let rawData = rawClientData;
 			// SNI 改写: 如果是 TLS ClientHello，改写 SNI
 			if (rawData) {
@@ -5928,17 +6004,40 @@ function makeReadableStr(socket, earlyDataHeader) {
 }
 
 function isSpeedTestSite(hostname) {
-    const speedTestDomains = [atob('c3BlZWQuY2xvdWRmbGFyZS5jb20=')];
-    if (speedTestDomains.includes(hostname)) {
-        return true;
-    }
+    const speedTestDomains = ['speed.cloudflare.com', 'cp.cloudflare.com'];
+    hostname = hostname.toLowerCase();
+    return speedTestDomains.some(domain => hostname === domain || hostname.endsWith('.' + domain));
+}
 
-    for (const domain of speedTestDomains) {
-        if (hostname.endsWith('.' + domain) || hostname === domain) {
-            return true;
-        }
-    }
-    return false;
+function 构造本地204响应(respHeader = null) {
+    const 本地204响应 = new TextEncoder().encode(
+        'HTTP/1.1 204 No Content\r\n' +
+        'Content-Length: 0\r\n' +
+        'Connection: close\r\n' +
+        '\r\n'
+    );
+    if (有效数据长度(respHeader) === 0) return 本地204响应;
+    const 协议响应头 = 数据转Uint8Array(respHeader);
+    const response = new Uint8Array(协议响应头.byteLength + 本地204响应.byteLength);
+    response.set(协议响应头, 0);
+    response.set(本地204响应, 协议响应头.byteLength);
+    log(`[TCP转发] 构造本地204响应: ${response.byteLength}B`);
+    return response;
+}
+
+function 构造WS本地204响应(respHeader = null) {
+    const WS本地204响应 = new TextEncoder().encode(
+        'HTTP/1.1 204 No Content\r\n' +
+        'Content-Length: 0\r\n' +
+        'Connection: keep-alive\r\n' +
+        '\r\n'
+    );
+    if (有效数据长度(respHeader) === 0) return WS本地204响应;
+    const 协议响应头 = 数据转Uint8Array(respHeader);
+    const response = new Uint8Array(协议响应头.byteLength + WS本地204响应.byteLength);
+    response.set(协议响应头, 0);
+    response.set(WS本地204响应, 协议响应头.byteLength);
+    return response;
 }
 
 function base64ToArray(b64Str) {
@@ -9157,7 +9256,12 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
         const 目标根域名 = 目标域名.includes('.') ? 目标域名.split('.').slice(-2).join('.') : 目标域名;
         let 随机种子 = [...(目标根域名 + UUID)].reduce((a, c) => a + c.charCodeAt(0), 0);
 
-        const 洗牌后 = [...排序后数组].sort(() => (随机种子 = (随机种子 * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5);
+        const 洗牌后 = [...排序后数组];
+        for (let i = 洗牌后.length - 1; i > 0; i--) {
+            随机种子 = (随机种子 * 1103515245 + 12345) & 0x7fffffff;
+            const j = 随机种子 % (i + 1);
+            [洗牌后[i], 洗牌后[j]] = [洗牌后[j], 洗牌后[i]];
+        }
         缓存反代解析数组 = 洗牌后.slice(0, 8);
 
         缓存反代IP = proxyIP;
@@ -9201,7 +9305,7 @@ async function SOCKS5可用性验证(代理协议 = 'socks5', 代理参数, requ
             let response = '';
             try { while (true) { const { done, value } = await reader.read(); if (done) break; response += SS文本解码器.decode(value, { stream: true }); } } finally { reader.releaseLock(); }
             await tcpSocket.close();
-            return { success: true, proxy: 代理协议 + "://" + 完整代理参数, ip: response.match(/ip=(.*)/)[1], loc: response.match(/loc=(.*)/)[1], responseTime: Date.now() - startTime };
+            return { success: true, proxy: 代理协议 + "://" + 完整代理参数, ip: response.match(/ip=(.*)/)?.[1] ?? 'unknown', loc: response.match(/loc=(.*)/)?.[1] ?? 'unknown', responseTime: Date.now() - startTime };
         } catch (error) {
             try { await tcpSocket.close(); } catch (e) { }
             return { success: false, error: error.message, proxy: 代理协议 + "://" + 完整代理参数, responseTime: Date.now() - startTime };
