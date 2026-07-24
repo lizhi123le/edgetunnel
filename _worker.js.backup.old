@@ -1,4 +1,4 @@
-const Version = '2026-06-17 01:41:21(Enhanced)';
+const Version = '2026-07-24 00:00:00(Enhanced+Upstream)';
 
 // 全局 TextEncoder/TextDecoder 复用提升性能
 const $encoder = new TextEncoder();
@@ -55,7 +55,7 @@ const 图片URL正则 = /\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)(\?|$)|[?&]f=(jpg|
 // ★ 常用路径目录（随机路径用，全局复用避免重复分配）
 const 常用路径目录 = ["#","about","account","acg","act","activity","ad","admin","ads","ajax","album","albums","anime","api","app","apps","archive","archives","article","articles","ask","auth","avatar","bbs","bd","blog","blogs","book","books","bt","buy","cart","category","categories","cb","channel","channels","chat","china","city","class","classify","clip","clips","club","cn","code","collect","collection","comic","comics","community","company","config","contact","content","course","courses","cp","data","detail","details","dh","directory","discount","discuss","dl","dload","doc","docs","document","documents","doujin","download","downloads","drama","edu","en","ep","episode","episodes","event","events","f","faq","favorite","favourites","favs","feedback","file","files","film","films","forum","forums","friend","friends","game","games","gif","go","go.html","go.php","group","groups","help","home","hot","htm","html","image","images","img","index","info","intro","item","items","ja","jp","jump","jump.html","jump.php","jumping","knowledge","lang","lesson","lessons","lib","library","link","links","list","live","lives","login","logout","m","mag","magnet","mall","manhua","map","member","members","message","messages","mobile","movie","movies","music","my","new","news","note","novel","novels","online","order","out","out.html","out.php","outbound","p","page","pages","pay","payment","pdf","photo","photos","pic","pics","picture","pictures","play","player","playlist","post","posts","product","products","program","programs","project","qa","question","rank","ranking","read","readme","redirect","redirect.html","redirect.php","reg","register","res","resource","retrieve","sale","search","season","seasons","section","seller","series","service","services","setting","settings","share","shop","show","shows","site","soft","sort","source","special","star","stars","static","stock","store","stream","streaming","streams","student","study","tag","tags","task","teacher","team","tech","temp","test","thread","tool","tools","topic","topics","torrent","trade","travel","tv","txt","type","u","upload","uploads","url","urls","user","users","v","version","video","videos","view","vip","vod","watch","web","wenku","wiki","work","www","zh","zh-cn","zh-tw","zip","about-us","access","accounting","activation","address","advertising","affiliate","agreement","alert","alerts","analytics-dashboard","announcement","api-docs","apply","archive-news","article-detail","attendance","author","auto","backup","banner","billing","board","brand","browse-all","business","calendar","campaign","career","cart-checkout","catalog","certificate","checkout-success","client","cloud","comment","company-info","competition","complaint","conference","connect","console","contact-form","contest","contract","contribute","control","cookie","copyright","coupon","create","crm","currency","custom","customer","dashboard-admin","data-center","deal","default","demo","department","design","developer","development","device","directory-list","discounts","display","donate","editor","email","employee","employment","enterprise","entry","environment","error-log","estimate","exam","example","exchange","experience","expert","export","faq-page","feature","feedback-form","finance","financial","fleet","flow","form","gallery","gateway","general","global","guide","hardware","health","history-page","holiday","host","hosting","identity","image-gallery","import","index-page","industry","info-center","information","inquiry","install","instruction","insurance","integration","interface","internal","invoice","issue","job","join","journal","key","knowledge-base","lab","landing","language","launch","legal","license","limited","location","log","logging","logs","machine","mail","manage","management","manual","map-view","market","marketing","master","media-center","member-area","menu","merchant","message-board","meta","method","metrics","misc","moderator","module","monitor","monthly","navigation","network","newsletter","notification","office","official","open","operation","opinion","option","order-detail","organization","overview","owner","package","partner","password","payment-info","people","performance","personal","phone","photo-gallery","plan","platform","policy","portal","portfolio","position","preferences","press-release","preview","pricing","print","privacy-policy","problem","process","profile-edit","project-detail","promotion","property","proposal","public","publication","purchase","quality","queue","quote","ranking-list","rate","rating","record","register-form","release","report","reporting","request","requirement","research","resource-center","response","result","resume","review","role","rule","sales","sample","schedule","school","score","screen","script","search-results","section-list","security","server","session","setting-page","setup","shop-cart","shopping","signin","signup-form","site-map","solution","staff","statistics","status-page","storage","store-front","studio","submission","subscribe-form","subscription","success","summary","support-center","survey","system","table","task-list","team-member","template","terms-of-service","test-case","ticket","timeline","toolbox","topic-list","tour","tracking-info","training","transaction","transfer","translation","tutorial","update","upgrade","upload-file","usage","user-guide","utility","validation","value","vendor","verification","version-info","visitor","voice","webmail","workflow"];
 
-// ★ 非管理员/非随机路径请求速率限制（基于 CF-Connecting-IP，每 IP 每小时最多 12 次）
+// ★ 非管理员/非随机路径请求速率限制（基于 CF-Connecting-IP，每 IP 每小时最多 6 次）
 const 速率限制池 = new Map();
 const 速率限制窗口毫秒 = 3600000;
 const 登录限流计数 = new Map();  // 登录失败内存计数 { count, time }，1h 自动过期
@@ -67,7 +67,7 @@ function 检查速率限制(客户端IP) {
     const 记录 = 速率限制池.get(客户端IP);
     if (!记录) return true;
     记录.时间戳队列 = 记录.时间戳队列.filter(t => t > 窗口起点);
-    if (记录.时间戳队列.length >= 12) return false;
+    if (记录.时间戳队列.length >= 6) return false;
     return true;
 }
 
@@ -113,15 +113,20 @@ async function 记录违规并检查拉黑(客户端IP, env, ctx) {
         const key = `违规计数:${客户端IP}`;
         const raw = await withTimeout(env.KV.get(key), 3000);
         const 当前计数 = (raw ? Number(raw) : 0) + 1;
-        ctx.waitUntil(env.KV.put(key, String(当前计数), { expirationTtl: 86400 * 30 }));
-        if (当前计数 >= 永久黑名单阈值) {
-            const 黑名单 = await 加载永久黑名单(env);
-            if (!黑名单.has(客户端IP)) {
-                黑名单.add(客户端IP);
-                永久黑名单缓存时间 = Date.now();
-                ctx.waitUntil(env.KV.put('永久黑名单', JSON.stringify([...黑名单])));
-                console.warn(`[永久黑名单] IP ${客户端IP} 累计违规 ${当前计数} 次，已加入永久黑名单`);
-            }
+        const 黑名单 = await 加载永久黑名单(env);
+        const 已永久封禁 = 黑名单.has(客户端IP);
+        if (已永久封禁) {
+            // 已永久黑名单 IP：计数持久保存，不重置（无 expirationTtl）
+            ctx.waitUntil(env.KV.put(key, String(当前计数)));
+        } else {
+            // 非永久黑名单 IP：计数每周重置（7 天过期自动归零）
+            ctx.waitUntil(env.KV.put(key, String(当前计数), { expirationTtl: 86400 * 7 }));
+        }
+        if (当前计数 >= 永久黑名单阈值 && !已永久封禁) {
+            黑名单.add(客户端IP);
+            永久黑名单缓存时间 = Date.now();
+            ctx.waitUntil(env.KV.put('永久黑名单', JSON.stringify([...黑名单])));
+            console.warn(`[永久黑名单] IP ${客户端IP} 累计违规 ${当前计数} 次，已加入永久黑名单`);
         }
     } catch (err) {
         console.warn('[永久黑名单] 记录违规失败:', err.message);
@@ -1181,7 +1186,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
             } else if (!envUUID) return fetch(Pages静态页面 + '/noKV').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }); });
         }
 
-        // ★ 速率限制 + 永久黑名单：非管理路径的请求段必须在常用路径目录中，否则限流（每 IP 每小时最多 12 次）
+        // ★ 速率限制 + 永久黑名单：非管理路径的请求段必须在常用路径目录中，否则限流（每 IP 每小时最多 6 次）
         if (管理员密码 && request.method === 'GET' && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && 访问路径 !== 'version') {
             const 路径段 = 访问路径.split('/').filter(Boolean);
             if (路径段.length > 0 && !路径段.every(段 => 常用路径目录.includes(段))) {
@@ -1425,6 +1430,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
 async function 处理XHTTP请求(request, yourUUID, ctx2) {
     const { 反代IP, 调试日志打印 } = ctx2;
     const log = (...args) => ctx2.log(...args);
+    ctx2.request = request;
     if (!request.body) return new Response('Bad Request', { status: 400 });
     const reader = request.body.getReader();
     const 首包 = await 读取XHTTP首包(reader, yourUUID);
@@ -1440,7 +1446,14 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
     xhttp活动连接数++;
     if (isSpeedTestSite(首包.hostname)) {
         try { reader.releaseLock(); } catch (e) { }
-        return new Response('Forbidden', { status: 403 });
+        return new Response(构造本地204响应(首包.respHeader), {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/octet-stream',
+                'X-Accel-Buffering': 'no',
+                'Cache-Control': 'no-store'
+            }
+        });
     }
     if (首包.isUDP && 首包.协议 !== 'trojan' && 首包.port !== 53) {
         try { reader.releaseLock(); } catch (e) { }
@@ -1765,6 +1778,7 @@ const 尝试解析木马首包 = (data) => {
 async function 处理gRPC请求(request, yourUUID, ctx2) {
     const { 反代IP, 调试日志打印 } = ctx2;
     const log = (...args) => ctx2.log(...args);
+    ctx2.request = request;
     if (!request.body) return new Response('Bad Request', { status: 400 });
     const reader = request.body.getReader();
     const remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
@@ -1967,7 +1981,10 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
                                 const 解析结果 = 解析木马请求(有效首包, yourUUID);
                                 if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
                                 const { port, hostname, rawClientData, isUDP } = 解析结果;
-                                if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+                                if (isSpeedTestSite(hostname)) {
+                                    grpcBridge.send(构造本地204响应());
+                                    return;
+                                }
                                 if (isUDP) {
                                     if (port !== 53) throw new Error('UDP is not supported');
                                     isDnsQuery = true;
@@ -1986,12 +2003,15 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
                                 const 解析结果 = 解析魏烈思请求(有效首包, yourUUID);
                                 if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
                                 const { port, hostname, rawClientData, version, isUDP } = 解析结果;
-                                if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+                                const respHeader = new Uint8Array([version, 0]);
+                                if (isSpeedTestSite(hostname)) {
+                                    grpcBridge.send(构造本地204响应(respHeader));
+                                    return;
+                                }
                                 if (isUDP) {
                                     if (port !== 53) throw new Error('UDP is not supported');
                                     isDnsQuery = true;
                                 }
-                                const respHeader = new Uint8Array([version, 0]);
                                 grpcBridge.send(respHeader);
                                 let rawData = rawClientData;
                                 // SNI 改写: 如果是 TLS ClientHello，改写 SNI
@@ -2116,6 +2136,52 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	let WS显式队列字节 = 0, WS显式队列条目 = 0;
 	let 判断协议类型 = null, 判断是否是木马 = null, 当前写入Socket = null, 远端写入器 = null;
 	let ss上下文 = null, ss初始化任务 = null;
+	let WS本地测速模式 = false, WS本地测速回包Socket = null;
+	let WS本地测速请求缓存 = new Uint8Array(0);
+	let WS本地测速首包响应头 = null;
+	const WS本地测速请求上限 = 64 * 1024;
+
+	const 发送WS本地测速响应 = async () => {
+		if (!WS本地测速回包Socket) return;
+		const respHeader = WS本地测速首包响应头;
+		WS本地测速首包响应头 = null;
+		await WebSocket发送并等待(WS本地测速回包Socket, 构造WS本地204响应(respHeader));
+	};
+
+	const 查找HTTP请求头结尾 = (data) => {
+		for (let i = 0; i <= data.byteLength - 4; i++) {
+			if (data[i] === 0x0d && data[i + 1] === 0x0a && data[i + 2] === 0x0d && data[i + 3] === 0x0a) return i + 4;
+		}
+		return -1;
+	};
+
+	const 处理WS本地测速数据 = async (data) => {
+		const chunk = 数据转Uint8Array(data);
+		if (!chunk.byteLength) return;
+		if (WS本地测速请求缓存.byteLength + chunk.byteLength > WS本地测速请求上限) throw new Error('WS local speed-test request is too large');
+		WS本地测速请求缓存 = 拼接字节数据(WS本地测速请求缓存, chunk);
+
+		while (WS本地测速请求缓存.byteLength) {
+			const headerEnd = 查找HTTP请求头结尾(WS本地测速请求缓存);
+			if (headerEnd === -1) return;
+			const headerText = VLESS文本解码器.decode(WS本地测速请求缓存.subarray(0, headerEnd));
+			const contentLengthMatch = headerText.match(/(?:^|\r\n)content-length\s*:\s*(\d+)/i);
+			const contentLength = contentLengthMatch ? Number(contentLengthMatch[1]) : 0;
+			const requestLength = headerEnd + contentLength;
+			if (!Number.isSafeInteger(contentLength) || requestLength > WS本地测速请求上限) throw new Error('WS local speed-test request body is too large');
+			if (WS本地测速请求缓存.byteLength < requestLength) return;
+			WS本地测速请求缓存 = WS本地测速请求缓存.slice(requestLength);
+			await 发送WS本地测速响应();
+		}
+	};
+
+	const 启用WS本地测速模式 = async (回包Socket, respHeader = null, 首请求数据 = null) => {
+		WS本地测速模式 = true;
+		WS本地测速回包Socket = 回包Socket;
+		WS本地测速请求缓存 = new Uint8Array(0);
+		WS本地测速首包响应头 = respHeader;
+		if (有效数据长度(首请求数据) > 0) await 处理WS本地测速数据(首请求数据);
+	};
 
 	const 释放远端写入器 = () => {
 		if (远端写入器) {
@@ -2362,6 +2428,10 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			throw err;
 		}
 		for (const 明文块 of 明文块数组) {
+			if (WS本地测速模式) {
+				await 处理WS本地测速数据(明文块);
+				continue;
+			}
 			let 已写入 = false;
 			try {
 				已写入 = await 写入远端(明文块, false);
@@ -2377,7 +2447,10 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			const 解析结果 = 解析SS请求(明文块, yourUUID);
 			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid ss request');
 			const { port, hostname, rawClientData } = 解析结果;
-			if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+			if (isSpeedTestSite(hostname)) {
+				await 启用WS本地测速模式(上下文.回包Socket, null, rawClientData);
+				return;
+			}
 			上下文.首包已建立 = true;
 			上下文.目标主机 = hostname;
 			上下文.目标端口 = port;
@@ -2404,6 +2477,10 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			await 处理SS数据(有效块);
 			return;
 		}
+		if (WS本地测速模式) {
+			await 处理WS本地测速数据(有效块);
+			return;
+		}
 		if (await 写入远端(有效块)) return;
 
 		if (判断协议类型 === null) {
@@ -2421,12 +2498,19 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			await 处理SS数据(有效块);
 			return;
 		}
+		if (WS本地测速模式) {
+			await 处理WS本地测速数据(有效块);
+			return;
+		}
 		if (await 写入远端(有效块)) return;
 		if (判断协议类型 === '木马') {
 			const 解析结果 = 解析木马请求(有效块, yourUUID);
 			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
 			const { port, hostname, rawClientData, isUDP } = 解析结果;
-			if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+			if (isSpeedTestSite(hostname)) {
+				await 启用WS本地测速模式(serverSock, null, rawClientData);
+				return;
+			}
 			if (isUDP) {
 				isDnsQuery = true;
 				if (有效数据长度(rawClientData) > 0) return 转发木马UDP数据(rawClientData, serverSock, 木马UDP上下文, ctx2);
@@ -2446,12 +2530,15 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			const 解析结果 = 解析魏烈思请求(bytes, yourUUID);
 			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
 			const { port, hostname, version, isUDP, rawClientData } = 解析结果;
-			if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+			const respHeader = new Uint8Array([version, 0]);
+			if (isSpeedTestSite(hostname)) {
+				await 启用WS本地测速模式(serverSock, respHeader, rawClientData);
+				return;
+			}
 			if (isUDP) {
 				if (port === 53) isDnsQuery = true;
 				else throw new Error('UDP is not supported');
 			}
-			const respHeader = new Uint8Array([version, 0]);
 			let rawData = rawClientData;
 			// SNI 改写: 如果是 TLS ClientHello，改写 SNI
 			if (rawData) {
@@ -5921,17 +6008,40 @@ function makeReadableStr(socket, earlyDataHeader) {
 }
 
 function isSpeedTestSite(hostname) {
-    const speedTestDomains = [atob('c3BlZWQuY2xvdWRmbGFyZS5jb20=')];
-    if (speedTestDomains.includes(hostname)) {
-        return true;
-    }
+	const speedTestDomains = ['speed.cloudflare.com', 'cp.cloudflare.com'];
+	hostname = hostname.toLowerCase();
+	return speedTestDomains.some(domain => hostname === domain || hostname.endsWith('.' + domain));
+}
 
-    for (const domain of speedTestDomains) {
-        if (hostname.endsWith('.' + domain) || hostname === domain) {
-            return true;
-        }
-    }
-    return false;
+function 构造本地204响应(respHeader = null) {
+	const 本地204响应 = $encoder.encode(
+		'HTTP/1.1 204 No Content\r\n' +
+		'Content-Length: 0\r\n' +
+		'Connection: close\r\n' +
+		'\r\n'
+	);
+	if (有效数据长度(respHeader) === 0) return 本地204响应;
+	const 协议响应头 = 数据转Uint8Array(respHeader);
+	const response = new Uint8Array(协议响应头.byteLength + 本地204响应.byteLength);
+	response.set(协议响应头, 0);
+	response.set(本地204响应, 协议响应头.byteLength);
+	log(`[TCP转发] 构造本地204响应: ${response.byteLength}B`);
+	return response;
+}
+
+function 构造WS本地204响应(respHeader = null) {
+	const WS本地204响应 = $encoder.encode(
+		'HTTP/1.1 204 No Content\r\n' +
+		'Content-Length: 0\r\n' +
+		'Connection: keep-alive\r\n' +
+		'\r\n'
+	);
+	if (有效数据长度(respHeader) === 0) return WS本地204响应;
+	const 协议响应头 = 数据转Uint8Array(respHeader);
+	const response = new Uint8Array(协议响应头.byteLength + WS本地204响应.byteLength);
+	response.set(协议响应头, 0);
+	response.set(WS本地204响应, 协议响应头.byteLength);
+	return response;
 }
 
 function base64ToArray(b64Str) {
@@ -7421,7 +7531,11 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
         const 日志CC = 缩略地区
             ? (request.cf?.country || 'N/A')
             : `${request.cf?.country || 'N/A'} ${request.cf?.city || 'N/A'}`;
-        const 日志内容 = { TYPE: 请求类型, IP: 日志IP, ASN: `AS${request.cf?.asn || '0'} ${request.cf?.asOrganization || 'Unknown'}`, CC: 日志CC, URL: sanitizeURL(request.url), UA: sanitizedUA, TIME: 当前时间.getTime() };
+        // [隐私增强] ASN 组织名称默认隐藏（设 LOG_ASN_ORG=true 显示），防止缩小定位范围
+        const 显示ASN组织 = ['1', 'true'].includes(env.LOG_ASN_ORG);
+        const ASN编号 = `AS${request.cf?.asn || '0'}`;
+        const ASN文本 = 显示ASN组织 ? `${ASN编号} ${request.cf?.asOrganization || 'Unknown'}` : ASN编号;
+        const 日志内容 = { TYPE: 请求类型, IP: 日志IP, ASN: ASN文本, CC: 日志CC, URL: sanitizeURL(request.url), UA: sanitizedUA, TIME: 当前时间.getTime() };
         if (config_JSON.TG.启用) {
             try {
                 if (!tgJSONCache || Date.now() - tgJSONCacheTime > 300000) {
@@ -7488,14 +7602,18 @@ async function sendMessage(BotToken, ChatID, 日志内容, config_JSON) {
             `📅 <b>时间：</b>${请求时间}\n` +
             `${config_JSON.CF.Usage.success ? `📊 <b>请求用量：</b>${config_JSON.CF.Usage.total}/${config_JSON.CF.Usage.max} <b>${((config_JSON.CF.Usage.total / config_JSON.CF.Usage.max) * 100).toFixed(2)}%</b>\n` : ''}`;
 
-        const url = `https://api.telegram.org/bot${BotToken}/sendMessage?chat_id=${ChatID}&parse_mode=HTML&text=${encodeURIComponent(msg)}`;
-        return fetchWithTimeout(url, {
-            method: 'GET',
+        // [隐私增强] 改用 POST 发送，避免消息内容和 BotToken 暴露在 URL 中
+        const tgApiUrl = `https://api.telegram.org/bot${BotToken}/sendMessage`;
+        return fetchWithTimeout(tgApiUrl, {
+            method: 'POST',
             headers: {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'User-Agent': 日志内容.UA || 'Unknown',
-            }
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                chat_id: ChatID,
+                parse_mode: 'HTML',
+                text: msg,
+            }),
         }, 10000);
     } catch (error) { console.error('Error sending message:', error) }
 }
