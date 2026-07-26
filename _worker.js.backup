@@ -1018,6 +1018,22 @@ html, body { background: transparent !important; }
                                 }
                             };
 
+                            // ★ 节点 IP:Port 去重集合——确保不同来源的同名地址不重复输出
+                            const 已处理节点IP = new Set();
+                            const 提取IP键 = (ip值) => {
+                                const 无备注 = ip值.split('#')[0];
+                                const 末冒号 = 无备注.lastIndexOf(':');
+                                if (末冒号 === -1) return 无备注 + ':443';
+                                if (无备注.includes('[') && 末冒号 < 无备注.lastIndexOf(']')) return 无备注 + ':443';
+                                return 无备注;
+                            };
+                            const 是IP已处理 = (ip值) => {
+                                const 键 = 提取IP键(ip值);
+                                if (已处理节点IP.has(键)) return true;
+                                已处理节点IP.add(键);
+                                return false;
+                            };
+
                             if (!url.searchParams.has('sub') && config_JSON.优选订阅生成.local) { // 本地生成订阅
                                 // 优化：避免重复读取 ADD.txt，只读一次后复用
                                 let 完整优选列表;
@@ -1080,13 +1096,13 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                                                 for (const node of res.Nodes) 完整优选IP.push({ type: 'node', value: node });
                                             }
                                             if (res.IPs && res.IPs.length > 0) {
-                                                for (const ip of res.IPs) 完整优选IP.push({ type: 'ip', value: ip });
+                                                for (const ip of res.IPs) { if (!是IP已处理(ip)) 完整优选IP.push({ type: 'ip', value: ip }); }
                                             }
                                         }
                                     } else if (item.type === 'node') {
                                         完整优选IP.push({ type: 'node', value: item.value });
                                     } else if (item.type === 'ip') {
-                                        完整优选IP.push({ type: 'ip', value: item.value });
+                                        if (!是IP已处理(item.value)) 完整优选IP.push({ type: 'ip', value: item.value });
                                     }
                                 }
                             } else { // 优选订阅生成器
@@ -1097,7 +1113,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                                     for (const node of nodes) 完整优选IP.push({ type: 'node', value: node });
                                 }
                                 for (const ip of 优选生成器IP数组) {
-                                    完整优选IP.push({ type: 'ip', value: ip });
+                                    if (!是IP已处理(ip)) 完整优选IP.push({ type: 'ip', value: ip });
                                 }
                             }
                             订阅内容 = await 异步批量转换节点(完整优选IP, IP转换节点) + '\n';
