@@ -1194,6 +1194,8 @@ html, body { background: transparent !important; }
                                 const 末冒号 = 无备注.lastIndexOf(':');
                                 if (末冒号 === -1) return 无备注 + ':443';
                                 if (无备注.includes('[') && 末冒号 < 无备注.lastIndexOf(']')) return 无备注 + ':443';
+                                // 裸 IPv6（纯十六进制+冒号，无括号）→ 补括号 + 缺省端口（与 cfnew 提取节点去重键 语义一致）
+                                if (/^[0-9a-fA-F:]+$/.test(无备注)) return '[' + 无备注 + ']:443';
                                 return 无备注;
                             };
                             const 是IP已处理 = (ip值) => {
