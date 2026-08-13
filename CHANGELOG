@@ -1,3 +1,20 @@
+## [2.1.20260813233200] - 2026-08-13 23:32:00
+
+### ADD
+
+- 合并上游 **XHTTP Padding 混淆** 支持：新增 `xPaddingObfsMode`（tokenish 方法 + queryInHeader 放置），XHTTP 传输类型输出 `extra=` 参数（含 Padding 头/键），需与对应客户端配置配合。
+- XHTTP 上行数据合包：新增 **创建上行Grain合包流**，上行数据按 8MB/4096 条上限合包写入，降低小包堆积。
+- XHTTP UDP 转发：新增 **处理叉HTTPUDP请求**，支持 Trojan UDP 反代转发（含空闲超时自动关闭）。
+
+### Change
+
+- XHTTP 建连优化：**forwardataTCP** 新增仅建立连接模式（**仅建立连接** 参数），XHTTP 先建连后搬运，避免连接抢占。
+
+### Debug
+
+- 修复 XHTTP UDP Trojan 反代首包使用 `首包.原始数据`（本地为 null）导致首包丢失的问题，改用 `首包.rawData`。
+- 修复链式代理路径（`/video/...`）与 Trojan 反代路径（`/trojan=...`）尾部斜杠导致解析失败的问题（`.replace(/\/+$/, '')`）。
+
 ## [2.1.20260609132903] - 2026-06-09 13:29:03
 
 ### Debug
