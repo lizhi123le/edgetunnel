@@ -1,4 +1,4 @@
-const Version = '2026-07-24 15:03:59(Enhanced)';
+const Version = '2026-07-29 23:57:34(Enhanced)';
 
 // 全局 TextEncoder/TextDecoder 复用提升性能
 const $encoder = new TextEncoder();
@@ -59,6 +59,7 @@ const 常用路径目录 = ["#","about","account","acg","act","activity","ad","a
 const 速率限制池 = new Map();
 const 速率限制窗口毫秒 = 3600000;
 const 登录限流计数 = new Map();  // 登录失败内存计数 { count, time }，1h 自动过期
+const 订阅限流计数 = new Map();  // 订阅速率内存计数 { count, 小时桶 }，按小时桶对齐 KV（Fix1：KV 每 IP 每小时最多 1 写）
 
 function 检查速率限制(客户端IP) {
     if (!客户端IP) return true;
@@ -267,7 +268,7 @@ const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
 const 上行合包目标字节 = 20 * 1024, 上行队列最大字节 = 8 * 1024 * 1024, 上行队列最大条目 = 4096;
 const 下行Grain包字节 = 32 * 1024, 下行Grain尾部阈值 = 512, 下行Grain低水位字节 = Math.max(4096, 下行Grain尾部阈值 * 12), 下行Grain最大等待轮次 = 4;
-const 默认TCP并发拨号数 = 2, 默认反代并发拨号数 = 1, 默认预加载竞速拨号 = true;
+const 默认TCP并发拨号数 = 2, 默认反代并发拨号数 = 1, 默认预加载竞速拨号 = false;
 // TCP 预加载 DNS 缓存（短 TTL，仅用于直连竞速拨号，不与其他 DNS 缓存冲突）
 const 预加载DNS缓存 = new Map();
 const 预加载DNS缓存TTL = 30 * 1000;
@@ -638,7 +639,7 @@ export default {
             ctx2.反代IP = (`${request.cf?.colo || 'unknown'}.${特征码字典[0]}.${特征码字典[1]}SsSs.nEt`).toLowerCase();
             ctx2.启用反代兜底 = true;
         }
-        ctx2.预加载竞速拨号 = !['0', 'false'].includes(String(env.PRELOAD_RACE_DIAL ?? '').trim().toLowerCase());
+        ctx2.预加载竞速拨号 = ['1', 'true'].includes(env.PRELOAD_RACE_DIAL) || 默认预加载竞速拨号;
         ctx2.反代并发拨号数 = Math.max(1, Number(env.PROXY_CONCURRENT_DIAL) || 默认反代并发拨号数);
         ctx2.TCP并发拨号数 = Math.max(1, Number(env.TCP_CONCURRENT_DIAL) || 默认TCP并发拨号数);
         if (!env.TCP_CONCURRENT_DIAL && 默认TCP并发拨号数 !== 1 && 识别运营商(request) === 'cmcc') ctx2.TCP并发拨号数 = 1;
@@ -839,9 +840,24 @@ export default {
                                 // 验证配置完整性
                                 if (!newConfig.UUID || !newConfig.HOST) return new Response(JSON.stringify({ error: '配置不完整' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 
-                                // 保存到 KV（带超时保护）
                                 // [隐私增强] 加密存储配置内容（ENCRYPT_KEY 未设置时透传）
-                                await withTimeout(env.KV.put('config.json', await encryptKV(JSON.stringify(newConfig, null, 2), env)), 3000);
+                                // ★ 变更检测（Fix4-2）：比对 KV 当前实际值（AES-CBC 随机 IV 密文必不同，只能比明文）；跨 isolate 可靠，KV 已是该值才跳过
+                                const 待保存明文 = JSON.stringify(newConfig, null, 2);
+                                let 当前KV明文 = null;
+                                try {
+                                    const 原始KV值 = await withTimeout(env.KV.get('config.json'), 3000);
+                                    if (原始KV值) 当前KV明文 = await decryptKV(原始KV值, env);
+                                } catch (e) { /* 读失败 → 当前KV明文=null → 走正常写入 */ }
+                                if (当前KV明文 === 待保存明文) {
+                                    // 未变更：跳过 KV 写 + 版本号，仅清缓存返回成功
+                                    configJSONCache = null;
+                                    configJSONCacheKey = null;
+                                    configJSONCacheTime = 0;
+                                    configVersion = null;
+                                    return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                }
+                                // 保存到 KV（带超时保护）
+                                await withTimeout(env.KV.put('config.json', await encryptKV(待保存明文, env)), 3000);
                                 // 更新版本号以通知全球节点清除 Cache API 缓存
                                 ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
                                 // 清除当前实例缓存
@@ -873,8 +889,22 @@ export default {
                                     }
                                 }
 
+                                // ★ 变更检测（Fix4-2）：比对 KV 当前实际值；CF_JSON 为重组对象，须在写前构造完再比较；跨 isolate 可靠
+                                const 待保存明文 = JSON.stringify(CF_JSON, null, 2);
+                                let 当前KV明文 = null;
+                                try {
+                                    const 原始KV值 = await withTimeout(env.KV.get('cf.json'), 3000);
+                                    if (原始KV值) 当前KV明文 = await decryptKV(原始KV值, env);
+                                } catch (e) { /* 读失败 → 当前KV明文=null → 走正常写入 */ }
+                                if (当前KV明文 === 待保存明文) {
+                                    configJSONCache = null;
+                                    configJSONCacheKey = null;
+                                    configJSONCacheTime = 0;
+                                    configVersion = null;
+                                    return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                }
                                 // 保存到 KV（带超时保护）
-                                await withTimeout(env.KV.put('cf.json', await encryptKV(JSON.stringify(CF_JSON, null, 2), env)), 3000);
+                                await withTimeout(env.KV.put('cf.json', await encryptKV(待保存明文, env)), 3000);
                                 // 更新版本号
                                 ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
                                 // 清除当前实例缓存
@@ -891,13 +921,29 @@ export default {
                         } else if (访问路径 === 'admin/tg.json') { // 保存tg.json配置
                             try {
                                 const newConfig = await request.json();
+                                let TG_JSON;
                                 if (newConfig.init && newConfig.init === true) {
-                                    const TG_JSON = { BotToken: null, ChatID: null };
-                                    await withTimeout(env.KV.put('tg.json', await encryptKV(JSON.stringify(TG_JSON, null, 2), env)), 3000);
+                                    TG_JSON = { BotToken: null, ChatID: null };
                                 } else {
                                     if (!newConfig.BotToken || !newConfig.ChatID) return new Response(JSON.stringify({ error: '配置不完整' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-                                    await withTimeout(env.KV.put('tg.json', await encryptKV(JSON.stringify(newConfig, null, 2), env)), 3000);
+                                    TG_JSON = newConfig;
                                 }
+                                // ★ 变更检测（Fix4-2）：比对 KV 当前实际值；init 分支与普通分支各自明文；跨 isolate 可靠
+                                const 待保存明文 = JSON.stringify(TG_JSON, null, 2);
+                                let 当前KV明文 = null;
+                                try {
+                                    const 原始KV值 = await withTimeout(env.KV.get('tg.json'), 3000);
+                                    if (原始KV值) 当前KV明文 = await decryptKV(原始KV值, env);
+                                } catch (e) { /* 读失败 → 当前KV明文=null → 走正常写入 */ }
+                                if (当前KV明文 === 待保存明文) {
+                                    configJSONCache = null;
+                                    configJSONCacheKey = null;
+                                    configJSONCacheTime = 0;
+                                    configVersion = null;
+                                    return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                }
+                                // 保存到 KV（带超时保护）
+                                await withTimeout(env.KV.put('tg.json', await encryptKV(待保存明文, env)), 3000);
                                 // 更新版本号以通知全球节点清除 Cache API 缓存
                                 ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
                                 // 清除当前实例缓存
@@ -914,6 +960,15 @@ export default {
                         } else if (区分大小写访问路径 === 'admin/ADD.txt') { // 保存自定义优选IP
                             try {
                                 const customIPs = await request.text();
+                                // ★ 变更检测（Fix4-2）：纯文本直接比对 KV 当前实际值；跨 isolate 可靠，KV 已是该值才跳过
+                                let 当前ADD明文 = null;
+                                try {
+                                    const 原始KV值 = await withTimeout(env.KV.get('ADD.txt'), 3000);
+                                    if (原始KV值) 当前ADD明文 = 原始KV值;
+                                } catch (e) { /* 读失败 → 当前ADD明文=null → 走正常写入 */ }
+                                if (当前ADD明文 === customIPs) {
+                                    return new Response(JSON.stringify({ success: true, message: '自定义IP已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+                                }
                                 await withTimeout(env.KV.put('ADD.txt', customIPs), 3000);// 保存到 KV（带超时保护）
                                 // 更新版本号以通知全球节点清除 Cache API 缓存
                                 ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
@@ -984,13 +1039,21 @@ html, body { background: transparent !important; }
                     ]);
                     const 订阅转换后端请求订阅 = 请求TOKEN === 今日订阅转换后端专属TOKEN || 请求TOKEN === 昨日订阅转换后端专属TOKEN;
                     if (用户客户端请求订阅 || 订阅转换后端请求订阅 || 作为优选订阅生成器) {
-                        // 订阅速率限制：单IP 10次/小时
-                        if (env.KV) {
-                            const subCount = await env.KV.get(`sub_rate:${访问IP}`);
-                            if (Number(subCount) >= 10) {
-                                return sanitizedErrorResponse('订阅请求过于频繁，请稍后重试', 429);
-                            }
-                            ctx.waitUntil(env.KV.put(`sub_rate:${访问IP}`, String(Number(subCount) + 1), { expirationTtl: 3600 }));
+                        // 订阅速率限制：单IP 10次/小时（按小时桶 KV 键，仅桶首次创建写 KV，避免每请求写）
+                        const 当前小时桶 = Math.floor(Date.now() / 3600000);
+                        const 小时桶键 = `sub_rate:${访问IP}:${当前小时桶}`;
+                        const kv桶计数 = env.KV ? Number(await env.KV.get(小时桶键) || 0) : 0;
+                        const 内存记录 = 订阅限流计数.get(访问IP);
+                        const 内存计数 = (内存记录 && 内存记录.小时桶 === 当前小时桶) ? 内存记录.count : 0;
+                        if (kv桶计数 >= 10 || 内存计数 >= 10) {
+                            return sanitizedErrorResponse('订阅请求过于频繁，请稍后重试', 429);
+                        }
+                        const 当前计数 = Math.max(kv桶计数, 内存计数);
+                        const 新计数 = 当前计数 + 1;
+                        订阅限流计数.set(访问IP, { count: 新计数, 小时桶: 当前小时桶 });
+                        // 仅当该小时桶在 KV 不存在时写入（每 IP 每小时最多 1 次 KV put；TTL 2h 覆盖桶边界）
+                        if (kv桶计数 === 0 && env.KV) {
+                            ctx.waitUntil(env.KV.put(小时桶键, String(新计数), { expirationTtl: 7200 }));
                         }
                         config_JSON = await 读取config_JSON(env, host, userID, UA, false, 订阅TOKEN);
                         ctx2.config_JSON = config_JSON;
@@ -1131,6 +1194,8 @@ html, body { background: transparent !important; }
                                 const 末冒号 = 无备注.lastIndexOf(':');
                                 if (末冒号 === -1) return 无备注 + ':443';
                                 if (无备注.includes('[') && 末冒号 < 无备注.lastIndexOf(']')) return 无备注 + ':443';
+                                // 裸 IPv6（纯十六进制+冒号，无括号）→ 补括号 + 缺省端口（与 cfnew 提取节点去重键 语义一致）
+                                if (/^[0-9a-fA-F:]+$/.test(无备注)) return '[' + 无备注 + ']:443';
                                 return 无备注;
                             };
                             const 是IP已处理 = (ip值) => {
@@ -3689,6 +3754,7 @@ function 创建SNI混合器(config = {}, env = null) {
     let 混合计数 = { 主域: 0, 掩护: 0, 总计: 0 };
     let 需Flush = false;
     let 上次KVFlush时间 = 0;
+    let 上次同步标记刷新时间 = 0;  // 同步标记 TTL 刷新节流（Fix3）：12h 才刷一次，避免每次 flush 同值重写
     const KV_FLUSH最小间隔 = 180000; // 180秒（3分钟）最小间隔 — KV免费写入限额1000/天，每次flush约2次put，480次*2=960写/天 < 1000安全线
     const kvKey = 'sni_mixing_stats';
 
@@ -3751,8 +3817,11 @@ function 创建SNI混合器(config = {}, env = null) {
                 需Flush = false;  // 并发插入随下次选择SNI自然触发flush，避免连续KV写
                 return snapshot;  // ✅ 返回数据，供获取聚合统计直接展示
             }
-            // 刷新同步标记 TTL（86400s = 24h，关同步后标记过期 → 下次开同步自动重置）
-            await env.KV.put('sni_mixing_sync_active', '1', { expirationTtl: 86400 });
+            // 刷新同步标记 TTL（86400s = 24h，关同步后标记过期 → 下次开同步自动重置）；同值去重（Fix3）：12h 才刷一次
+            if (Date.now() - 上次同步标记刷新时间 > 43200000) {
+                await env.KV.put('sni_mixing_sync_active', '1', { expirationTtl: 86400 });
+                上次同步标记刷新时间 = Date.now();
+            }
 
             const prevRaw = await env.KV.get(kvKey, 'text');
             const prev = prevRaw ? JSON.parse(prevRaw) : { 主域: 0, 掩护: 0, 总计: 0 };
@@ -7795,7 +7864,9 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
         
         globalLogQueue.push(日志内容);
         
-        if (globalLogQueue.length >= 20 || (globalLogQueue.length > 0 && Date.now() - lastLogFlushTime > 60000)) {
+        const KV日志flush条数 = Number(env.KV_LOG_FLUSH_MAX) || 50;
+        const KV日志flush间隔 = Number(env.KV_LOG_FLUSH_INTERVAL_MS) || 300000; // 默认5分钟
+        if (globalLogQueue.length >= KV日志flush条数 || (globalLogQueue.length > 0 && Date.now() - lastLogFlushTime > KV日志flush间隔)) {
             const flushQueue = [...globalLogQueue];
             globalLogQueue = [];
             lastLogFlushTime = Date.now();
