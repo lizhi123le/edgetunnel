@@ -1141,7 +1141,7 @@ html, body { background: transparent !important; }
                         let 订阅内容 = '';
 
                         if (['mixed', 'base64', 'v2ray'].includes(订阅类型)) {
-                            const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('0-5,100-1200,100-200,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('100-1200,0-5,tlshello,100-200')}` : config_JSON.TLS填充 ? `&padding=${encodeURIComponent('0-128')}` : '';
+                            const TLS分片参数 = 获取TLS分片参数(config_JSON);
                             const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 
                             const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
@@ -7780,6 +7780,12 @@ function 获取传输协议配置(config_JSON) {
 	};
 }
 
+function 获取TLS分片参数(config_JSON) {
+	const 分片 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1-36,70-700,100-200,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('70-700,1-36,tlshello,100-200')}` : '';
+	const 填充 = config_JSON.TLS填充 ? `&padding=${encodeURIComponent('0-128')}` : '';
+	return 分片 + 填充;
+}
+
 function 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器) {
 	let 传输路径参数值 = 作为优选订阅生成器 ? '/' : (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径);
 	if (config_JSON.启用0RTT && config_JSON.传输协议 === 'ws' && !作为优选订阅生成器) {
@@ -8954,7 +8960,11 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 
     if (!config_JSON.TLS分片 && config_JSON.TLS分片 !== null) config_JSON.TLS分片 = null;
     if (config_JSON.TLS填充 === undefined) config_JSON.TLS填充 = true;
-    const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('0-5,100-1200,100-200,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('100-1200,0-5,tlshello,100-200')}` : config_JSON.TLS填充 ? `&padding=${encodeURIComponent('0-128')}` : '';
+    // ★ env.TLS_PADDING 覆盖 TLS填充 开关（遵循代码库布尔 env 模式）
+    if (env.TLS_PADDING !== undefined) {
+        config_JSON.TLS填充 = ['1', 'true'].includes(env.TLS_PADDING);
+    }
+    const TLS分片参数 = 获取TLS分片参数(config_JSON);
     if (!config_JSON.Fingerprint) config_JSON.Fingerprint = "chrome";
     if (!config_JSON.ECH) config_JSON.ECH = false;
     if (!config_JSON.ECHConfig) config_JSON.ECHConfig = { DNS: CM_DoH, SNI: null };
