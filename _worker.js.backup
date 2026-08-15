@@ -457,7 +457,7 @@ async function verifyCookieSignature(cookieValue, signature, secret) {
         const expectedBytes = $encoder.encode(expected);
         const providedBytes = $encoder.encode(signature);
         if (expectedBytes.length !== providedBytes.length) return false;
-        return crypto.subtle.timingSafeEqual(expectedBytes, providedBytes);
+        return timingSafeEqualBytes(expectedBytes, providedBytes);
     } catch (e) {
         console.warn('Cookie 签名验证异常:', e.message);
         return false;
@@ -475,7 +475,15 @@ function secureCompare(a, b) {
     const paddedB = new Uint8Array(maxLen).fill(0xFF);
     paddedA.set(aBytes, 0);
     paddedB.set(bBytes, 0);
-    return crypto.subtle.timingSafeEqual(paddedA, paddedB);
+    return timingSafeEqualBytes(paddedA, paddedB);
+}
+
+// 恒定时间字节比较（防时序攻击；纯 JS 实现，兼容 Node.js WebCrypto 环境）
+function timingSafeEqualBytes(a, b) {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+    return diff === 0;
 }
 
 // 限制字符串长度
@@ -778,7 +786,7 @@ export default {
                     const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
                     const authSig = cookies.split(';').find(c => c.trim().startsWith('auth_sig='))?.split('=')[1];
                     const expectedAuthValue = await MD5MD5(UA + 加密秘钥 + 管理员密码);
-                    // 验证 cookie，未认证则跌落到伪装代理（不 return）
+                    // 验证 cookie，未认证则跌落到伪装代理（不 return）；仅 admin/config.json 保持 401 供登录页鉴权探测
                     const 认证通过 = authCookie && authSig && secureCompare(authCookie, expectedAuthValue) && await verifyCookieSignature(authCookie, authSig, 加密秘钥 + 管理员密码);
                     if (认证通过) {
                     if (访问路径 === 'admin/log.json') {// 读取日志内容
@@ -1031,7 +1039,11 @@ html, body { background: transparent !important; }
                     const 管理页注入前置 = 管理页HTML.slice(0, 管理页body插入位).replace('</head>', 管理页背景CSS + '</head>').replace('<body>', '<body style="background: transparent !important">');
                     const 管理页注入后置 = 管理页HTML.slice(管理页body插入位);
                     return new Response(管理页注入前置 + 管理页背景HTML + 管理页注入后置, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+                    } else if (访问路径 === 'admin/config.json') {
+                        // 登录页鉴权探测端点：保持 401，避免登录页误判已登录而自动跳转
+                        return new Response(JSON.stringify({ error: '未认证' }), { status: 401, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                     }
+                    // 其它未认证 admin 路径：不 return，跌落到伪装页（200）
                 } else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
                     const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
                     响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict');
@@ -3309,7 +3321,7 @@ function SS递增Nonce计数器(counter) {
 }
 
 async function SS生成MD5(data) {
-	return new Uint8Array(await crypto.subtle.digest('MD5', data));
+	return MD5纯JS(data);
 }
 
 async function SS派生主密钥(passwordText, keyLen) {
@@ -6834,7 +6846,7 @@ async function turnConnect(proxy, targetHost, targetPort, TCP连接 = null) {
 			if (!realmBytes || !nonce?.byteLength) throw new Error('TURN authentication challenge is missing realm or nonce');
 
 			const realm = SS文本解码器.decode(realmBytes);
-			integrityKey = new Uint8Array(await crypto.subtle.digest('MD5', SS文本编码器.encode(`${proxy.username}:${realm}:${proxy.password}`)));
+			integrityKey = MD5纯JS(SS文本编码器.encode(`${proxy.username}:${realm}:${proxy.password}`));
 			authAttributes = [
 				createTurnStunAttribute(TURN_STUN_ATTR.USERNAME, SS文本编码器.encode(proxy.username)),
 				createTurnStunAttribute(TURN_STUN_ATTR.REALM, SS文本编码器.encode(realm)),
@@ -8296,6 +8308,65 @@ function 掩码敏感信息(文本, 前缀长度 = 3, 后缀长度 = 2) {
 // 辅助函数：将 ArrayBuffer 或 Uint8Array 转十六进制字符串
 const hexEncode = (buffer) => [...new Uint8Array(buffer)].map(b => b.toString(16).padStart(2, '0')).join('');
 
+// 纯 JS MD5 实现（无依赖；兼容 Node.js WebCrypto 环境，crypto.subtle.digest 不支持 MD5）
+function MD5纯JS(输入) {
+    const K = new Uint32Array([
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
+        0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+        0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+        0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+        0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
+        0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
+        0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+        0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
+    ]);
+    const S = new Uint32Array([
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+    ]);
+    const 数据 = 输入 instanceof Uint8Array ? 输入 : new Uint8Array(输入);
+    const 位长度 = 数据.length * 8;
+    const 填充长度 = (((数据.length + 8) >> 6) + 1) << 6;
+    const 填充 = new Uint8Array(填充长度);
+    填充.set(数据);
+    填充[数据.length] = 0x80;
+    const 视图 = new DataView(填充.buffer);
+    for (let i = 0; i < 8; i++) 视图.setUint8(填充长度 - 8 + i, (位长度 / Math.pow(2, 8 * i)) & 0xff);
+    let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+    for (let 块起点 = 0; 块起点 < 填充长度; 块起点 += 64) {
+        const M = new Uint32Array(16);
+        for (let i = 0; i < 16; i++) M[i] = 视图.getUint32(块起点 + i * 4, true);
+        let A = a0, B = b0, C = c0, D = d0;
+        for (let i = 0; i < 64; i++) {
+            let F, g;
+            if (i < 16) { F = (B & C) | (~B & D); g = i; }
+            else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+            else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
+            else { F = C ^ (B | ~D); g = (7 * i) % 16; }
+            F = (F + A + K[i] + M[g]) | 0;
+            A = D; D = C; C = B;
+            B = (B + ((F << S[i]) | (F >>> (32 - S[i])))) | 0;
+        }
+        a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
+    }
+    const 结果 = new Uint8Array(16);
+    new DataView(结果.buffer).setUint32(0, a0, true);
+    new DataView(结果.buffer).setUint32(4, b0, true);
+    new DataView(结果.buffer).setUint32(8, c0, true);
+    new DataView(结果.buffer).setUint32(12, d0, true);
+    return 结果;
+}
+
 // MD5MD5 结果缓存（热路径优化）
 const MD5MD5缓存 = new Map();
 const MD5MD5_CACHE_MAX = 128; // 增大至 128 条目，覆盖高频调用场景（订阅生成、登录验证、Token 生成等）
@@ -8307,8 +8378,8 @@ async function MD5MD5(文本) {
     const cached = MD5MD5缓存.get(文本);
     if (cached !== undefined) return cached;
     
-    const 第一次十六进制 = hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(文本)));
-    const result = hexEncode(await crypto.subtle.digest('MD5', SS文本编码器.encode(第一次十六进制.slice(7, 27)))).toLowerCase();
+    const 第一次十六进制 = hexEncode(MD5纯JS(SS文本编码器.encode(文本)));
+    const result = hexEncode(MD5纯JS(SS文本编码器.encode(第一次十六进制.slice(7, 27)))).toLowerCase();
     
     // 写入缓存
     MD5MD5缓存.set(文本, result);
@@ -8331,8 +8402,7 @@ async function AESEncrypt(plaintext, password) {
         let keyBytes = AES密钥缓存.get(password);
         if (!keyBytes) {
             // 使用 MD5 派生密钥（主流客户端通用方案，兼容 Stash/Shadowrocket/SingBox）
-            const md5Hash = await crypto.subtle.digest('MD5', SS文本编码器.encode(password));
-            keyBytes = new Uint8Array(md5Hash); // MD5 = 16 字节，恰好 AES-128 密钥长度
+            keyBytes = MD5纯JS(SS文本编码器.encode(password)); // MD5 = 16 字节，恰好 AES-128 密钥长度
             AES密钥缓存.set(password, keyBytes);
             if (AES密钥缓存.size > AES密钥缓存_MAX) {
                 AES密钥缓存.delete(AES密钥缓存.keys().next().value);
@@ -8384,8 +8454,8 @@ async function AESDecrypt(cipherBase64, password) {
         const raw = uint8ArrayFromBase64(cipherBase64);
         const iv = raw.slice(0, 16);
         const data = raw.slice(16);
-        const md5 = await crypto.subtle.digest('MD5', SS文本编码器.encode(password));
-        const key = await crypto.subtle.importKey('raw', new Uint8Array(md5), { name: 'AES-CBC', length: 128 }, false, ['decrypt']);
+        const md5 = MD5纯JS(SS文本编码器.encode(password));
+        const key = await crypto.subtle.importKey('raw', md5, { name: 'AES-CBC', length: 128 }, false, ['decrypt']);
         const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, data);
         return $decoder.decode(decrypted);
     } catch (e) { console.error('AES解密失败:', e); return null; }
