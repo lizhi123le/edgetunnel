@@ -4,8 +4,6 @@ const Version = '2026-08-11 14:45:22(Enhanced)';
 const $encoder = new TextEncoder();
 const $decoder = new TextDecoder();
 
-import { connect } from 'cloudflare:sockets';
-
 // 预编码常用字符串常量（避免运行时重复 TextEncoder.encode）
 const ENC_HPKEv1 = $encoder.encode('HPKE-v1');
 const ENC_tls13ech = $encoder.encode('tls13-ech');
