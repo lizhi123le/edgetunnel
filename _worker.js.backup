@@ -1034,7 +1034,7 @@ html, body { background: transparent !important; }
 </style>`;
                     const 管理页背景HTML = `<iframe id="background-iframe" src="/" title="背景内容"></iframe><div id="blur-overlay"></div>`;
                     const 管理页body插入位 = 管理页HTML.lastIndexOf('</body>');
-                    const 管理页注入前置 = 管理页HTML.slice(0, 管理页body插入位).replace('</head>', 管理页背景CSS + '</head>').replace('<body>', '<body style="background: transparent !important">');
+                    const 管理页注入前置 = 管理页HTML.slice(0, 管理页body插入位).replace('</head>', 管理页背景CSS + '<script data-cfasync="false">window.__cfRLUnblockHandlers = true;</script></head>').replace('<body>', '<body style="background: transparent !important">');
                     const 管理页注入后置 = 管理页HTML.slice(管理页body插入位);
                     return new Response(管理页注入前置 + 管理页背景HTML + 管理页注入后置, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
                     } else if (访问路径 === 'admin/config.json') {
