@@ -1401,12 +1401,12 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                 const hsts头 = ['1', 'true'].includes(env.HSTS_ENABLE) ? {'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload'} : {};
                 if (await 检查永久黑名单(客户端IP, env)) {
                     console.warn(`[永久黑名单] IP ${客户端IP} 命中永久黑名单，直接拦截`);
-                    return new Response(await nginx(), { status: 429, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Retry-After': '3600', ...hsts头 } });
+                    return new Response(await html1101(url.host, 客户端IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
                 }
                 if (!检查速率限制(客户端IP)) {
                     console.warn(`[速率限制] IP ${客户端IP} 超过非管理员路径请求限制`);
                     ctx.waitUntil(记录违规并检查拉黑(客户端IP, env, ctx));
-                    return new Response(await nginx(), { status: 429, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Retry-After': '3600', ...hsts头 } });
+                    return new Response(await html1101(url.host, 客户端IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
                 }
                 记录速率限制请求(客户端IP);
             }
