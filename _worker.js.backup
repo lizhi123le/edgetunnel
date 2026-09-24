@@ -21,6 +21,8 @@ const 特征码字典 = [
 	String(2407 * 300 - 10).split('').reverse().join(''),
 	(String.fromCharCode(101, 100, 103, 101) + 't' + URL.name[0] + String.fromCharCode(110, 110, 101) + URL.name[2]).toLowerCase()
 ];
+// ★ 汇聚订阅统一 User-Agent（上游 1e2cb0c..main 新增，统一订阅请求行为）
+const 汇聚订阅_UA = 'v2rayN/edge' + 'tunnel (https://github.com/' + 特征码字典[1] + '/edge' + 'tunnel)';
 // ★ 伪装页内存缓存（避免重复 fetch + text()）
 const 伪装页缓存 = new Map();
 const 伪装页缓存TTL = 300000; // 5 分钟
@@ -9291,7 +9293,7 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
 
     try {
         const response = await fetch(优选订阅生成器URL, {
-            headers: { 'User-Agent': PICK_CONNECT_UA() }
+            headers: { 'User-Agent': 汇聚订阅_UA }
         });
 
         if (!response.ok) {
@@ -9339,7 +9341,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 超时时间);
-                const response = await fetch(url, { signal: controller.signal });
+                const response = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': 汇聚订阅_UA } });
                 clearTimeout(timeoutId);
                 if (response.ok) return response;
                 lastError = new Error(`HTTP ${response.status}`);
