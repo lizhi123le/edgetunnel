@@ -1,4 +1,4 @@
-const Version = '2026-09-04 16:24:13(Enhanced)';
+const Version = '2026-09-22 20:01:17(Enhanced)';
 
 // 全局 TextEncoder/TextDecoder 复用提升性能
 const $encoder = new TextEncoder();
@@ -21,6 +21,8 @@ const 特征码字典 = [
 	String(2407 * 300 - 10).split('').reverse().join(''),
 	(String.fromCharCode(101, 100, 103, 101) + 't' + URL.name[0] + String.fromCharCode(110, 110, 101) + URL.name[2]).toLowerCase()
 ];
+// ★ 汇聚订阅统一 User-Agent（上游 1e2cb0c..main 新增，统一订阅请求行为）
+const 汇聚订阅_UA = 'v2rayN/edge' + 'tunnel (https://github.com/' + 特征码字典[1] + '/edge' + 'tunnel)';
 // ★ 伪装页内存缓存（避免重复 fetch + text()）
 const 伪装页缓存 = new Map();
 const 伪装页缓存TTL = 300000; // 5 分钟
@@ -1314,7 +1316,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                             const 加密启用 = !!(管理员密码 || 加密秘钥);
                             const needsAF = 加密启用 && (env.AF || env.af) && !queryAF ? `&af=${encodeURIComponent(env.AF || env.af)}` : '';
                             const cnIspCodeParam = `&cnIspCode=${识别运营商(request)}`;
-                            const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + cnIspCodeParam + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : '') + (queryAF ? `&af=${encodeURIComponent(queryAF)}` : '') + needsAF)}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&list=${config_JSON.订阅转换配置.SUBLIST}&scv=${config_JSON.跳过证书验证}&xudp=${config_JSON.订阅转换配置.XUDP}&udp=${config_JSON.订阅转换配置.UDP}&tls13=${config_JSON.订阅转换配置.TLS13}&append_type=${config_JSON.订阅转换配置.APPEND_TYPE}&sort=${config_JSON.订阅转换配置.SORT}`;
+                            const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + cnIspCodeParam + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : '') + (queryAF ? `&af=${encodeURIComponent(queryAF)}` : '') + needsAF)}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&list=${config_JSON.订阅转换配置.SUBLIST}&scv=${config_JSON.跳过证书验证}&xudp=${config_JSON.订阅转换配置.XUDP}&udp=${config_JSON.订阅转换配置.UDP}&tls13=${config_JSON.订阅转换配置.TLS13}&append_type=${config_JSON.订阅转换配置.APPEND_TYPE}&sort=${config_JSON.订阅转换配置.SORT}&expand=${config_JSON.订阅转换配置.EXPAND}`;
                             try {
                                 const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel (https://github.com/' + 特征码字典[1] + '/edge' + 'tunnel)' } });
                                 if (response.ok) {
@@ -1401,12 +1403,12 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                 const hsts头 = ['1', 'true'].includes(env.HSTS_ENABLE) ? {'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload'} : {};
                 if (await 检查永久黑名单(客户端IP, env)) {
                     console.warn(`[永久黑名单] IP ${客户端IP} 命中永久黑名单，直接拦截`);
-                    return new Response(await nginx(), { status: 429, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Retry-After': '3600', ...hsts头 } });
+                    return new Response(await html1101(url.host, 客户端IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
                 }
                 if (!检查速率限制(客户端IP)) {
                     console.warn(`[速率限制] IP ${客户端IP} 超过非管理员路径请求限制`);
                     ctx.waitUntil(记录违规并检查拉黑(客户端IP, env, ctx));
-                    return new Response(await nginx(), { status: 429, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Retry-After': '3600', ...hsts头 } });
+                    return new Response(await html1101(url.host, 客户端IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
                 }
                 记录速率限制请求(客户端IP);
             }
@@ -8905,6 +8907,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
             TLS13: false, // 启用 TLS 1.3
             APPEND_TYPE: false, // 插入节点类型
             SORT: false, // 基础节点排序
+            EXPAND: true, // 展开规则全文
         },
         反代: {
             [_p]: "auto",
@@ -8996,6 +8999,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
     if (!config_JSON.订阅转换配置.TLS13) config_JSON.订阅转换配置.TLS13 = false;
     if (!config_JSON.订阅转换配置.APPEND_TYPE) config_JSON.订阅转换配置.APPEND_TYPE = false;
     if (!config_JSON.订阅转换配置.SORT) config_JSON.订阅转换配置.SORT = false;
+    if (typeof config_JSON.订阅转换配置.EXPAND !== 'boolean') config_JSON.订阅转换配置.EXPAND = true;
 
     if (env.PATH) config_JSON.PATH = env.PATH.startsWith('/') ? env.PATH : '/' + env.PATH;
     else if (!config_JSON.PATH) config_JSON.PATH = '/';
@@ -9291,7 +9295,7 @@ async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
 
     try {
         const response = await fetch(优选订阅生成器URL, {
-            headers: { 'User-Agent': PICK_CONNECT_UA() }
+            headers: { 'User-Agent': 汇聚订阅_UA }
         });
 
         if (!response.ok) {
@@ -9339,7 +9343,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 超时时间);
-                const response = await fetch(url, { signal: controller.signal });
+                const response = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': 汇聚订阅_UA } });
                 clearTimeout(timeoutId);
                 if (response.ok) return response;
                 lastError = new Error(`HTTP ${response.status}`);
