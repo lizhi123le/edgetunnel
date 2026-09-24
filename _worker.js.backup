@@ -1,4 +1,4 @@
-const Version = '2026-09-04 16:24:13(Enhanced)';
+const Version = '2026-09-22 20:01:17(Enhanced)';
 
 // 全局 TextEncoder/TextDecoder 复用提升性能
 const $encoder = new TextEncoder();
@@ -1316,7 +1316,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                             const 加密启用 = !!(管理员密码 || 加密秘钥);
                             const needsAF = 加密启用 && (env.AF || env.af) && !queryAF ? `&af=${encodeURIComponent(env.AF || env.af)}` : '';
                             const cnIspCodeParam = `&cnIspCode=${识别运营商(request)}`;
-                            const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + cnIspCodeParam + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : '') + (queryAF ? `&af=${encodeURIComponent(queryAF)}` : '') + needsAF)}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&list=${config_JSON.订阅转换配置.SUBLIST}&scv=${config_JSON.跳过证书验证}&xudp=${config_JSON.订阅转换配置.XUDP}&udp=${config_JSON.订阅转换配置.UDP}&tls13=${config_JSON.订阅转换配置.TLS13}&append_type=${config_JSON.订阅转换配置.APPEND_TYPE}&sort=${config_JSON.订阅转换配置.SORT}`;
+                            const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + cnIspCodeParam + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : '') + (queryAF ? `&af=${encodeURIComponent(queryAF)}` : '') + needsAF)}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&list=${config_JSON.订阅转换配置.SUBLIST}&scv=${config_JSON.跳过证书验证}&xudp=${config_JSON.订阅转换配置.XUDP}&udp=${config_JSON.订阅转换配置.UDP}&tls13=${config_JSON.订阅转换配置.TLS13}&append_type=${config_JSON.订阅转换配置.APPEND_TYPE}&sort=${config_JSON.订阅转换配置.SORT}&expand=${config_JSON.订阅转换配置.EXPAND}`;
                             try {
                                 const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel (https://github.com/' + 特征码字典[1] + '/edge' + 'tunnel)' } });
                                 if (response.ok) {
@@ -8907,6 +8907,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
             TLS13: false, // 启用 TLS 1.3
             APPEND_TYPE: false, // 插入节点类型
             SORT: false, // 基础节点排序
+            EXPAND: true, // 展开规则全文
         },
         反代: {
             [_p]: "auto",
@@ -8998,6 +8999,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
     if (!config_JSON.订阅转换配置.TLS13) config_JSON.订阅转换配置.TLS13 = false;
     if (!config_JSON.订阅转换配置.APPEND_TYPE) config_JSON.订阅转换配置.APPEND_TYPE = false;
     if (!config_JSON.订阅转换配置.SORT) config_JSON.订阅转换配置.SORT = false;
+    if (typeof config_JSON.订阅转换配置.EXPAND !== 'boolean') config_JSON.订阅转换配置.EXPAND = true;
 
     if (env.PATH) config_JSON.PATH = env.PATH.startsWith('/') ? env.PATH : '/' + env.PATH;
     else if (!config_JSON.PATH) config_JSON.PATH = '/';
