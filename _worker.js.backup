@@ -1275,6 +1275,13 @@ html, body { background: transparent !important; }
                                 已处理节点IP.add(键);
                                 return false;
                             };
+                            // ★ 节点链接去重集合——节点链接按完整字符串去重（恢复上游原有语义；IP 仍按上面的 IP:Port 键去重）
+                            const 已处理节点值 = new Set();
+                            const 是节点已处理 = (节点值) => {
+                                if (已处理节点值.has(节点值)) return true;
+                                已处理节点值.add(节点值);
+                                return false;
+                            };
 
                             if (!url.searchParams.has('sub') && config_JSON.优选订阅生成.local) { // 本地生成订阅
                                 // 优化：避免重复读取 ADD.txt，只读一次后复用
@@ -1335,14 +1342,14 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                                         const res = resultsMap.get(item.value);
                                         if (res) {
                                             if (res.Nodes && res.Nodes.length > 0) {
-                                                for (const node of res.Nodes) 完整优选IP.push({ type: 'node', value: node });
+                                                for (const node of res.Nodes) { if (!是节点已处理(node)) 完整优选IP.push({ type: 'node', value: node }); }
                                             }
                                             if (res.IPs && res.IPs.length > 0) {
                                                 for (const ip of res.IPs) { if (!是IP已处理(ip)) 完整优选IP.push({ type: 'ip', value: ip }); }
                                             }
                                         }
                                     } else if (item.type === 'node') {
-                                        完整优选IP.push({ type: 'node', value: item.value });
+                                        if (!是节点已处理(item.value)) 完整优选IP.push({ type: 'node', value: item.value });
                                     } else if (item.type === 'ip') {
                                         if (!是IP已处理(item.value)) 完整优选IP.push({ type: 'ip', value: item.value });
                                     }
@@ -1352,7 +1359,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                                 const [优选生成器IP数组, 优选生成器其他节点] = await 获取优选订阅生成器数据(优选订阅生成器HOST);
                                 if (优选生成器其他节点) {
                                     const nodes = 优选生成器其他节点.split('\n').filter(n => n.trim());
-                                    for (const node of nodes) 完整优选IP.push({ type: 'node', value: node });
+                                    for (const node of nodes) { if (!是节点已处理(node)) 完整优选IP.push({ type: 'node', value: node }); }
                                 }
                                 for (const ip of 优选生成器IP数组) {
                                     if (!是IP已处理(ip)) 完整优选IP.push({ type: 'ip', value: ip });
