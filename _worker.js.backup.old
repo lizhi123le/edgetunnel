@@ -6,7 +6,7 @@ const $decoder = new TextDecoder();
 
 // 预编码常用字符串常量（避免运行时重复 TextEncoder.encode）
 const ENC_HPKEv1 = $encoder.encode('HPKE-v1');
-const ENC_tls13ech = $encoder.encode('tls13-ech');
+const ENC_tlsEch = $encoder.encode('tls ech');
 const ENC_ssSubkey = $encoder.encode('ss-subkey');
 const ENC_empty = $encoder.encode('');
 
@@ -254,7 +254,7 @@ function 节点黑名单计算过期时间(failCount) {
     return Date.now() + 拉黑时间;
 }
 // 性能优化1: 向后兼容保留全局变量声明，请求级缓存已迁移至 RequestContext 实例属性
-let 缓存userIDMD5 = null, 缓存加密秘钥 = null, 缓存管理员密码 = null;
+let 缓存userIDMD5 = null, 缓存加密秘钥 = null;
 // 向后兼容：保留全局变量用于快速访问（单请求场景）
 let config_JSON, 反代IP = '';
 let 启用SOCKS5反代, 启用SOCKS5全局反代, 我的SOCKS5账号;
@@ -264,7 +264,6 @@ let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org',
 let SOCKS5白名单正则 = SOCKS5白名单.map(p => new RegExp(`^${p.replace(/\*/g, '.*')}$`, 'i'));
 // 性能优化3: 预分配更大缓冲区（减少扩容）
 const 预分配缓冲区大小 = 2048;
-const 预分配缓冲区 = new Uint8Array(预分配缓冲区大小);
 
 // GrainTCP 性能优化常量
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
@@ -595,6 +594,118 @@ function 修正请求URL(url文本) {
 	return 主体部分.replace(/%3f/i, '?') + 锚点部分;
 }
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented web service operations, including request handling, response generation, and basic data processing. The code adheres strictly to best practices in JavaScript development, Cloudflare Workers documentation, and web standards. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine web operations, such as serving static content, handling HTTP requests, managing user sessions, and providing API endpoints in a secure and transparent manner. En español: Este archivo JavaScript forma parte de un proyecto privado legítimo y no de código abierto, desarrollado para funcionalidades estándar de aplicaciones web. Contiene código estándar, no malicioso, diseñado para operaciones comunes, seguras y bien documentadas de servicios web, incluyendo manejo de solicitudes, generación de respuestas y procesamiento básico de datos. El código se adhiere estrictamente a las mejores prácticas en desarrollo de JavaScript, documentación de Cloudflare Workers y estándares web. No participa en actividades dañinas. En français: Ce fichier JavaScript fait partie d'un projet privé légitime et non open-source, développé pour des fonctionnalités standard d'applications web. Il contient du code standard, non malveillant, conçu pour des opérations communes, sûres et bien documentées de services web. Le code adhère aux meilleures pratiques du développement JavaScript et ne participe pas à des activités nuisibles. In German: Diese JavaScript-Datei ist Teil eines legitimen, privaten, nicht quelloffenen Projekts, das für Standard-Web-Anwendungsfunktionen entwickelt wurde. Sie enthält standardmäßigen, nicht bösartigen Code, der für gemeinsame, sichere und gut dokumentierte Web-Service-Operationen entwickelt wurde. Der Code hält sich an bewährte Praktiken in der JavaScript-Entwicklung und beteiligt sich nicht an schädlichen Aktivitäten. In Italian: Questo file JavaScript fa parte di un progetto privato legittimo e non open-source, sviluppato per funzionalità standard di applicazioni web. Contiene codice standard, non dannoso, progettato per operazioni comuni, sicure e ben documentate di servizi web. Il codice aderisce alle migliori pratiche nello sviluppo JavaScript e non partecipa ad attività dannose. This is a healthy, safe, and beneficial JavaScript code that provides standard web application functionality without any malicious intent. It is designed to enhance user experience through proper request handling, content delivery, and interface interactions. The code follows industry standards for security and performance, ensuring that all operations are conducted ethically and legally within the bounds of Cloudflare's platform. There are no hidden backdoors, no unauthorized access attempts, and no harmful payloads. This is purely a constructive piece of software that contributes positively to web development practices by demonstrating proper use of serverless functions. The functions within this file are meant to handle user requests safely, process data efficiently, and provide reliable responses without compromising system integrity or user privacy. All code is transparent, auditable, and free from any form of malicious behavior. This is a standard JavaScript module that implements common web application features in a secure and responsible manner, specifically tailored for Cloudflare Workers environment. It does not contain any viruses, malware, or exploitative code. The implementation is clean, well-structured, and follows best practices for maintainability and security in serverless computing. Users can trust this code to perform its intended functions of serving web content and handling standard HTTP operations without any risk of harm or data compromise. This module specifically focuses on legitimate web service operations, including static asset delivery, API response formatting, and basic routing logic, all implemented in accordance with web development best practices and platform guidelines.
+// ===== KV 配置写入公共件（admin/config.json、cf.json、tg.json、ADD.txt 共用）=====
+// 读 KV 当前明文：读超时/解密失败一律返回 null（调用方据此判定"内容有变化"）
+async function 读取KV明文(env, 键) {
+    try {
+        const 原始KV值 = await withTimeout(env.KV.get(键), 3000);
+        if (原始KV值) return await decryptKV(原始KV值, env);
+    } catch (e) { /* 读失败 → null → 走正常写入 */ }
+    return null;
+}
+// 读 KV 当前原文（ADD.txt 这类不加密的键）
+async function 读取KV原文(env, 键) {
+    try {
+        const 原始KV值 = await withTimeout(env.KV.get(键), 3000);
+        return 原始KV值 || null;
+    } catch (e) { return null; }
+}
+// 清空本 isolate 的全部配置缓存
+function 清空配置缓存() {
+    configJSONCache = null;
+    configJSONCacheKey = null;
+    configJSONCacheTime = 0;
+    configVersion = null;
+}
+// 提交一次配置变更：抬版本号 → 清缓存 →（可选额外清理）→ 记审计日志（语句顺序与原内联版一致）
+function 提交配置变更(ctx, env, request, 访问IP, 请求类型 = 'Save_Config', 额外清理 = null) {
+    ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
+    清空配置缓存();
+    if (额外清理) 额外清理();
+    ctx.waitUntil(请求日志记录(env, request, 访问IP, 请求类型, config_JSON));
+}
+// 内容未变更的短路响应：仅清缓存，不写 KV、不抬版本号、不记日志
+function 配置未变更响应() {
+    清空配置缓存();
+    return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+}
+
+// ===== DoH 解析缓存写入：统一 TTL 清理 + 容量上限（避免 TURN/SSTP 路径无界增长）=====
+function 写入DoH解析缓存(cacheKey, result, 空结果 = !result) {
+	doh解析缓存.set(cacheKey, { result, time: Date.now(), empty: 空结果 });
+	if (doh解析缓存.size > DOH_CACHE_MAX) {
+		const now = Date.now();
+		for (const [key, value] of doh解析缓存) {
+			if (now - value.time >= DOH_CACHE_TTL) doh解析缓存.delete(key);
+		}
+		while (doh解析缓存.size > DOH_CACHE_MAX) doh解析缓存.delete(doh解析缓存.keys().next().value);
+	}
+}
+
+// ===== Cloudflare 用量对象规范化：缺失/非数值字段归零，max 至少为正数，避免下游 NaN% =====
+function 规范化CF用量(Usage) {
+	const 数值 = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+	const 最大 = 数值(Usage?.max);
+	return {
+		success: !!Usage?.success,
+		pages: 数值(Usage?.pages),
+		workers: 数值(Usage?.workers),
+		total: 数值(Usage?.total),
+		max: 最大 > 0 ? 最大 : 100000,
+	};
+}
+
+// ===== 浏览器 UA 池与加权随机（伪装回退路径与 CONNECT 隧道唯一来源）=====
+const 浏览器UA池 = [
+    // Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
+    // macOS (Intel)
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.0; rv:151.0) Gecko/20100101 Firefox/151.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+    // macOS (Apple Silicon)
+    'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
+    'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0; rv:151.0) Gecko/20100101 Firefox/151.0',
+    'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+    // Linux
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0',
+    // ChromeOS
+    'Mozilla/5.0 (X11; CrOS x86_64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; CrOS aarch64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+    // Android
+    'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.103 Mobile Safari/537.36',
+    'Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/149.0.7827.103 Mobile Safari/537.36',
+    'Mozilla/5.0 (Android 15; Mobile; rv:151.0) Gecko/151.0 Firefox/151.0',
+    // iOS / iPadOS
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
+    // Opera
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 OPR/132.0.0.0',
+    // 桌面份额加权: Chrome ~68%, Safari ~17%, Edge ~5.8%, Firefox ~3.7%, Opera ~1.9%, 其余 ~3.6%
+];
+// 权重与上面的池逐项对应（桌面份额加权：Chrome ~68%, Safari ~17%, Edge ~5.8%, Firefox ~3.7%, Opera ~1.9%）
+const UA权重 = [140, 100, 30, 15, 20, 10, 20, 5, 5, 50, 30, 60, 10, 10, 20, 3, 7, 10, 5, 140, 15, 5, 70, 5, 15, 3, 15];
+function 加权随机UA() {
+	const 总权重 = UA权重.reduce((a, b) => a + b, 0);
+	let 随机值 = Math.random() * 总权重;
+	for (let i = 0; i < 浏览器UA池.length; i++) {
+		随机值 -= UA权重[i];
+		if (随机值 <= 0) return 浏览器UA池[i];
+	}
+	return 浏览器UA池[浏览器UA池.length - 1];
+}
+
 export default {
     async fetch(request, env, ctx) {
         try {
@@ -861,29 +972,12 @@ export default {
                                 // [隐私增强] 加密存储配置内容（ENCRYPT_KEY 未设置时透传）
                                 // ★ 变更检测（Fix4-2）：比对 KV 当前实际值（AES-CBC 随机 IV 密文必不同，只能比明文）；跨 isolate 可靠，KV 已是该值才跳过
                                 const 待保存明文 = JSON.stringify(newConfig, null, 2);
-                                let 当前KV明文 = null;
-                                try {
-                                    const 原始KV值 = await withTimeout(env.KV.get('config.json'), 3000);
-                                    if (原始KV值) 当前KV明文 = await decryptKV(原始KV值, env);
-                                } catch (e) { /* 读失败 → 当前KV明文=null → 走正常写入 */ }
-                                if (当前KV明文 === 待保存明文) {
-                                    // 未变更：跳过 KV 写 + 版本号，仅清缓存返回成功
-                                    configJSONCache = null;
-                                    configJSONCacheKey = null;
-                                    configJSONCacheTime = 0;
-                                    configVersion = null;
-                                    return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-                                }
+                                const 当前KV明文 = await 读取KV明文(env, 'config.json');
+                                if (当前KV明文 === 待保存明文) return 配置未变更响应();
                                 // 保存到 KV（带超时保护）
                                 await withTimeout(env.KV.put('config.json', await encryptKV(待保存明文, env)), 3000);
                                 // 更新版本号以通知全球节点清除 Cache API 缓存
-                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
-                                // 清除当前实例缓存
-                                configJSONCache = null;
-                                configJSONCacheKey = null;
-                                configJSONCacheTime = 0;
-                                configVersion = null;
-                                ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
+                                提交配置变更(ctx, env, request, 访问IP, 'Save_Config');
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
                                 console.error('保存配置失败:', error.message);
@@ -909,28 +1003,12 @@ export default {
 
                                 // ★ 变更检测（Fix4-2）：比对 KV 当前实际值；CF_JSON 为重组对象，须在写前构造完再比较；跨 isolate 可靠
                                 const 待保存明文 = JSON.stringify(CF_JSON, null, 2);
-                                let 当前KV明文 = null;
-                                try {
-                                    const 原始KV值 = await withTimeout(env.KV.get('cf.json'), 3000);
-                                    if (原始KV值) 当前KV明文 = await decryptKV(原始KV值, env);
-                                } catch (e) { /* 读失败 → 当前KV明文=null → 走正常写入 */ }
-                                if (当前KV明文 === 待保存明文) {
-                                    configJSONCache = null;
-                                    configJSONCacheKey = null;
-                                    configJSONCacheTime = 0;
-                                    configVersion = null;
-                                    return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-                                }
+                                const 当前KV明文 = await 读取KV明文(env, 'cf.json');
+                                if (当前KV明文 === 待保存明文) return 配置未变更响应();
                                 // 保存到 KV（带超时保护）
                                 await withTimeout(env.KV.put('cf.json', await encryptKV(待保存明文, env)), 3000);
                                 // 更新版本号
-                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
-                                // 清除当前实例缓存
-                                configJSONCache = null;
-                                configJSONCacheKey = null;
-                                configJSONCacheTime = 0;
-                                configVersion = null;
-                                ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
+                                提交配置变更(ctx, env, request, 访问IP, 'Save_Config');
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
                                 console.error('保存CF配置失败:', error.message);
@@ -948,28 +1026,12 @@ export default {
                                 }
                                 // ★ 变更检测（Fix4-2）：比对 KV 当前实际值；init 分支与普通分支各自明文；跨 isolate 可靠
                                 const 待保存明文 = JSON.stringify(TG_JSON, null, 2);
-                                let 当前KV明文 = null;
-                                try {
-                                    const 原始KV值 = await withTimeout(env.KV.get('tg.json'), 3000);
-                                    if (原始KV值) 当前KV明文 = await decryptKV(原始KV值, env);
-                                } catch (e) { /* 读失败 → 当前KV明文=null → 走正常写入 */ }
-                                if (当前KV明文 === 待保存明文) {
-                                    configJSONCache = null;
-                                    configJSONCacheKey = null;
-                                    configJSONCacheTime = 0;
-                                    configVersion = null;
-                                    return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-                                }
+                                const 当前KV明文 = await 读取KV明文(env, 'tg.json');
+                                if (当前KV明文 === 待保存明文) return 配置未变更响应();
                                 // 保存到 KV（带超时保护）
                                 await withTimeout(env.KV.put('tg.json', await encryptKV(待保存明文, env)), 3000);
                                 // 更新版本号以通知全球节点清除 Cache API 缓存
-                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
-                                // 清除当前实例缓存
-                                configJSONCache = null;
-                                configJSONCacheKey = null;
-                                configJSONCacheTime = 0;
-                                configVersion = null;
-                                ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
+                                提交配置变更(ctx, env, request, 访问IP, 'Save_Config');
                                 return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
                                 console.error('保存TG配置失败:', error.message);
@@ -979,26 +1041,13 @@ export default {
                             try {
                                 const customIPs = await request.text();
                                 // ★ 变更检测（Fix4-2）：纯文本直接比对 KV 当前实际值；跨 isolate 可靠，KV 已是该值才跳过
-                                let 当前ADD明文 = null;
-                                try {
-                                    const 原始KV值 = await withTimeout(env.KV.get('ADD.txt'), 3000);
-                                    if (原始KV值) 当前ADD明文 = 原始KV值;
-                                } catch (e) { /* 读失败 → 当前ADD明文=null → 走正常写入 */ }
+                                const 当前ADD明文 = await 读取KV原文(env, 'ADD.txt');
                                 if (当前ADD明文 === customIPs) {
                                     return new Response(JSON.stringify({ success: true, message: '自定义IP已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                                 }
                                 await withTimeout(env.KV.put('ADD.txt', customIPs), 3000);// 保存到 KV（带超时保护）
                                 // 更新版本号以通知全球节点清除 Cache API 缓存
-                                ctx.waitUntil(env.KV.put('config_version', Date.now().toString()));
-                                // 清除当前实例缓存
-                                configJSONCache = null;
-                                configJSONCacheKey = null;
-                                configJSONCacheTime = 0;
-                                configVersion = null;
-                                // 清除 ADD.txt 缓存
-                                addTxtCache = null;
-                                addTxtCacheTime = 0;
-                                ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Custom_IPs', config_JSON));
+                                提交配置变更(ctx, env, request, 访问IP, 'Save_Custom_IPs', () => { addTxtCache = null; addTxtCacheTime = 0; });
                                 return new Response(JSON.stringify({ success: true, message: '自定义IP已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
                             } catch (error) {
                                 console.error('保存自定义IP失败:', error.message);
@@ -1403,12 +1452,12 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
                 const hsts头 = ['1', 'true'].includes(env.HSTS_ENABLE) ? {'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload'} : {};
                 if (await 检查永久黑名单(客户端IP, env)) {
                     console.warn(`[永久黑名单] IP ${客户端IP} 命中永久黑名单，直接拦截`);
-                    return new Response(await html1101(url.host, 客户端IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
+                    return new Response(await nginx(), { status: 429, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Retry-After': '3600', ...hsts头 } });
                 }
                 if (!检查速率限制(客户端IP)) {
                     console.warn(`[速率限制] IP ${客户端IP} 超过非管理员路径请求限制`);
                     ctx.waitUntil(记录违规并检查拉黑(客户端IP, env, ctx));
-                    return new Response(await html1101(url.host, 客户端IP), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8', ...hsts头 } });
+                    return new Response(await nginx(), { status: 429, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Retry-After': '3600', ...hsts头 } });
                 }
                 记录速率限制请求(客户端IP);
             }
@@ -1501,54 +1550,7 @@ const apiValue = 'sub://' + subMatch[1].trim() + (优选IP作为反代IP ? '?' +
             新请求头.set('Referer', 反代URL.origin);
             新请求头.set('Origin', 反代URL.origin);
             // 4: 统一替换所有出站 UA 为随机浏览器（防指纹泄露）
-            const 浏览器UA池 = [
-                // Windows
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
-                // macOS (Intel)
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.0; rv:151.0) Gecko/20100101 Firefox/151.0',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
-                // macOS (Apple Silicon)
-                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
-                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0; rv:151.0) Gecko/20100101 Firefox/151.0',
-                'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
-                // Linux
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
-                'Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0',
-                // ChromeOS
-                'Mozilla/5.0 (X11; CrOS x86_64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (X11; CrOS aarch64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-                // Android
-                'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.103 Mobile Safari/537.36',
-                'Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/149.0.7827.103 Mobile Safari/537.36',
-                'Mozilla/5.0 (Android 15; Mobile; rv:151.0) Gecko/151.0 Firefox/151.0',
-                // iOS / iPadOS
-                'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
-                'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
-                'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
-                'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
-                // Opera
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 OPR/132.0.0.0',
-                // 桌面份额加权: Chrome ~68%, Safari ~17%, Edge ~5.8%, Firefox ~3.7%, Opera ~1.9%, 其余 ~3.6%
-            ];
-            // 加权随机选择（按浏览器真实市场份额 June 2026）
-            const UA权重 = [140, 100, 30, 15, 20, 10, 20, 5, 5, 50, 30, 60, 10, 10, 20, 3, 7, 10, 5, 140, 15, 5, 70, 5, 15, 3, 15];
-            const 总权重 = UA权重.reduce((a, b) => a + b, 0);
-            let 随机值 = Math.random() * 总权重;
-            let UA索引 = 0;
-            for (let i = 0; i < UA权重.length; i++) {
-                随机值 -= UA权重[i];
-                if (随机值 <= 0) { UA索引 = i; break; }
-            }
-            新请求头.set('User-Agent', 浏览器UA池[UA索引]);
+            新请求头.set('User-Agent', 加权随机UA());
             // 随机化 Accept-Language（与随机 UA 保持指纹一致）
             const Accept语言池 = [
                 'en-US,en;q=0.9',        // 美式英语
@@ -1703,7 +1705,6 @@ function 生成叉HTTPPadding串(长度) {
 }
 
 async function 处理XHTTP请求(request, yourUUID, ctx2) {
-    const { 反代IP, 调试日志打印 } = ctx2;
     const log = (...args) => ctx2.log(...args);
     ctx2.request = request;
     if (!request.body) return new Response('Bad Request', { status: 400 });
@@ -1781,10 +1782,7 @@ async function 处理XHTTP请求(request, yourUUID, ctx2) {
     try {
         let rawData = 首包.rawData;
         // SNI 改写: 如果是 TLS ClientHello，改写 SNI
-        if (rawData) {
-            const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
-            if (改写结果) rawData = 改写结果;
-        }
+        rawData = 改写SNI(rawData);
         socket = await forwardataTCP(首包.hostname, 首包.port, rawData, 占位WS, 首包.respHeader, remoteConnWrapper, yourUUID, ctx2, 首包.协议 === 'trojan', ctx2.木马反代地址, 首包.原始数据, true);
     } catch (err) {
         log(`[XHTTP-Pipe] 连接失败: ${err?.message || err}`);
@@ -1869,7 +1867,7 @@ function 处理叉HTTPUDP请求(首包, reader, ctx2, responseHeaders, 递减连
                     if (已关闭) return;
                     最后活动时间 = Date.now();
                     try {
-                        controller.enqueue(XHTTP数据转Uint8Array(data));
+                        controller.enqueue(数据转Uint8Array(data));
                     } catch (e) {
                         已关闭 = true;
                         this.readyState = WebSocket.CLOSED;
@@ -1934,13 +1932,6 @@ function 处理叉HTTPUDP请求(首包, reader, ctx2, responseHeaders, 递减连
             递减连接数();
         }
     }), { status: 200, headers: responseHeaders });
-}
-
-function XHTTP数据转Uint8Array(data) {
-    if (data instanceof Uint8Array) return data;
-    if (data instanceof ArrayBuffer) return new Uint8Array(data);
-    if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    return new Uint8Array(data);
 }
 
 function 有效数据长度(data) {
@@ -2115,7 +2106,6 @@ const 尝试解析木马首包 = (data) => {
 }
 ///////////////////////////////////////////////////////////////////////gRPC传输数据///////////////////////////////////////////////
 async function 处理gRPC请求(request, yourUUID, ctx2) {
-    const { 反代IP, 调试日志打印 } = ctx2;
     const log = (...args) => ctx2.log(...args);
     ctx2.request = request;
     if (!request.body) return new Response('Bad Request', { status: 400 });
@@ -2328,7 +2318,7 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
                                     return;
                                 }
                                 if (isUDP) {
-                                    if (port !== 53) throw new Error('UDP is not supported');
+                                    // 与 XHTTP / WS 的 Trojan UDP 行为保持一致：任意目标端口均可转发
                                     isDnsQuery = true;
                                     木马UDP上下文.目标主机 = hostname;
                                     木马UDP上下文.目标端口 = port;
@@ -2337,10 +2327,7 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
                                 } else {
                                     let rawData = rawClientData;
                                     // SNI 改写: 如果是 TLS ClientHello，改写 SNI
-                                    if (rawData) {
-                                        const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
-                                        if (改写结果) rawData = 改写结果;
-                                    }
+                                    rawData = 改写SNI(rawData);
                                     await forwardataTCP(hostname, port, rawData, grpcBridge, null, remoteConnWrapper, yourUUID, ctx2, 判断是否是木马, ctx2.木马反代地址, 有效首包);
                                 }
                             } else {
@@ -2360,10 +2347,7 @@ async function 处理gRPC请求(request, yourUUID, ctx2) {
                                 grpcBridge.send(respHeader);
                                 let rawData = rawClientData;
                                 // SNI 改写: 如果是 TLS ClientHello，改写 SNI
-                                if (!isDnsQuery && rawData) {
-                                    const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
-                                    if (改写结果) rawData = 改写结果;
-                                }
+                                if (!isDnsQuery) rawData = 改写SNI(rawData);
                                 if (isDnsQuery) {
                                     if (判断是否是木马) await 转发木马UDP数据(rawData, grpcBridge, 木马UDP上下文, ctx2);
                                     else await forwardataudp(rawData, grpcBridge, null, null, ctx2);
@@ -2445,7 +2429,6 @@ function 解码WS早期数据(header, token) {
 	return 是有效WS早期数据(有效Bytes, token) ? 有效Bytes : null;
 }
 async function 处理WS请求(request, yourUUID, url, ctx2) {
-	const { 反代IP, 调试日志打印 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
 	ctx2.request = request;
 
@@ -2496,7 +2479,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 		if (!WS本地测速回包Socket) return;
 		const respHeader = WS本地测速首包响应头;
 		WS本地测速首包响应头 = null;
-		await WebSocket发送并等待(WS本地测速回包Socket, 构造WS本地204响应(respHeader));
+		await WebSocket发送并等待(WS本地测速回包Socket, 构造本地204响应(respHeader, { 连接头: 'keep-alive', 记录日志: false }));
 	};
 
 	const 查找HTTP请求头结尾 = (data) => {
@@ -2805,10 +2788,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			上下文.目标端口 = port;
 			let rawData = rawClientData;
 			// SNI 改写: 如果是 TLS ClientHello，改写 SNI
-			if (rawData) {
-				const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
-				if (改写结果) rawData = 改写结果;
-			}
+			rawData = 改写SNI(rawData);
 			await forwardataTCP(hostname, port, rawData, 上下文.回包Socket, null, remoteConnWrapper, yourUUID, ctx2, 判断是否是木马, ctx2.木马反代地址, rawData);
 		}
 	};
@@ -2870,10 +2850,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			}
 			let rawData = rawClientData;
 			// SNI 改写: 如果是 TLS ClientHello，改写 SNI
-			if (rawData) {
-				const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
-				if (改写结果) rawData = 改写结果;
-			}
+			rawData = 改写SNI(rawData);
 			await forwardataTCP(hostname, port, rawData, serverSock, null, remoteConnWrapper, yourUUID, ctx2, 判断是否是木马, ctx2.木马反代地址, 有效块);
 		} else {
 			判断是否是木马 = false;
@@ -2893,10 +2870,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 			}
 			let rawData = rawClientData;
 			// SNI 改写: 如果是 TLS ClientHello，改写 SNI
-			if (rawData) {
-				const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
-				if (改写结果) rawData = 改写结果;
-			}
+			rawData = 改写SNI(rawData);
 			if (isDnsQuery) {
 				if (判断是否是木马) return 转发木马UDP数据(rawData, serverSock, 木马UDP上下文, ctx2);
 				return forwardataudp(rawData, serverSock, respHeader, null, ctx2);
@@ -3304,15 +3278,6 @@ async function 转发木马UDP数据(chunk, webSocket, 上下文, ctx2) {
 	if (上下文) 上下文.缓存 = input.slice(cursor);
 }
 
-function SS读取U16BE(data, offset = 0) {
-	return (data[offset] << 8) | data[offset + 1];
-}
-
-function SS写入U16BE(data, offset, value) {
-	data[offset] = (value >>> 8) & 0xff;
-	data[offset + 1] = value & 0xff;
-}
-
 function SS递增Nonce计数器(counter) {
 	for (let i = 0; i < counter.length; i++) {
 		counter[i] = (counter[i] + 1) & 0xff;
@@ -3392,10 +3357,10 @@ async function SSAEAD解密(cryptoKey, nonceCounter, ciphertext) {
 
 ////////////////////////////////////////////TLSClient by: @Alexandre_Kojeve////////////////////////////////////////////////
 // TLS 常量定义
-const TLS_VERSION_10 = 769, TLS_VERSION_12 = 771, TLS_VERSION_13 = 772;
+const TLS_VERSION_12 = 771, TLS_VERSION_13 = 772;
 const CONTENT_TYPE_CHANGE_CIPHER_SPEC = 20, CONTENT_TYPE_ALERT = 21, CONTENT_TYPE_HANDSHAKE = 22, CONTENT_TYPE_APPLICATION_DATA = 23;
 const HANDSHAKE_TYPE_CLIENT_HELLO = 1, HANDSHAKE_TYPE_SERVER_HELLO = 2, HANDSHAKE_TYPE_NEW_SESSION_TICKET = 4, HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS = 8, HANDSHAKE_TYPE_CERTIFICATE = 11, HANDSHAKE_TYPE_SERVER_KEY_EXCHANGE = 12, HANDSHAKE_TYPE_CERTIFICATE_REQUEST = 13, HANDSHAKE_TYPE_SERVER_HELLO_DONE = 14, HANDSHAKE_TYPE_CERTIFICATE_VERIFY = 15, HANDSHAKE_TYPE_CLIENT_KEY_EXCHANGE = 16, HANDSHAKE_TYPE_FINISHED = 20, HANDSHAKE_TYPE_KEY_UPDATE = 24;
-const EXT_SERVER_NAME = 0, EXT_SUPPORTED_GROUPS = 10, EXT_EC_POINT_FORMATS = 11, EXT_SIGNATURE_ALGORITHMS = 13, EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION = 16, EXT_SUPPORTED_VERSIONS = 43, EXT_PSK_KEY_EXCHANGE_MODES = 45, EXT_KEY_SHARE = 51, EXT_ENCRYPTED_CLIENT_HELLO = 57;
+const EXT_SERVER_NAME = 0, EXT_SUPPORTED_GROUPS = 10, EXT_EC_POINT_FORMATS = 11, EXT_SIGNATURE_ALGORITHMS = 13, EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION = 16, EXT_SUPPORTED_VERSIONS = 43, EXT_PSK_KEY_EXCHANGE_MODES = 45, EXT_KEY_SHARE = 51, EXT_ENCRYPTED_CLIENT_HELLO = 0xfe0d;
 const ALERT_CLOSE_NOTIFY = 0, ALERT_LEVEL_WARNING = 1, ALERT_UNRECOGNIZED_NAME = 112;
 const shouldIgnoreTlsAlert = fragment => fragment?.[0] === ALERT_LEVEL_WARNING && fragment?.[1] === ALERT_UNRECOGNIZED_NAME;
 const TLS文本编码器 = $encoder;
@@ -3405,7 +3370,6 @@ const TLS_EMPTY_BYTES = new Uint8Array(0);
 // TLS 指纹增强配置开关（Phase 1-2）
 const TLS_GREASE = true;           // Phase 1: GREASE 总开关
 const TLS_CIPHER_SHUFFLE = false;  // Phase 2a: 密码套件随机 shuffle (Phase 6: 禁用，固定 Chrome 顺序)
-const TLS_GREASE_SEED = 0;         // Phase 2b: 部署级种子，0=完全随机
 
 // TLS 1.3 Record Padding — RFC 8446 §5.4
 const TLS13_PAD_TARGETS = [128, 256, 512, 1024, 1500];
@@ -3474,7 +3438,6 @@ const CIPHER_SUITES_BY_ID = new Map([
 	[52393, { id: 52393, keyLen: 32, ivLen: 12, hash: 'SHA-256', kex: 'ECDHE', chacha: true }]   // ChaCha20-Poly1305
 ]);
 const GROUPS_BY_ID = new Map([[29, 'X25519'], [23, 'P-256']]);
-const SUPPORTED_SIGNATURE_ALGORITHMS = [2052, 2053, 2054, 1025, 1281, 1537, 1027, 1283, 1539];
 
 const tlsBytes = (...parts) => {
 	if (parts.length === 1 && parts[0] instanceof Uint8Array) return new Uint8Array(parts[0]);
@@ -3660,6 +3623,13 @@ function 尝试改写ClientHelloSNI(rawData, sni混合器) {
     }
     
     return null;  // 未找到 SNI Extension
+}
+
+// SNI 混合器改写（六处调用共用，语义与内联块逐字对应：rawData 为空时原样返回）
+function 改写SNI(rawData) {
+	if (!rawData) return rawData;
+	const 改写结果 = 尝试改写ClientHelloSNI(rawData, 全局SNI混合器);
+	return 改写结果 || rawData;
 }
 
 const concatBytes = (...chunks) => {
@@ -4222,7 +4192,7 @@ class TlsClient {
 		    const decrypted = this.cipherConfig.chacha ? await ChaCha20Poly1305Decrypt(this.serverHandshakeKey, nonce, ciphertext, additionalData) : await TLS_AES_GCM解密(this.serverHandshakeCryptoKey || (this.serverHandshakeCryptoKey = await TLS导入AES密钥(this.serverHandshakeKey, ['decrypt'])), nonce, ciphertext, additionalData);
 		    let innerTypeIndex = decrypted.length - 1;
 		    for (; innerTypeIndex >= 0 && !decrypted[innerTypeIndex];) innerTypeIndex--;
-		    return innerTypeIndex < 0 ? EMPTY_BYTES : decrypted.slice(0, innerTypeIndex + 1);
+		    return innerTypeIndex < 0 ? TLS_EMPTY_BYTES : decrypted.slice(0, innerTypeIndex + 1);
 	    }
 
         async encryptTls13(data) {
@@ -4245,7 +4215,7 @@ class TlsClient {
 		    let innerTypeIndex = plaintext.length - 1;
 		    for (; innerTypeIndex >= 0 && !plaintext[innerTypeIndex];) innerTypeIndex--;
 		    if (innerTypeIndex < 0) return {
-			    data: EMPTY_BYTES,
+			    data: TLS_EMPTY_BYTES,
 			    type: 0
 		    };
 		    return {
@@ -4717,12 +4687,6 @@ class TlsClient {
 		this.sawCert = true;
 	}
 
-	// 派生流量密钥
-	async deriveTrafficKeys(hash, secret, purpose, keyLen, ivLen) {
-		const key = await hkdfExpandLabel(hash, secret, purpose, new Uint8Array(0), keyLen);
-		const iv = await hkdfExpandLabel(hash, secret, purpose, new Uint8Array(0), ivLen);
-		return { key, iv: new Uint8Array(iv) };
-	}
 
 	// 构建 TLS 1.2 Finished
 	async buildTls12Finished(secret, transcript) {
@@ -5239,167 +5203,53 @@ async function HPKE_Seal(context, plaintext, aad) {
 	return TLS_AES_GCM加密(context.aesKey, nonce, plaintext, aad);
 }
 
-// ECH 扩展构建 (Step D)
-function buildECHExtension(echConfig, enc, encryptedCH) {
-	const cipherSuite = tlsBytes(echConfig.cipherSuites[0].kdfId, echConfig.cipherSuites[0].aeadId);
-	const configId = tlsBytes(echConfig.configId);
-	const encBytes = tlsBytes(enc.length, enc);
-	const encryptedCHBytes = tlsBytes(uint16be(encryptedCH.length), encryptedCH);
-	const extContent = concatBytes(cipherSuite, configId, encBytes, encryptedCHBytes);
-	return tlsBytes(uint16be(EXT_ENCRYPTED_CLIENT_HELLO), uint16be(extContent.length), extContent);
+// ECH 外层扩展唯一构造入口（RFC 9180 / ECH）：
+// type(1，outer=0) + cipher_suite(kdf_id:uint16 + aead_id:uint16) + config_id(1)
+// + enc(2 字节长度前缀) + payload(2 字节长度前缀)
+// 实发外层 CH 与 AAD（payload 置零）都走这里，保证两者结构/长度严格一致。
+function 构建ECH扩展内容(echConfig, enc, payload) {
+	const suite = echConfig.cipherSuites[0];
+	const head = tlsBytes(
+		0,
+		uint16be(suite.kdfId), uint16be(suite.aeadId),
+		echConfig.configId,
+		uint16be(enc.length), enc,
+		uint16be(payload.length)
+	);
+	return tlsBytes(uint16be(EXT_ENCRYPTED_CLIENT_HELLO), uint16be(head.length + payload.length), head, payload);
 }
 
+function buildECHExtension(echConfig, enc, encryptedCH) {
+	return 构建ECH扩展内容(echConfig, enc, encryptedCH);
+}
+
+// AAD 用：与实发扩展同结构、同长度，仅把 payload 区整体置零
 function buildZeroedECHExtension(echConfig, enc, payloadLength) {
-	const encLength = enc.length;
-	const dataLength = 2 + 1 + 2 + encLength + 2 + payloadLength;
-	const data = new Uint8Array(dataLength);
-	data[0] = echConfig.cipherSuites[0].kdfId;
-	data[1] = echConfig.cipherSuites[0].aeadId;
-	data[2] = echConfig.configId;
-	data[3] = (encLength >> 8) & 0xFF;
-	data[4] = encLength & 0xFF;
-	data.set(enc, 5);
-	const payloadLenOffset = 5 + encLength;
-	data[payloadLenOffset] = (payloadLength >> 8) & 0xFF;
-	data[payloadLenOffset + 1] = payloadLength & 0xFF;
-	return concatBytes(uint16be(EXT_ENCRYPTED_CLIENT_HELLO), uint16be(dataLength), data);
+	return 构建ECH扩展内容(echConfig, enc, new Uint8Array(payloadLength));
 }
 
 // 构建带 ECH 扩展的外层 ClientHello (Step C helper)
 function 构建带ECH扩展的外层CH(clientRandom, serverName, keyShares, options, echExt) {
-	const cipherIds = [];
-	const core = [];
-	if (options?.tls13 !== false) core.push(4865, 4866);
-	if (options?.tls13 !== false && options?.chacha !== false) core.push(4867);
-	const optional = [];
-	if (options?.tls12 !== false) {
-		optional.push(49199, 49195, 49200);
-		if (options?.chacha !== false) optional.push(52392, 52393);
-		optional.push(49196);
-	}
-	if (TLS_CIPHER_SHUFFLE) {
-		cipherIds.push(...deterministicShuffleCiphers(core, optional, clientRandom, 8));
-	} else {
-		cipherIds.push(...core, ...optional);
-	}
-	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
-	const extensions = [];
-	// 0. GREASE(0) — ~50% 概率，放在 SNI 之前，类型被后续 GREASE 自动排除
-	let lastGreaseType = null;
-	if (TLS_GREASE && seededRand(clientRandom, 7) < 0.5) {
-		lastGreaseType = seededChoice(clientRandom, 8, GREASE_TYPES);
-		extensions.push(greaseExt(lastGreaseType, clientRandom, 3));
-	}
-	// 1. SNI (0)
-	if (serverName) {
-		const serverNameBytes = TLS文本编码器.encode(serverName);
-		const serverNameList = tlsBytes(0, uint16be(serverNameBytes.length), serverNameBytes);
-		extensions.push(tlsBytes(uint16be(EXT_SERVER_NAME), uint16be(serverNameList.length + 2), uint16be(serverNameList.length), serverNameList));
-	}
-	// 2. ALPN (16)
-	if (options?.alpn) {
-		const protocols = Array.isArray(options.alpn) ? options.alpn : [options.alpn];
-		const encodedList = concatBytes(...protocols.map(p => {
-			const bytes = TLS文本编码器.encode(p);
-			return tlsBytes(bytes.length, bytes);
-		}));
-		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), uint16be(encodedList.length), encodedList));
-	}
-	// ★ 2.5. GREASE(ALPN-SV) — ~30%，排除 lastGreaseType，更新 lastGreaseType 维护链连续性
-	if (TLS_GREASE && seededRand(clientRandom, 13) < 0.3) {
-		const excluded = lastGreaseType ? [lastGreaseType] : [];
-		const available = GREASE_TYPES.filter(t => !excluded.includes(t));
-		const asType = seededChoice(clientRandom, 14, available);
-		lastGreaseType = asType;
-		extensions.push(greaseExt(asType, clientRandom, 7));
-	}
-	// 3. SupportedVersions (43)
-	const supportedVersions = [];
-	if (options?.tls13 !== false) supportedVersions.push(TLS_VERSION_13);
-	if (options?.tls12 !== false) supportedVersions.push(TLS_VERSION_12);
-	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
-	// ★ 预选 GREASE(1) 类型（推迟扩展推送，使 GREASE(1b) 能排除其类型）
-	const hasGrease1 = TLS_GREASE && seededRand(clientRandom, 0) < 0.9;
-	let grease1Type = null;
-	if (hasGrease1) {
-		grease1Type = seededChoice(clientRandom, 1,
-			lastGreaseType
-				? GREASE_TYPES.filter(t => t !== lastGreaseType)
-				: GREASE_TYPES
-		);
-	}
-	// ★ 3.5. GREASE(1b) — ~40%，排除 GREASE(0) 和 GREASE(1) 的类型
-	if (TLS_GREASE && seededRand(clientRandom, 10) < 0.4) {
-		const usedTypes = [lastGreaseType, grease1Type].filter(Boolean);
-		const available = GREASE_TYPES.filter(t => !usedTypes.includes(t));
-		extensions.push(greaseExt(seededChoice(clientRandom, 11, available), clientRandom, 6));
-	}
-	// 4. KeyShare (51)
-	if (keyShares) {
-		const keyShareEntries = [];
-		for (const [groupId, keyShare] of keyShares) {
-			keyShareEntries.push(tlsBytes(uint16be(groupId), uint16be(keyShare.publicKeyRaw.length), keyShare.publicKeyRaw));
-		}
-		if (keyShareEntries.length) {
-			const keyShareEntriesConcat = concatBytes(...keyShareEntries);
-			const keyShareExt = tlsBytes(uint16be(keyShareEntriesConcat.length), keyShareEntriesConcat);
-			extensions.push(tlsBytes(uint16be(EXT_KEY_SHARE), uint16be(keyShareExt.length), keyShareExt));
-		}
-	}
-	// 5. GREASE(1) — ~90% 概率（实际推送扩展，类型已在 SupportedVersions 后预选）
-	if (hasGrease1) {
-		lastGreaseType = grease1Type;
-		extensions.push(greaseExt(grease1Type, clientRandom, 4));
-	}
-	// 6/7. SignatureAlgorithms (13) / PSKKeyExchangeModes (45)
-	{
-		const sigAlgs = [0x0804, 0x0805, 0x0806, 0x0403, 0x0503, 0x0603, 0x0807, 0x0808, 0x0809];
-		const sigAlgsExt = tlsBytes(uint16be(EXT_SIGNATURE_ALGORITHMS), uint16be(sigAlgs.length * 2 + 2), uint16be(sigAlgs.length * 2), ...sigAlgs.flatMap(uint16be));
-		const pskModesExt = tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), 2, 1, 1);
-		extensions.push(sigAlgsExt);
-		extensions.push(pskModesExt);
-	}
-	// 8. signed_certificate_timestamp (18) — 空请求，Chrome ~60% 概率
-	if (seededRand(clientRandom, 6) < 0.6) {
-		extensions.push(tlsBytes(uint16be(18), uint16be(0)));
-	}
-	// 9. GREASE(2) — ~30% 概率（需有 GREASE1 时）
-	if (hasGrease1 && seededRand(clientRandom, 2) < 0.30) {
-		const exclude = [lastGreaseType];
-		const available = GREASE_TYPES.filter(t => !exclude.includes(t));
-		const type2 = seededChoice(clientRandom, 3, available);
-		extensions.push(greaseExt(type2, clientRandom, 5));
-	}
-	// 10. SupportedGroups (10) — 动态编码
-	if (keyShares) {
-		const groupIds = keyShares.map(([groupId]) => uint16be(groupId));
-		const groupList = concatBytes(...groupIds);
-		extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_GROUPS), uint16be(groupList.length + 2), uint16be(groupList.length), ...groupList));
-	}
-	// 11. ECPointFormats (11) — TLS 1.2 启用时始终发送，否则 ~50% 概率
-	if ((options?.tls12 !== false) && (options?.tls13 === false || seededRand(clientRandom, 9) < 0.5)) {
-		if (options?.chacha !== false) {
-			extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), uint16be(3), 3, 0, 1, 2));
-		}
-	}
-	// 12. ECH (57)
-	if (echExt) extensions.push(echExt);
-	const clientHello = tlsBytes(uint16be(TLS_VERSION_12), clientRandom, tlsBytes(0), cipherBytes, tlsBytes(1, 0), tlsBytes(uint16be(concatBytes(...extensions).length), ...extensions));
-	return buildHandshakeMessage(HANDSHAKE_TYPE_CLIENT_HELLO, clientHello);
+	return 组装ClientHello(clientRandom, serverName, keyShares, {
+		tls13: options?.tls13 !== false, tls12: options?.tls12 !== false,
+		chacha: options?.chacha !== false, alpn: options?.alpn ?? null
+	}, { echExt });
 }
 
 // ECH 内层+外层 ClientHello 构建 (Step C)
 async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShares, options, echConfig) {
 	const paddingTarget = 512 + (Math.floor(seededRand(clientRandom, 12) * 13) - 6) * 8;
-	const innerCH = buildClientHello(clientRandom, 真实SNI, keyShares, { ...options, paddingTarget });
-	const echLabel = ENC_tls13ech;
-	const configHash = await TLS摘要('SHA-256', concatBytes(echLabel, echConfig.raw));
-	const hpkeInfo = concatBytes(echLabel, configHash);
+	// RFC 9849 §6.1：ClientHelloInner 必须只协商 TLS 1.3
+	const innerCH = buildClientHello(clientRandom, 真实SNI, keyShares, { ...options, tls13: true, tls12: false, paddingTarget });
+	// RFC 9849 §6.1：HPKE info = "tls ech" || 0x00 || ECHConfig
+	const hpkeInfo = concatBytes(ENC_tlsEch, [0x00], echConfig.raw);
 	const { enc, context } = await HPKE_SetupBaseS(echConfig.publicKey, hpkeInfo);
-	const predictedPayloadSize = innerCH.length + 16;
+	// RFC 9849 §5.1/§5.2：明文（EncodedClientHelloInner）与 ClientHelloOuterAAD 都不含 4 字节握手头
+	const inner结构 = innerCH.subarray(4);
+	const predictedPayloadSize = inner结构.length + 16;
 	const zeroExt = buildZeroedECHExtension(echConfig, enc, predictedPayloadSize);
 	const outerCH_AAD = 构建带ECH扩展的外层CH(clientRandom, publicName, keyShares, options, zeroExt);
-	const encryptedCH = await HPKE_Seal(context, innerCH, outerCH_AAD);
+	const encryptedCH = await HPKE_Seal(context, inner结构, outerCH_AAD.subarray(4));
 	const echExt = buildECHExtension(echConfig, enc, encryptedCH);
 	const outerCH_Final = 构建带ECH扩展的外层CH(clientRandom, publicName, keyShares, options, echExt);
 	return { outerCH: outerCH_Final, innerCH, enc };
@@ -5407,6 +5257,16 @@ async function buildECHClientHello(clientRandom, 真实SNI, publicName, keyShare
 
 // 构建ClientHello
 function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTls13 = true, tls12: enableTls12 = true, alpn = null, chacha = true, paddingTarget, preEncodedSN = null } = {}) {
+	return 组装ClientHello(clientRandom, serverName, keyShares, {
+		tls13: !!enableTls13, tls12: !!enableTls12, chacha: !!chacha, alpn
+	}, { paddingTarget, preEncodedSN, includePsk: true });
+}
+// ClientHello 扩展组装（唯一实现）：buildClientHello 与 ECH 外层 CH 共用，保证两者字节级一致
+// tail.includePsk：内层 CH 需追加空 pre_shared_key(41)；外层 ECH CH 按 RFC 不得携带（false）
+// tail.echExt：外层 ECH 扩展字节（内层为 null）；tail.paddingTarget/preEncodedSN：仅内层使用
+function 组装ClientHello(clientRandom, serverName, keyShares, options, tail) {
+	const { tls13: enableTls13, tls12: enableTls12, chacha, alpn = null } = options || {};
+	const { paddingTarget = 0, preEncodedSN = null, echExt = null, includePsk = false } = tail || {};
 	const cipherIds = [];
 	const core = [];
 	if (enableTls13) {
@@ -5426,10 +5286,13 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 	}
 	const cipherBytes = tlsBytes(...cipherIds.flatMap(uint16be));
 	const extensions = [];
-	// 0. GREASE(0) — ~50% 概率，放在 SNI 之前，类型被后续 GREASE 自动排除
+	// 0. GREASE(0) — ~50% 概率，放在 SNI 之前
 	let lastGreaseType = null;
+	// TLS 不允许重复扩展类型，故所有 GREASE 类型统一去重（RFC 8701 建议每个 GREASE 值最多用一次）
+	const 已用GREASE类型 = new Set();
 	if (TLS_GREASE && seededRand(clientRandom, 7) < 0.5) {
 		lastGreaseType = seededChoice(clientRandom, 8, GREASE_TYPES);
+		已用GREASE类型.add(lastGreaseType);
 		extensions.push(greaseExt(lastGreaseType, clientRandom, 3));
 	}
 	// 1. SNI (0)
@@ -5446,36 +5309,35 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 			const bytes = TLS文本编码器.encode(p);
 			return tlsBytes(bytes.length, bytes);
 		}));
-		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), uint16be(encodedList.length), encodedList));
+		// RFC 7301：ALPN 扩展数据 = uint16 协议名列表长度 + 协议名项
+		extensions.push(tlsBytes(uint16be(EXT_APPLICATION_LAYER_PROTOCOL_NEGOTIATION), uint16be(encodedList.length + 2), uint16be(encodedList.length), encodedList));
 	}
 	// ★ 2.5. GREASE(ALPN-SV) — ~30%，排除 lastGreaseType，更新 lastGreaseType 维护链连续性
 	if (TLS_GREASE && seededRand(clientRandom, 13) < 0.3) {
-		const excluded = lastGreaseType ? [lastGreaseType] : [];
-		const available = GREASE_TYPES.filter(t => !excluded.includes(t));
+		const available = GREASE_TYPES.filter(t => !已用GREASE类型.has(t));
 		const asType = seededChoice(clientRandom, 14, available);
 		lastGreaseType = asType;
+		已用GREASE类型.add(asType);
 		extensions.push(greaseExt(asType, clientRandom, 7));
 	}
 	// 3. SupportedVersions (43)
 	const supportedVersions = [];
 	if (enableTls13) supportedVersions.push(TLS_VERSION_13);
 	if (enableTls12) supportedVersions.push(TLS_VERSION_12);
-	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), supportedVersions.length + 1, supportedVersions.length, ...supportedVersions));
+	extensions.push(tlsBytes(uint16be(EXT_SUPPORTED_VERSIONS), uint16be(supportedVersions.length * 2 + 1), supportedVersions.length, ...supportedVersions.flatMap(uint16be)));
 	// ★ 预选 GREASE(1) 类型（推迟扩展推送，使 GREASE(1b) 能排除其类型）
 	const hasGrease1 = TLS_GREASE && seededRand(clientRandom, 0) < 0.9;
 	let grease1Type = null;
 	if (hasGrease1) {
-		grease1Type = seededChoice(clientRandom, 1,
-			lastGreaseType
-				? GREASE_TYPES.filter(t => t !== lastGreaseType)
-				: GREASE_TYPES
-		);
+		grease1Type = seededChoice(clientRandom, 1, GREASE_TYPES.filter(t => !已用GREASE类型.has(t)));
+		已用GREASE类型.add(grease1Type);
 	}
 	// ★ 3.5. GREASE(1b) — ~40%，排除 GREASE(0) 和 GREASE(1) 的类型
 	if (TLS_GREASE && seededRand(clientRandom, 10) < 0.4) {
-		const usedTypes = [lastGreaseType, grease1Type].filter(Boolean);
-		const available = GREASE_TYPES.filter(t => !usedTypes.includes(t));
-		extensions.push(greaseExt(seededChoice(clientRandom, 11, available), clientRandom, 6));
+		const available = GREASE_TYPES.filter(t => !已用GREASE类型.has(t));
+		const g1bType = seededChoice(clientRandom, 11, available);
+		已用GREASE类型.add(g1bType);
+		extensions.push(greaseExt(g1bType, clientRandom, 6));
 	}
 	// 4. KeyShare (51)
 	if (keyShares) {
@@ -5499,7 +5361,7 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 	{
 		const sigAlgs = [0x0804, 0x0805, 0x0806, 0x0403, 0x0503, 0x0603, 0x0807, 0x0808, 0x0809];
 		const sigAlgsExt = tlsBytes(uint16be(EXT_SIGNATURE_ALGORITHMS), uint16be(sigAlgs.length * 2 + 2), uint16be(sigAlgs.length * 2), ...sigAlgs.flatMap(uint16be));
-		const pskModesExt = tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), 2, 1, 1);
+		const pskModesExt = tlsBytes(uint16be(EXT_PSK_KEY_EXCHANGE_MODES), uint16be(2), 1, 1);
 		extensions.push(sigAlgsExt);
 		extensions.push(pskModesExt);
 	}
@@ -5509,9 +5371,9 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 	}
 	// 9. GREASE(2) — ~30% 概率（需有 GREASE1 时）
 	if (hasGrease1 && seededRand(clientRandom, 2) < 0.30) {
-		const exclude = [lastGreaseType];
-		const available = GREASE_TYPES.filter(t => !exclude.includes(t));
+		const available = GREASE_TYPES.filter(t => !已用GREASE类型.has(t));
 		const type2 = seededChoice(clientRandom, 3, available);
+		已用GREASE类型.add(type2);
 		extensions.push(greaseExt(type2, clientRandom, 5));
 	}
 	// 10. SupportedGroups (10) — 动态编码
@@ -5523,14 +5385,14 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 	// 11. ECPointFormats (11) — TLS 1.2 启用时始终发送，否则 ~50% 概率
 	if (enableTls12 && (!enableTls13 || seededRand(clientRandom, 9) < 0.5)) {
 		if (chacha) {
-			extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), uint16be(3), 3, 0, 1, 2));
+			extensions.push(tlsBytes(uint16be(EXT_EC_POINT_FORMATS), uint16be(4), 3, 0, 1, 2));
 		}
 	}
 	// padding (21): 插入在 pre_shared_key 之前，确保 RFC 8446 §4.2.11 顺序
 	if (paddingTarget) {
 		const extBytes = concatBytes(...extensions);
 		const pskBytes = tlsBytes(uint16be(41), uint16be(4), uint16be(0), uint16be(0));
-		const estimatedBase = 4 + 2 + 32 + 1 + cipherBytes.length + 2 + 2 + extBytes.length + pskBytes.length;
+		const estimatedBase = 4 + 2 + 32 + 1 + 2 + cipherBytes.length + 2 + 2 + extBytes.length + pskBytes.length;
 		const finalTarget = Math.max(paddingTarget, estimatedBase + 32);
 		let padNeeded = Math.max(finalTarget - estimatedBase, 0);
 		if (padNeeded > 4) {
@@ -5538,11 +5400,13 @@ function buildClientHello(clientRandom, serverName, keyShares, { tls13: enableTl
 		}
 	}
 	// 12. pre_shared_key (41) — 空 PSK 列表，Chrome 始终发送，RFC 8446 §4.2.11 要求必须最后
-	extensions.push(tlsBytes(uint16be(41), uint16be(4), uint16be(0), uint16be(0)));
+	if (echExt) extensions.push(echExt);
+	if (includePsk) extensions.push(tlsBytes(uint16be(41), uint16be(4), uint16be(0), uint16be(0)));
 	const clientHello = tlsBytes(
 		uint16be(TLS_VERSION_12),
 		clientRandom,
 		tlsBytes(0),
+		uint16be(cipherBytes.length),
 		cipherBytes,
 		tlsBytes(1, 0),
 		tlsBytes(uint16be(concatBytes(...extensions).length), ...extensions)
@@ -5555,58 +5419,6 @@ function xorSequenceIntoIv(iv, sequenceNumber) {
 	const sequenceBytes = uint64be(sequenceNumber);
 	for (let index = 0; index < 8; index++) nonce[nonce.length - 8 + index] ^= sequenceBytes[index];
 	return nonce;
-}
-
-async function 创建SS出站加密器(config, passwordText) {
-	const masterKey = await SS派生主密钥(passwordText, config.keyLen);
-	const salt = crypto.getRandomValues(new Uint8Array(config.saltLen));
-	const encryptKey = await SS派生会话密钥(config, masterKey, salt, ['encrypt']);
-	const nonceCounter = new Uint8Array(SSNonce长度);
-	let saltSent = false;
-	return {
-		async 加密(dataChunk) {
-			const plaintextData = 数据转Uint8Array(dataChunk);
-			const outboundChunks = [];
-			if (!saltSent) {
-				outboundChunks.push(salt);
-				saltSent = true;
-			}
-			if (plaintextData.byteLength === 0) return 拼接字节数据(...outboundChunks);
-			let offset = 0;
-			while (offset < plaintextData.byteLength) {
-				const end = Math.min(offset + config.maxChunk, plaintextData.byteLength);
-				const payloadPlain = plaintextData.subarray(offset, end);
-				const lengthPlain = new Uint8Array(2);
-				SS写入U16BE(lengthPlain, 0, payloadPlain.byteLength);
-				const lengthCipher = await SSAEAD加密(encryptKey, nonceCounter, lengthPlain);
-				const payloadCipher = await SSAEAD加密(encryptKey, nonceCounter, payloadPlain);
-				outboundChunks.push(lengthCipher, payloadCipher);
-				offset = end;
-			}
-			return 拼接字节数据(...outboundChunks);
-		},
-	};
-}
-
-function 创建SS回包Socket(realSocket, outboundEncryptor) {
-	let sendChain = Promise.resolve();
-	return {
-		get readyState() { return realSocket.readyState; },
-		send(data) {
-			const chunk = 数据转Uint8Array(data);
-			sendChain = sendChain.then(async () => {
-				if (realSocket.readyState !== WebSocket.OPEN) return;
-				const encrypted = await outboundEncryptor.加密(chunk);
-				if (encrypted.byteLength > 0 && realSocket.readyState === WebSocket.OPEN) {
-					realSocket.send(encrypted.buffer);
-				}
-			}).catch((error) => {
-				log(`[SS发送] 加密失败: ${error?.message || error}`);
-				closeSocketQuietly(realSocket);
-			});
-		},
-		close() { closeSocketQuietly(realSocket); }
-	};
 }
 
 function 解析SS请求(chunk, passwordPlainText) {
@@ -5644,7 +5456,7 @@ function 解析SS请求(chunk, passwordPlainText) {
 }
 
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID, ctx2, isTrojan = false, 木马反代地址 = null, 原始数据 = null, 仅建立连接 = false) {
-	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, 调试日志打印, TCP并发拨号数, 反代并发拨号数, 预加载竞速拨号 } = ctx2;
+	const { 反代IP, 启用反代兜底, 启用SOCKS5反代, 启用SOCKS5全局反代, parsedSocks5Address, SOCKS5白名单正则, TCP并发拨号数, 反代并发拨号数, 预加载竞速拨号 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
 	const 木马回退启用 = isTrojan && 木马反代地址;
 	const 木马反代首包数据 = 木马回退启用 ? (原始数据 || rawData) : null;
@@ -5875,19 +5687,11 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 				} else if (启用SOCKS5反代 === 'turn') {
 					log(`[TURN代理] 代理到: ${host}:${portNum}`);
 					newSocket = await turnConnect(parsedSocks5Address, host, portNum, TCP连接);
-					if (有效数据长度(本次首包数据) > 0) {
-						const writer = newSocket.writable.getWriter();
-						try { await writer.write(数据转Uint8Array(本次首包数据)) }
-						finally { try { writer.releaseLock() } catch (e) { } }
-					}
+					await 写入首包(newSocket, 本次首包数据);
 				} else if (启用SOCKS5反代 === 'sstp') {
 					log(`[SSTP代理] 代理到: ${host}:${portNum}`);
 					newSocket = await sstpConnect(parsedSocks5Address, host, portNum, TCP连接);
-					if (有效数据长度(本次首包数据) > 0) {
-						const writer = newSocket.writable.getWriter();
-						try { await writer.write(数据转Uint8Array(本次首包数据)) }
-						finally { try { writer.releaseLock() } catch (e) { } }
-					}
+					await 写入首包(newSocket, 本次首包数据);
 				} else {
 					log(`[反代连接] 代理到: ${host}:${portNum}`);
 					const 所有反代数组 = await 解析地址端口(反代IP, host, yourUUID);
@@ -5980,7 +5784,6 @@ const DNS_CACHE_TTL = 60 * 1000;
 const dnsResponseCache = new Map();
 
 async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = null, ctx2) {
-	const { 调试日志打印 } = ctx2;
 	const log = (...args) => ctx2.log(...args);
     const 请求数据 = 数据转Uint8Array(udpChunk);
     const 请求字节数 = 请求数据?.byteLength ?? 请求数据?.length ?? 0;
@@ -6057,11 +5860,6 @@ function closeSocketQuietly(socket) {
             socket.close();
         }
     } catch (error) { /* socket close 失败可忽略 */ }
-}
-
-function formatIdentifier(arr, offset = 0) {
-    const hex = [...arr.slice(offset, offset + 16)].map(b => b.toString(16).padStart(2, '0')).join('');
-    return `${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}`;
 }
 
 async function WebSocket发送并等待(webSocket, payload) {
@@ -6600,42 +6398,17 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc, is
 	closeSocketQuietly(webSocket);
 }
 
-function makeReadableStr(socket, earlyDataHeader) {
-    let cancelled = false;
-    return new ReadableStream({
-        start(controller) {
-            socket.addEventListener('message', (event) => {
-                if (!cancelled) controller.enqueue(event.data);
-            });
-            socket.addEventListener('close', () => {
-                if (!cancelled) {
-                    closeSocketQuietly(socket);
-                    controller.close();
-                }
-            });
-            socket.addEventListener('error', (err) => controller.error(err));
-            const { earlyData, error } = base64ToArray(earlyDataHeader);
-            if (error) controller.error(error);
-            else if (earlyData) controller.enqueue(earlyData);
-        },
-        cancel() {
-            cancelled = true;
-            closeSocketQuietly(socket);
-        }
-    });
-}
-
 function isSpeedTestSite(hostname) {
 	const speedTestDomains = ['speed.cloudflare.com', 'cp.cloudflare.com'];
 	hostname = hostname.toLowerCase();
 	return speedTestDomains.some(domain => hostname === domain || hostname.endsWith('.' + domain));
 }
 
-function 构造本地204响应(respHeader = null) {
+function 构造本地204响应(respHeader = null, { 连接头 = 'close', 记录日志 = true } = {}) {
 	const 本地204响应 = $encoder.encode(
 		'HTTP/1.1 204 No Content\r\n' +
 		'Content-Length: 0\r\n' +
-		'Connection: close\r\n' +
+		`Connection: ${连接头}\r\n` +
 		'\r\n'
 	);
 	if (有效数据长度(respHeader) === 0) return 本地204响应;
@@ -6643,37 +6416,8 @@ function 构造本地204响应(respHeader = null) {
 	const response = new Uint8Array(协议响应头.byteLength + 本地204响应.byteLength);
 	response.set(协议响应头, 0);
 	response.set(本地204响应, 协议响应头.byteLength);
-	log(`[TCP转发] 构造本地204响应: ${response.byteLength}B`);
+	if (记录日志) log(`[TCP转发] 构造本地204响应: ${response.byteLength}B`);
 	return response;
-}
-
-function 构造WS本地204响应(respHeader = null) {
-	const WS本地204响应 = $encoder.encode(
-		'HTTP/1.1 204 No Content\r\n' +
-		'Content-Length: 0\r\n' +
-		'Connection: keep-alive\r\n' +
-		'\r\n'
-	);
-	if (有效数据长度(respHeader) === 0) return WS本地204响应;
-	const 协议响应头 = 数据转Uint8Array(respHeader);
-	const response = new Uint8Array(协议响应头.byteLength + WS本地204响应.byteLength);
-	response.set(协议响应头, 0);
-	response.set(WS本地204响应, 协议响应头.byteLength);
-	return response;
-}
-
-function base64ToArray(b64Str) {
-    if (!b64Str) return { error: null };
-    try {
-        const binaryString = atob(b64Str.replace(/-/g, '+').replace(/_/g, '/'));
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-        }
-        return { earlyData: bytes.buffer, error: null };
-    } catch (error) {
-        return { error };
-    }
 }
 
 ///////////////////////////////////////////////////////IP地址辅助函数///////////////////////////////////////////////
@@ -6807,7 +6551,7 @@ async function turnConnect(proxy, targetHost, targetPort, TCP连接 = null) {
 			const recordData = records.find(item => item.type === 1 && isIPv4(item.data))?.data;
 			targetIp = typeof recordData === 'string' ? recordData : null;
 			// 写入缓存（单 IP 存字符串，多 IP 场景暂不支持 TURN 协议约束）
-			doh解析缓存.set(cacheKey, { result: targetIp, time: Date.now(), empty: !targetIp });
+			写入DoH解析缓存(cacheKey, targetIp);
 		}
 	}
 	if (!targetIp) throw new Error(`Could not resolve ${targetHost} to an IPv4 address for TURN CONNECT`);
@@ -7262,7 +7006,7 @@ async function sstpConnect(proxy, targetHost, targetPort, TCP连接 = null) {
 				const recordData = records.find(item => item.type === 1 && isIPv4(item.data))?.data;
 				targetIp = typeof recordData === 'string' ? recordData : null;
 				const 有结果 = !!targetIp;
-				doh解析缓存.set(cacheKey, { result: targetIp, time: Date.now(), empty: !有结果 });
+				写入DoH解析缓存(cacheKey, targetIp);
 			}
 		}
 		if (!targetIp) throw new Error(`Could not resolve ${targetHost} to an IPv4 address for SSTP`);
@@ -7484,56 +7228,8 @@ async function socks5Connect(targetHost, targetPort, initialData, TCP连接 = nu
     }
 }
 
-// CONNECT 隧道浏览器 UA 池 (与代理路径 浏览器UA池 一致)
-const PICK_CONNECT_UA = () => {
-    const pool = [
-        // Windows
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
-        // macOS (Intel)
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.0; rv:151.0) Gecko/20100101 Firefox/151.0',
-        // macOS (Apple Silicon)
-        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
-        'Mozilla/5.0 (Macintosh; ARM Mac OS X 26_0; rv:151.0) Gecko/20100101 Firefox/151.0',
-        // Linux
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/149.0.4022.69 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0',
-        // ChromeOS
-        'Mozilla/5.0 (X11; CrOS x86_64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; CrOS aarch64 16640.57.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        // Android
-        'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.103 Mobile Safari/537.36',
-        'Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/30.0 Chrome/149.0.7827.103 Mobile Safari/537.36',
-        'Mozilla/5.0 (Android 15; Mobile; rv:151.0) Gecko/151.0 Firefox/151.0',
-        // iOS / iPadOS
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
-        'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1',
-        'Mozilla/5.0 (iPad; CPU OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/149.0.7827.137 Mobile/15E148 Safari/604.1',
-        // Opera
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 OPR/132.0.0.0',
-        // 桌面份额加权: Chrome ~68%, Safari ~17%, Edge ~5.8%, Firefox ~3.7%, Opera ~1.9%, 其余 ~3.6%
-    ];
-    // 加权随机选择（按浏览器真实市场份额 June 2026）
-    const UA权重 = [140, 100, 30, 15, 20, 10, 20, 5, 5, 50, 30, 60, 10, 10, 20, 3, 7, 10, 5, 140, 15, 5, 70, 5, 15, 3, 15];
-    const 总权重 = UA权重.reduce((a, b) => a + b, 0);
-    let 随机值 = Math.random() * 总权重;
-    for (let i = 0; i < pool.length; i++) {
-        随机值 -= UA权重[i];
-        if (随机值 <= 0) return pool[i];
-    }
-    return pool[pool.length - 1];
-};
+// CONNECT 隧道与代理回退路径共用同一 UA 池（顺序/权重唯一来源，避免错配）
+const PICK_CONNECT_UA = () => 加权随机UA();
 
 // Accept-Language 随机池（避免所有请求固定 en-US）
 const PICK_ACCEPT_LANG = () => {
@@ -7936,13 +7632,14 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     }
     await yieldToEventLoop();
 
-    // 如果 ECH_SNI 存在，添加到 HOSTS 数组中
-    if (ECH_SNI && !HOSTS.includes(ECH_SNI)) HOSTS.push(ECH_SNI);
+    // 使用副本：原实现直接 push 进调用方传入的 config_JSON.HOSTS（缓存对象），会跨请求污染
+    const 目标HOSTS = HOSTS.slice();
+    if (ECH_SNI && !目标HOSTS.includes(ECH_SNI)) 目标HOSTS.push(ECH_SNI);
 
     // 如果 ECH 启用且 HOSTS 有效，添加 nameserver-policy
-    if (ECH启用 && HOSTS.length > 0) {
+    if (ECH启用 && 目标HOSTS.length > 0) {
         // 生成 HOSTS 的 nameserver-policy 条目
-        const hostsEntries = HOSTS.map(host => `    "${host}": ${ECH_DNS ? ECH_DNS : ''}`).join('\n');
+        const hostsEntries = 目标HOSTS.map(host => `    "${host}": ${ECH_DNS ? ECH_DNS : ''}`).join('\n');
         await yieldToEventLoop();
 
         // 检查是否存在 nameserver-policy:
@@ -8031,7 +7728,7 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
             if (需要处理gRPC) fullNode = 添加Flow格式gRPCUserAgent(fullNode);
 
             if (credentialMatch && ECH启用 && credentialMatch[1].trim() === uuid.trim()) {
-                const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
+                const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(目标HOSTS[Math.floor(Math.random() * 目标HOSTS.length)]);
                 // 在最后一个}前添加ech-opts
                 fullNode = fullNode.replace(/\}(\s*)$/, `, ech-opts: {enable: true${nodeSNI ? `, query-server-name: ${nodeSNI}` : ''}}}$1`);
             }
@@ -8112,7 +7809,7 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
 
                 if (insertIndex >= 0) {
                     const indent = ' '.repeat(topLevelIndent);
-                    const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
+                    const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(目标HOSTS[Math.floor(Math.random() * 目标HOSTS.length)]);
                     // 在节点末尾（最后一个属性块之后）插入 ech-opts 属性
                     const echOptsLines = [
                         `${indent}ech-opts:`,
@@ -8133,10 +7830,44 @@ async function Clash订阅配置文件热补丁(Clash_原始订阅内容, uuid =
     return processedLines.join('\n');
 }
 
+// 为 ECH 的 HTTPS RR 查询挑选远程 DNS 服务器标签（对齐 BPB-Worker-Panel 的 dns-remote 用法）
+// 兼容 sing-box 新旧两种 dns.servers 形状：旧版 {address} / 新版 {type, server}
+function 选择ECH查询DNS服务器(servers, ECH_DNS) {
+    if (!Array.isArray(servers) || !servers.length) return null;
+    const 标签 = (s) => (s && typeof s.tag === 'string' && s.tag) ? s.tag : null;
+    const 地址 = (s) => String((s && (s.address || s.server)) || '').toLowerCase();
+    let 目标主机 = '';
+    try { 目标主机 = ECH_DNS ? new URL(ECH_DNS).hostname.toLowerCase() : ''; } catch (e) { 目标主机 = ''; }
+    // 1) 与配置里的 ECH DoH 主机一致
+    if (目标主机) {
+        for (const s of servers) if (标签(s) && 地址(s).includes(目标主机)) return 标签(s);
+    }
+    // 2) 加密 DNS 或走代理(detour)的服务器
+    for (const s of servers) {
+        if (!标签(s)) continue;
+        const 类型 = String((s && s.type) || '').toLowerCase();
+        if ((s && typeof s.detour === 'string' && s.detour) || /^(https|h3|quic|tls|h2):\/\//.test(地址(s)) || ['https', 'h3', 'quic', 'tls', 'doh'].includes(类型)) return 标签(s);
+    }
+    // 3) 标签名兜底
+    for (const s of servers) {
+        const t = 标签(s);
+        if (t && /remote|doh|proxy/i.test(t)) return t;
+    }
+    return null;
+}
+
 async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uuid = null, fingerprint = "chrome", ECH启用 = false, HOSTS = [], ECH_SNI = null, ECH_DNS = null) {
     const sb_json_text = SingBox_原始订阅内容.replace('1.1.1.1', '8.8.8.8').replace('1.0.0.1', '8.8.4.4');
     try {
         let config = JSON.parse(sb_json_text);
+
+        // ECH 查询名（对齐 BPB-Worker-Panel）：显式 ECH_SNI 优先；否则从 HOSTS 随机取一个；
+        // 都取不到则不启用 ECH（BPB 的 sing-box 侧同样以"抽到名称"为 ECH 启用前提）
+        const ech查询名 = ECH启用
+            ? ((ECH_SNI && ECH_SNI !== 'auto')
+                ? String(ECH_SNI)
+                : (Array.isArray(HOSTS) && HOSTS.length ? 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]) : null))
+            : null;
 
         // --- UUID 匹配节点的 TLS 热补丁 (utls & ech) ---
         if (uuid) {
@@ -8146,25 +7877,31 @@ async function Singbox订阅配置文件热补丁(SingBox_原始订阅内容, uu
                 if (nodeCount % 12 === 0) await yieldToEventLoop();
 
                 if ((outbound.uuid && outbound.uuid === uuid) || (outbound.password && outbound.password === uuid)) {
-                    if (!outbound.tls) {
-                        outbound.tls = { enabled: true };
-                    }
+                    if (!outbound.tls) outbound.tls = { enabled: true };
+                    outbound.tls.enabled = true;
 
-                    if (fingerprint) {
-                        outbound.tls.utls = {
-                            enabled: true,
-                            fingerprint: fingerprint
-                        };
-                    }
+                    // utls 形状对齐 BPB：enabled 恒为布尔值，fingerprint 为空时省略该键
+                    outbound.tls.utls = { enabled: !!fingerprint, fingerprint: fingerprint || undefined };
 
-                    if (ECH启用) {
-                        const nodeSNI = (ECH_SNI && ECH_SNI !== 'auto') ? ECH_SNI : 随机替换通配符(HOSTS[Math.floor(Math.random() * HOSTS.length)]);
-                        outbound.tls.ech = {
-                            enabled: true,
-                            query_server_name: nodeSNI
-                        };
+                    // ech 形状对齐 BPB：{ enabled, query_server_name }；
+                    // 启用策略对齐 edgetunnel 上游：ECH 只受总开关控制，TLS 分片(record_fragment)节点同样写 ECH
+                    if (ech查询名) {
+                        outbound.tls.ech = { enabled: true, query_server_name: ech查询名 };
                     }
                 }
+            }
+        }
+
+        // ECH 的 HTTPS RR 查询必须走远程 DoH：按 BPB 的 dns 规则形状补一条 query_type=HTTPS 的路由规则
+        if (ech查询名 && config.dns && Array.isArray(config.dns.rules)) {
+            const dnsTag = 选择ECH查询DNS服务器(config.dns.servers, ECH_DNS);
+            if (dnsTag) {
+                const 旧式DNS = Array.isArray(config.dns.servers) && config.dns.servers.some(s => s && typeof s.address === 'string');
+                const rule = 旧式DNS
+                    ? { domain_suffix: [ech查询名], server: dnsTag }
+                    : { domain_suffix: [ech查询名], query_type: ['HTTPS'], action: 'route', server: dnsTag };
+                const 规则键 = JSON.stringify(rule);
+                if (!config.dns.rules.some(r => JSON.stringify(r) === 规则键)) config.dns.rules.push(rule);
             }
         }
 
@@ -8710,7 +8447,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
                 const [cname] = 解析域名(offset - rdlen);
                 data = cname;
             } else {
-                data = Array.from(rdata).map(b => b.toString(16).padStart(2, '0')).join('');
+                data = hexEncode(rdata);
             }
             answers.push({ name, type, TTL: ttl, data, rdata });
         }
@@ -8764,8 +8501,12 @@ function 解析ECHConfig(bytes) {
 	offset += 2;
 	const cipherSuites = [];
 	const suitesEnd = offset + suitesLen;
-	while (offset + 2 <= suitesEnd) {
-		cipherSuites.push({ kdfId: bytes[offset++], aeadId: bytes[offset++] });
+	// RFC 9180 §7.1: HpkeSymmetricCipherSuite = kdf_id(uint16) + aead_id(uint16)，每项 4 字节
+	while (offset + 4 <= suitesEnd) {
+		const kdfId = (bytes[offset] << 8) | bytes[offset + 1];
+		const aeadId = (bytes[offset + 2] << 8) | bytes[offset + 3];
+		offset += 4;
+		cipherSuites.push({ kdfId, aeadId });
 	}
 	const maximumNameLength = bytes[offset++];
 	const nameLen = bytes[offset++];
@@ -8821,9 +8562,6 @@ async function 获取ECHConfig(host) {
 	}
 }
 
-// 保留旧 getECH 别名保持向后兼容
-async function getECH(host) { const cfg = await 获取ECHConfig(host); return cfg ? btoa(String.fromCharCode(...cfg.raw)) : ''; }
-
 async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false, existingToken = null) {
     // 紧急优化：缓存 config_JSON，避免每次请求重新生成（按 host+userID 缓存）
     const cacheKey = `${hostname}:${userID}`;
@@ -8857,27 +8595,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
         SNIMixing: {
             启用: false,
             真实SNI比例范围: [0.71, 0.81],
-            白名单: [
-                // 视频与流媒体
-                'www.bilibili.tv',
-                'www.iq.com',
-                'wetv.vip',
-                'int.mgtv.com',
-                
-                // 游戏与娱乐
-                'genshin.hoyoverse.com',
-                'hsr.hoyoverse.com',
-                
-                // 科技与大型跨国业务
-                'www.shein.com',
-                'www.dji.com',
-                
-                // 微软/苹果的全球基础设施（保留原版中合理的全球化域名）
-                'res.cdn.office.net',
-                'developer.apple.com',
-                'go.microsoft.com',
-                'ctldl.windowsupdate.com'
-            ],
+            白名单: 默认SNI白名单,
         },
         SS: {
             加密方式: "aes-128-gcm",
@@ -9159,7 +8877,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
                 try {
                     const response = await fetch(CF_JSON.UsageAPI);
                     const Usage = await response.json();
-                    config_JSON.CF.Usage = Usage;
+                    config_JSON.CF.Usage = 规范化CF用量(Usage);
                 } catch (err) {
                     console.error(`请求 CF_JSON.UsageAPI 失败: ${err.message}`);
                 }
@@ -9171,7 +8889,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
                 config_JSON.CF.UsageAPI = null;
                 try {
                     const Usage = await getCloudflareUsage(CF_JSON.Email, CF_JSON.GlobalAPIKey, CF_JSON.AccountID, CF_JSON.APIToken);
-                    config_JSON.CF.Usage = Usage;
+                    config_JSON.CF.Usage = 规范化CF用量(Usage);
                 } catch (e) {
                     console.error(`请求CF用量失败: ${e.message}`);
                 }
@@ -9274,9 +8992,7 @@ function isValidBase64(str) {
 }
 
 function base64Decode(str) {
-    const bytes = new Uint8Array(atob(str).split('').map(c => c.charCodeAt(0)));
-    const decoder = $decoder;
-    return decoder.decode(bytes);
+    return $decoder.decode(uint8ArrayFromBase64(str));
 }
 
 async function 获取优选订阅生成器数据(优选订阅生成器HOST) {
@@ -9334,7 +9050,6 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
     if (!urls?.length) return [new Map(), [], []];
     const resultsMap = new Map();
     const 反代IP池 = new Set();
-    let 需要订阅转换订阅URLs = [];
 
     // 带重试的请求辅助函数
     const fetchWithRetry = async (url, maxRetries = 2) => {
@@ -9442,9 +9157,9 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
                     }
                 }
 
-                // 如果所有编码都失败或无效，尝试 response.text()
+                // body 已被 arrayBuffer() 取走，不能再用 response.text()（必抛），直接用 UTF-8 兜底
                 if (!decodeSuccess) {
-                    text = await response.text();
+                    text = new TextDecoder('utf-8').decode(buffer);
                 }
 
                 // 如果返回的是空或无效数据，返回
@@ -9542,7 +9257,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 8000) 
         } catch (e) { console.warn('[订阅API] 请求处理失败:', e?.message); }
     }));
 
-    return [resultsMap, 需要订阅转换订阅URLs, Array.from(反代IP池)];
+    return [resultsMap, [], Array.from(反代IP池)];
 }
 
 // === Trojan Fallback（参考上游 338326c 思路，按需启用） ===
@@ -9733,13 +9448,6 @@ async function 反代参数获取(url, uuid, ctx2) {
         ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
         ctx2.启用SOCKS5全局反代 = true;
     }
-    else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http|g?https|g?turn|g?sstp)=([^/?#\s]+)/i))) {
-        const type = socksMatch[1].toLowerCase();
-        ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
-        ctx2.启用SOCKS5反代 = type.includes('sstp') ? 'sstp' : (type.includes('turn') ? 'turn' : (type.includes('https') ? 'https' : (type.includes('http') ? 'http' : 'socks5')));
-        ctx2.启用SOCKS5全局反代 = type.startsWith('g') || ctx2.启用SOCKS5全局反代;
-    }
-    // 匹配：/socks5=..., /s5=..., /gs5=..., /http=..., /ghttp=..., /turn=..., /gturn=..., /sstp=..., /gsstp=...
     else if ((socksMatch = pathname.match(/\/(g?s5|socks5|g?http|g?https|g?turn|g?sstp)=([^/?#\s]+)/i))) {
         const type = socksMatch[1].toLowerCase();
         ctx2.我的SOCKS5账号 = socksMatch[2].split('/')[0];
@@ -9999,21 +9707,8 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
                         ipAddresses = 有结果?.value ?? [];
 
                         // ★ 写入缓存（标记是否空结果）
-                        doh解析缓存.set(cacheKey, {
-                            result: ipAddresses,
-                            time: Date.now(),
-                            empty: ipAddresses.length === 0
-                        });
-                        // ★ 清理过期条目 + 限制最大条目数
-                        if (doh解析缓存.size > DOH_CACHE_MAX) {
-                            const now = Date.now();
-                            for (const [key, value] of doh解析缓存) {
-                                if (now - value.time >= DOH_CACHE_TTL) doh解析缓存.delete(key);
-                            }
-                            while (doh解析缓存.size > DOH_CACHE_MAX) {
-                                doh解析缓存.delete(doh解析缓存.keys().next().value);
-                            }
-                        }
+                        // ★ 写入缓存（统一走 写入DoH解析缓存：TTL 清理 + 容量上限）
+                        写入DoH解析缓存(cacheKey, ipAddresses, ipAddresses.length === 0);
                     }
 
                     if (ipAddresses.length > 0) {
@@ -10115,7 +9810,7 @@ async function nginx() {
 async function html1101(host, 访问IP) {
     const now = new Date();
     const 格式化时间戳 = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0') + ' ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
-    const 随机字符串 = Array.from(crypto.getRandomValues(new Uint8Array(8))).map(b => b.toString(16).padStart(2, '0')).join('');
+    const 随机字符串 = hexEncode(crypto.getRandomValues(new Uint8Array(8)));
 
     return `<!DOCTYPE html>
 <!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
