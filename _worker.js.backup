@@ -2439,10 +2439,23 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 	const log = (...args) => ctx2.log(...args);
 	ctx2.request = request;
 
+	// ★ 兼容订阅链接中的转义写法：path=/?enc\=aes-128-gcm 可能被解析成参数名 enc\ 或整段 enc\=aes-128-gcm
+	const 获取SS加密参数 = () => {
+		const 直接值 = url.searchParams.get('enc');
+		if (直接值) return 直接值;
+		for (const [键, 值] of url.searchParams) {
+			const 归一键 = 键.replace(/\\/g, '');
+			if (归一键 === 'enc') return 值;
+			if (归一键.startsWith('enc=')) return 归一键.slice(4) || 值;
+		}
+		return '';
+	};
+	const SS加密参数 = 获取SS加密参数();
+
 	// ★ 前置校验：在创建 WebSocketPair 之前验证 early data
 	let 有效早期数据Bytes = null;
 	const earlyData = request.headers.get('sec-websocket-protocol') || '';
-	const SS模式禁用EarlyData = !!url.searchParams.get('enc');
+	const SS模式禁用EarlyData = !!SS加密参数;
 	if (!SS模式禁用EarlyData && earlyData) {
 		try {
 			const bytes = 解码WS早期数据(earlyData, yourUUID);
@@ -2561,7 +2574,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 		if (ss上下文) return ss上下文;
 		if (!ss初始化任务) {
 			ss初始化任务 = (async () => {
-				const 请求加密方式 = (url.searchParams.get('enc') || '').toLowerCase();
+				const 请求加密方式 = (SS加密参数 || '').toLowerCase();
 				const 首选加密配置 = SS支持加密配置[请求加密方式] || SS支持加密配置['aes-128-gcm'];
 				const 入站候选加密配置 = [首选加密配置, ...Object.values(SS支持加密配置).filter(c => c.method !== 首选加密配置.method)];
 				const 取入站主密钥任务 = (config) => {
@@ -2820,7 +2833,7 @@ async function 处理WS请求(request, yourUUID, url, ctx2) {
 		if (await 写入远端(有效块)) return;
 
 		if (判断协议类型 === null) {
-			if (url.searchParams.get('enc')) 判断协议类型 = 'ss';
+			if (SS加密参数) 判断协议类型 = 'ss';
 			else {
 				当前块字节 = 当前块字节 || 有效块;
 				const bytes = 当前块字节;
