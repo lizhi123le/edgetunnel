@@ -1246,6 +1246,12 @@ html, body { background: transparent !important; }
                                         const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
                                         const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
                                         节点端口 = String(NOTLS端口[TLS端口.indexOf(Number(节点端口))] ?? 节点端口);
+                                        // ★ TLS 关闭（明文 ws）时，优选IP 的 HTTP 端口常被封（只开 443），改用 worker 域名作为节点地址
+                                        // 可用 config_JSON.SS.域名优先 = false 关闭该行为（例如自建 80 端口反代IP 场景）
+                                        const 裸IPv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(节点地址);
+                                        const 裸IPv6 = /^\[[0-9a-fA-F:]+\]$/.test(节点地址) || (/^[0-9a-fA-F:]+$/.test(节点地址) && 节点地址.includes(':'));
+                                        const 域名列表 = Array.isArray(config_JSON.HOSTS) ? config_JSON.HOSTS.filter(Boolean) : [];
+                                        if ((裸IPv4 || 裸IPv6) && 域名列表.length && config_JSON.SS.域名优先 !== false) 节点地址 = String(域名列表[0]);
                                     }
                                     完整节点路径 = 完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式);
                                     if (!isSubConverterRequest) 完整节点路径 = 完整节点路径 + ';mux=0';
